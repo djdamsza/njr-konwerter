@@ -1,0 +1,6 @@
+flask>=3.0.0
+flask-cors>=4.0.0
+cryptography>=41.0.0
+pyrekordbox>=0.4.4
+mutagen>=1.47.0
+# sqlcipher3-wheels (zależność pyrekordbox) – wymagany do eksportu Restore (RB wymaga zaszyfrowanej bazy)

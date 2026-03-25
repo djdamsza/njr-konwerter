@@ -1,0 +1,22 @@
+# Osobne repozytorium NJR — korzeń clone = ten pakiet (README, scripts, editor, …).
+name: NJR Konwerter — pakiet
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Struktura i uprawnienia
+        run: |
+          test -f VERSION
+          test -f README.md
+          test -f BUILD.md
+          test -f DEPLOY-SERVER.md
+          test -f GITHUB.md
+          test -x scripts/build-local.sh
+          test -x scripts/github-bootstrap.sh
+          test -f scripts/deploy-to-server.example.sh
