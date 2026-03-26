@@ -1,9 +1,11 @@
-# Build NJR-konwerter na GitHub Actions (Windows + macOS ARM + macOS Intel).
-# Kod: tools/vdj-database-editor. Wersja: njr-konwerter-1.0/VERSION
+# Build NJR-konwerter (PyInstaller) — Windows + macOS ARM + macOS Intel.
 #
-# Uruchomienie: Actions → „Build NJR Konwerter (VoteBattle)” → Run workflow
-# Release z binariami: tag njr-v1.0.0 → git push origin njr-v1.0.0
-# (tagi v* bez prefiksu zostaw dla Imprezja Quiz — tu używamy njr-v*)
+# Działa w dwóch układach:
+#   • Repo njr-konwerter:  editor/ + VERSION (w korzeniu)
+#   • Repo VoteBattle:    tools/vdj-database-editor + njr-konwerter-1.0/VERSION
+#
+# Uruchomienie: Actions → Run workflow
+# Release z binariami (bezpieczny tag, bez kolizji z Quiz):  git tag njr-v1.0.0 && git push origin njr-v1.0.0
 name: Build NJR Konwerter (VoteBattle)
 
 on:
@@ -14,10 +16,6 @@ on:
 
 permissions:
   contents: read
-
-env:
-  NJR_DIR: tools/vdj-database-editor
-  VERSION_FILE: njr-konwerter-1.0/VERSION
 
 jobs:
   build:
@@ -45,17 +43,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sprawdź źródła NJR
+      - name: Wykryj katalog źródeł (editor vs VoteBattle)
         run: |
-          test -f "$NJR_DIR/njr.spec" || { echo "Brak $NJR_DIR/njr.spec" >&2; exit 1; }
+          if [ -f editor/njr.spec ]; then
+            NJR_DIR=editor
+            if [ -f VERSION ]; then
+              VERSION_FILE=VERSION
+            elif [ -f njr-konwerter-1.0/VERSION ]; then
+              VERSION_FILE=njr-konwerter-1.0/VERSION
+            else
+              echo "Brak VERSION w korzeniu ani njr-konwerter-1.0/VERSION" >&2
+              exit 1
+            fi
+            echo "Układ: repo njr-konwerter (editor/)"
+          elif [ -f tools/vdj-database-editor/njr.spec ]; then
+            NJR_DIR=tools/vdj-database-editor
+            VERSION_FILE=njr-konwerter-1.0/VERSION
+            echo "Układ: VoteBattle (tools/vdj-database-editor)"
+          else
+            echo "Nie znaleziono njr.spec w editor/ ani tools/vdj-database-editor/" >&2
+            exit 1
+          fi
           test -f "$NJR_DIR/requirements.txt"
-          test -f "$VERSION_FILE" || { echo "Brak $VERSION_FILE" >&2; exit 1; }
+          test -f "$VERSION_FILE"
+          echo "NJR_DIR=$NJR_DIR VERSION_FILE=$VERSION_FILE"
+          echo "NJR_DIR=$NJR_DIR" >> "$GITHUB_ENV"
+          echo "VERSION_FILE=$VERSION_FILE" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-          cache-dependency-path: ${{ env.NJR_DIR }}/requirements.txt
+          cache-dependency-path: |
+            editor/requirements.txt
+            tools/vdj-database-editor/requirements.txt
 
       - name: Zależności + PyInstaller
         run: |
