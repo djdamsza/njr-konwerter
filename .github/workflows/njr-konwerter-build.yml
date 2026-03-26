@@ -5,14 +5,21 @@
 #   • Repo VoteBattle:    tools/vdj-database-editor + njr-konwerter-1.0/VERSION
 #
 # Uruchomienie:
-#   • Po pushu na main (zmiany w editor/, workflow lub VERSION) — build + artefakty
-#   • Ręcznie: Actions → Run workflow
-#   • Tag njr-v*, 1.*, v1.* (itd.) — build + GitHub Release z binariami
+#   • Repo o nazwie zawierającej „njr-konwerter”: push na main/master (ścieżki jak niżej) — build + automatyczne wgranie binariów do GitHub Release tagu 1.0 (nadpisuje assety).
+#   • Push taga np. 1.0.1 / njr-v* — build + release pod ten tag.
+#   • Ręcznie: Actions → Run workflow → pole „Wgraj binaria do tagu” = np. 1.0.
+#
+# Linki pobrania (po udanym release): https://github.com/<owner>/<repo>/releases/download/<tag>/NJR-konwerter-<VERSION z pliku VERSION>-windows-x64.exe (oraz -macos-arm64, -macos-intel-x64 bez .exe).
 # Uwaga: sam „verify” (inny workflow) przy pushu NIE buduje — to tylko ten plik.
-name: Build NJR Konwerter (VoteBattle)
+name: Build NJR Konwerter
 
 on:
   workflow_dispatch:
+    inputs:
+      upload_to_tag:
+        description: "Wgraj zbudowane binaria do istniejącego release (np. 1.0). Zostaw puste — tylko build + artefakty."
+        required: false
+        default: ""
   push:
     branches:
       - main
@@ -133,9 +140,14 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: GitHub Release (tag wersji)
+    name: GitHub Release (assety pod tag)
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') && (startsWith(github.ref_name, 'njr-v') || startsWith(github.ref_name, '1.') || startsWith(github.ref_name, '2.') || startsWith(github.ref_name, '3.') || startsWith(github.ref_name, 'v1.') || startsWith(github.ref_name, 'v2.') || startsWith(github.ref_name, 'v3.'))
+    if: >-
+      !cancelled() && needs.build.result == 'success' && (
+        (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && contains(github.repository, 'njr-konwerter'))
+        || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && (startsWith(github.ref_name, 'njr-v') || startsWith(github.ref_name, '1.') || startsWith(github.ref_name, '2.') || startsWith(github.ref_name, '3.') || startsWith(github.ref_name, 'v1.') || startsWith(github.ref_name, 'v2.') || startsWith(github.ref_name, 'v3.')))
+        || (github.event_name == 'workflow_dispatch' && github.event.inputs.upload_to_tag != '')
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -152,12 +164,52 @@ jobs:
           find release-assets -type f -exec cp -v {} flat/ \;
           ls -la flat
 
+      - name: Ustal tag GitHub Release
+        id: rel
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          UPLOAD_TO_TAG: ${{ github.event.inputs.upload_to_tag }}
+        run: |
+          TAG=""
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$UPLOAD_TO_TAG" ]]; then
+            TAG="$UPLOAD_TO_TAG"
+          elif [[ "$GIT_REF" == "refs/heads/main" || "$GIT_REF" == "refs/heads/master" ]]; then
+            TAG="1.0"
+          elif [[ "$GIT_REF" == refs/tags/* ]]; then
+            TAG="$REF_NAME"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "::error::Nie udało się ustalić tagu release (błąd konfiguracji workflow)."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Wgrywam binaria do GitHub Release powiązanego z tagiem: $TAG"
+
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: NJR Konwerter ${{ github.ref_name }}
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: NJR Konwerter ${{ steps.rel.outputs.tag }}
           draft: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: flat/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Linki bezpośrednie do pobrania
+        shell: bash
+        env:
+          TAG: ${{ steps.rel.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "## Pobrania (tag $TAG)" >> "$GITHUB_STEP_SUMMARY"
+          for f in flat/*; do
+            [[ -f "$f" ]] || continue
+            bn=$(basename "$f")
+            url="https://github.com/${REPO}/releases/download/${TAG}/${bn}"
+            echo "- $url" >> "$GITHUB_STEP_SUMMARY"
+            echo "$url"
+          done
