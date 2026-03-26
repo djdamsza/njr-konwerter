@@ -1,0 +1,124 @@
+# Build NJR-konwerter na GitHub Actions (Windows + macOS ARM + macOS Intel).
+# Kod: tools/vdj-database-editor. Wersja: njr-konwerter-1.0/VERSION
+#
+# Uruchomienie: Actions → „Build NJR Konwerter (VoteBattle)” → Run workflow
+# Release z binariami: tag njr-v1.0.0 → git push origin njr-v1.0.0
+# (tagi v* bez prefiksu zostaw dla Imprezja Quiz — tu używamy njr-v*)
+name: Build NJR Konwerter (VoteBattle)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'njr-v*'
+
+permissions:
+  contents: read
+
+env:
+  NJR_DIR: tools/vdj-database-editor
+  VERSION_FILE: njr-konwerter-1.0/VERSION
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows x64
+            asset_suffix: windows-x64
+          - os: macos-latest
+            name: macOS Apple Silicon (arm64)
+            asset_suffix: macos-arm64
+          - os: macos-15-intel
+            name: macOS Intel (x64)
+            asset_suffix: macos-intel-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sprawdź źródła NJR
+        run: |
+          test -f "$NJR_DIR/njr.spec" || { echo "Brak $NJR_DIR/njr.spec" >&2; exit 1; }
+          test -f "$NJR_DIR/requirements.txt"
+          test -f "$VERSION_FILE" || { echo "Brak $VERSION_FILE" >&2; exit 1; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ${{ env.NJR_DIR }}/requirements.txt
+
+      - name: Zależności + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r "$NJR_DIR/requirements.txt" pyinstaller
+
+      - name: PyInstaller (onefile)
+        run: |
+          cd "$NJR_DIR"
+          python -m PyInstaller njr.spec --clean --noconfirm
+
+      - name: Wersja z pliku VERSION
+        id: ver
+        run: |
+          VERSION="$(tr -d ' \t\r\n' < "$VERSION_FILE")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Pakuj artefakt
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          mkdir -p _upload
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            test -f "$NJR_DIR/dist/NJR-konwerter.exe"
+            cp "$NJR_DIR/dist/NJR-konwerter.exe" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.exe"
+          else
+            test -f "$NJR_DIR/dist/NJR-konwerter"
+            cp "$NJR_DIR/dist/NJR-konwerter" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}"
+            chmod +x "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}"
+          fi
+          ls -la _upload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: njr-${{ matrix.asset_suffix }}
+          path: _upload/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release (tylko tag njr-v*)
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/njr-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: njr-*
+          merge-multiple: true
+
+      - name: Spłaszcz pliki
+        run: |
+          mkdir -p flat
+          find release-assets -type f -exec cp -v {} flat/ \;
+          ls -la flat
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NJR Konwerter ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          files: flat/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
