@@ -4,15 +4,33 @@
 #   • Repo njr-konwerter:  editor/ + VERSION (w korzeniu)
 #   • Repo VoteBattle:    tools/vdj-database-editor + njr-konwerter-1.0/VERSION
 #
-# Uruchomienie: Actions → Run workflow
-# Release z binariami (bezpieczny tag, bez kolizji z Quiz):  git tag njr-v1.0.0 && git push origin njr-v1.0.0
+# Uruchomienie:
+#   • Po pushu na main (zmiany w editor/, workflow lub VERSION) — build + artefakty
+#   • Ręcznie: Actions → Run workflow
+#   • Tag njr-v*, 1.*, v1.* (itd.) — build + GitHub Release z binariami
+# Uwaga: sam „verify” (inny workflow) przy pushu NIE buduje — to tylko ten plik.
 name: Build NJR Konwerter (VoteBattle)
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+      - master
     tags:
       - 'njr-v*'
+      - '1.*'
+      - '2.*'
+      - '3.*'
+      - 'v1.*'
+      - 'v2.*'
+      - 'v3.*'
+    paths:
+      - 'editor/**'
+      - 'tools/vdj-database-editor/**'
+      - 'VERSION'
+      - 'njr-konwerter-1.0/VERSION'
+      - '.github/workflows/njr-konwerter-build.yml'
 
 permissions:
   contents: read
@@ -115,9 +133,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: GitHub Release (tylko tag njr-v*)
+    name: GitHub Release (tag wersji)
     needs: build
-    if: startsWith(github.ref, 'refs/tags/njr-v')
+    if: startsWith(github.ref, 'refs/tags/') && (startsWith(github.ref_name, 'njr-v') || startsWith(github.ref_name, '1.') || startsWith(github.ref_name, '2.') || startsWith(github.ref_name, '3.') || startsWith(github.ref_name, 'v1.') || startsWith(github.ref_name, 'v2.') || startsWith(github.ref_name, 'v3.'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
