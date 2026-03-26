@@ -1,5 +1,16 @@
-# Kopiuj do: djdamsza/njr-konwerter → .github/workflows/njr-konwerter-build.yml
-# macOS: artefakty jako .dmg (nie „dokument” bez rozszerzenia). Windows: .exe bez zmian.
+# Skopiuj do repo: djdamsza/njr-konwerter
+#   .github/workflows/njr-konwerter-build.yml
+#   .github/macos-entitlements.plist  (z pliku macos-entitlements.plist w tym katalogu docs)
+#
+# === Sekrety GitHub (Settings → Secrets and variables → Actions) ===
+# MACOS_CERTIFICATE        — base64 pliku .p12 (Developer ID Application)
+# MACOS_CERTIFICATE_PWD    — hasło do .p12
+# MACOS_SIGNING_IDENTITY   — np. "Developer ID Application: Imię Nazwisko (TEAMID)"
+# APPLE_ID                 — e-mail Apple Developer
+# APPLE_APP_SPECIFIC_PASSWORD — hasło aplikacji (appleid.apple.com → App-Specific Passwords)
+# APPLE_TEAM_ID            — 10-znakowy Team ID
+#
+# Bez tych sekretów job na Macu zbuduje DMG, ale Gatekeeper zablokuje zwykły dwuklik (jak dotychczas).
 
 name: Build NJR Konwerter
 
@@ -28,6 +39,7 @@ on:
       - 'VERSION'
       - 'njr-konwerter-1.0/VERSION'
       - '.github/workflows/njr-konwerter-build.yml'
+      - '.github/macos-entitlements.plist'
 
 permissions:
   contents: read
@@ -81,7 +93,6 @@ jobs:
           fi
           test -f "$NJR_DIR/requirements.txt"
           test -f "$VERSION_FILE"
-          echo "NJR_DIR=$NJR_DIR VERSION_FILE=$VERSION_FILE"
           echo "NJR_DIR=$NJR_DIR" >> "$GITHUB_ENV"
           echo "VERSION_FILE=$VERSION_FILE" >> "$GITHUB_ENV"
 
@@ -109,9 +120,35 @@ jobs:
           VERSION="$(tr -d ' \t\r\n' < "$VERSION_FILE")"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Pakuj artefakt
+      - name: Import certyfikatu Apple (macOS)
+        id: macsign
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
+          if [ -z "${MACOS_CERTIFICATE:-}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Brak sekretu MACOS_CERTIFICATE — DMG bez podpisu i notaryzacji (macOS może blokować program)."
+            exit 0
+          fi
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/build_cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import /tmp/build_cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+          rm -f /tmp/build_cert.p12
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Pakuj artefakt (Windows / macOS)
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          SIGN_ID: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
           mkdir -p _upload
           if [ "${{ runner.os }}" = "Windows" ]; then
             test -f "$NJR_DIR/dist/NJR-konwerter.exe"
@@ -123,9 +160,30 @@ jobs:
             mkdir -p "$STAGING"
             cp "$NJR_DIR/dist/NJR-konwerter" "$STAGING/NJR-konwerter"
             chmod +x "$STAGING/NJR-konwerter"
+            ENT="$GITHUB_WORKSPACE/.github/macos-entitlements.plist"
+            if [ "${{ steps.macsign.outputs.enabled }}" = "true" ] && [ -n "$SIGN_ID" ] && [ -f "$ENT" ]; then
+              codesign --force --deep --timestamp --options runtime \
+                --entitlements "$ENT" \
+                --sign "$SIGN_ID" \
+                "$STAGING/NJR-konwerter"
+            fi
             DMG="_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.dmg"
             hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
             rm -rf "$STAGING"
+            if [ "${{ steps.macsign.outputs.enabled }}" = "true" ] && [ -n "$SIGN_ID" ]; then
+              codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
+            fi
+            if [ "${{ steps.macsign.outputs.enabled }}" = "true" ] && \
+               [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              xcrun notarytool submit "$DMG" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+                --wait
+              xcrun stapler staple "$DMG"
+            elif [ "${{ steps.macsign.outputs.enabled }}" = "true" ]; then
+              echo "::warning::Brak APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID — DMG nie został wysłany do notaryzacji."
+            fi
           fi
           ls -la _upload
 
@@ -178,11 +236,10 @@ jobs:
             TAG="$REF_NAME"
           fi
           if [[ -z "$TAG" ]]; then
-            echo "::error::Nie udało się ustalić tagu release (błąd konfiguracji workflow)."
+            echo "::error::Nie udało się ustalić tagu release."
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Wgrywam binaria do GitHub Release powiązanego z tagiem: $TAG"
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -195,7 +252,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Linki bezpośrednie do pobrania
+      - name: Linki do pobrania
         shell: bash
         env:
           TAG: ${{ steps.rel.outputs.tag }}
@@ -205,7 +262,5 @@ jobs:
           for f in flat/*; do
             [[ -f "$f" ]] || continue
             bn=$(basename "$f")
-            url="https://github.com/${REPO}/releases/download/${TAG}/${bn}"
-            echo "- $url" >> "$GITHUB_STEP_SUMMARY"
-            echo "$url"
+            echo "- https://github.com/${REPO}/releases/download/${TAG}/${bn}" >> "$GITHUB_STEP_SUMMARY"
           done
