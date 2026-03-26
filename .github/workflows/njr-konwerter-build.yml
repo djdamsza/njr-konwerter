@@ -1,23 +1,13 @@
-# Build NJR-konwerter (PyInstaller) — Windows + macOS ARM + macOS Intel.
-#
-# Działa w dwóch układach:
-#   • Repo njr-konwerter:  editor/ + VERSION (w korzeniu)
-#   • Repo VoteBattle:    tools/vdj-database-editor + njr-konwerter-1.0/VERSION
-#
-# Uruchomienie:
-#   • Repo o nazwie zawierającej „njr-konwerter”: push na main/master (ścieżki jak niżej) — build + automatyczne wgranie binariów do GitHub Release tagu 1.0 (nadpisuje assety).
-#   • Push taga np. 1.0.1 / njr-v* — build + release pod ten tag.
-#   • Ręcznie: Actions → Run workflow → pole „Wgraj binaria do tagu” = np. 1.0.
-#
-# Linki pobrania (po udanym release): https://github.com/<owner>/<repo>/releases/download/<tag>/NJR-konwerter-<VERSION z pliku VERSION>-windows-x64.exe (oraz -macos-arm64, -macos-intel-x64 bez .exe).
-# Uwaga: sam „verify” (inny workflow) przy pushu NIE buduje — to tylko ten plik.
+# Kopiuj do: djdamsza/njr-konwerter → .github/workflows/njr-konwerter-build.yml
+# macOS: artefakty jako .dmg (nie „dokument” bez rozszerzenia). Windows: .exe bez zmian.
+
 name: Build NJR Konwerter
 
 on:
   workflow_dispatch:
     inputs:
       upload_to_tag:
-        description: "Wgraj zbudowane binaria do istniejącego release (np. 1.0). Zostaw puste — tylko build + artefakty."
+        description: "Wgraj binaria do istniejącego release (np. 1.0). Zostaw puste — tylko build + artefakty."
         required: false
         default: ""
   push:
@@ -128,8 +118,14 @@ jobs:
             cp "$NJR_DIR/dist/NJR-konwerter.exe" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.exe"
           else
             test -f "$NJR_DIR/dist/NJR-konwerter"
-            cp "$NJR_DIR/dist/NJR-konwerter" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}"
-            chmod +x "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}"
+            STAGING="_dmg_root"
+            rm -rf "$STAGING"
+            mkdir -p "$STAGING"
+            cp "$NJR_DIR/dist/NJR-konwerter" "$STAGING/NJR-konwerter"
+            chmod +x "$STAGING/NJR-konwerter"
+            DMG="_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.dmg"
+            hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+            rm -rf "$STAGING"
           fi
           ls -la _upload
 
