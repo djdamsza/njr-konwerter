@@ -357,6 +357,7 @@
       <button type="button" class="sidebar-toggle" id="sidebarToggle" title="Zwiń/rozwiń menu" aria-label="Zwiń/rozwiń menu">◀</button>
       <nav class="sidebar" id="sidebar">
         <button type="button" class="sidebar-nav-item import-export active" data-card="import" title="Import"><span class="nav-label">Import</span><span class="nav-short">I</span></button>
+        <button type="button" class="sidebar-nav-item import-export" data-card="rb-beta" title="RB Beta — porządek na dysku"><span class="nav-label">RB Beta</span><span class="nav-short">β</span></button>
         <div class="sidebar-sep"></div>
         <button type="button" class="sidebar-nav-item" data-card="missing" title="Brakujące pliki"><span class="nav-label">Brakujące pliki</span><span class="nav-short">B</span></button>
         <button type="button" class="sidebar-nav-item" data-card="emptyPlaylists" title="Puste listy"><span class="nav-label">Puste listy</span><span class="nav-short">P</span></button>
@@ -617,6 +618,7 @@
       <select id="duplicatesMethod">
         <option value="path">Ścieżka (ten sam plik)</option>
         <option value="similar">Author + Title (podobne)</option>
+        <option value="hash">Hash pliku (identyczne kopie)</option>
         <option value="tidal">Tidal ID (streaming + cache)</option>
       </select>
       <label style="margin-left: 12px;">Zakres:</label>
@@ -630,6 +632,51 @@
       <button id="removeDuplicatesBtn" class="danger" disabled>Usuń zaznaczone</button>
     </div>
     <div id="duplicatesResult" class="table-wrap" style="font-size: 13px; margin-top: 8px; max-height: 450px; overflow-y: auto;"></div>
+  </div>
+  </div>
+
+  <div class="card-panel" id="card-rb-beta">
+  <div class="merge-panel" id="rbBetaPanel">
+    <h3>RB Beta — porządek na dysku</h3>
+    <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
+      Bez bazy Rekordbox. Wskaż foldery z muzyką, znajdź <strong>duplikaty</strong> i <strong>wersje</strong> (Radio Edit, Remix, Original), odsłuchaj i <strong>usuń pliki z dysku</strong>.
+      Po sprzątaniu uruchom Rekordbox — usunie puste wpisy niepowiązane z plikami.
+    </p>
+    <div class="merge-row" style="flex-wrap: wrap; gap: 8px; align-items: center;">
+      <label>Folder:</label>
+      <input type="text" id="rbBetaFolderInput" placeholder="/ścieżka/do/muzyki" style="flex: 1; min-width: 200px;">
+      <button type="button" id="rbBetaBrowseBtn" title="Wybierz folder">Przeglądaj</button>
+      <button type="button" id="rbBetaAddFolderBtn">Dodaj do listy</button>
+    </div>
+    <ul id="rbBetaFolderList" style="font-size: 13px; margin: 8px 0; padding-left: 20px; max-height: 120px; overflow-y: auto;"></ul>
+    <div class="merge-row" style="flex-wrap: wrap; gap: 8px; margin-top: 8px;">
+      <label><input type="checkbox" id="rbBetaComputeHash"> Oblicz hash (wolniejsze, pewne duplikaty)</label>
+      <button type="button" id="rbBetaScanBtn" style="font-weight: 600;">Skanuj foldery</button>
+      <span id="rbBetaScanInfo" class="muted" style="font-size: 12px;"></span>
+    </div>
+    <div id="rbBetaTools" style="display: none; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+      <h4 style="margin: 0 0 8px; font-size: 14px;">Duplikaty</h4>
+      <div class="merge-row" style="flex-wrap: wrap; gap: 8px;">
+        <select id="rbBetaDupMethod">
+          <option value="hash">Hash pliku (identyczne kopie)</option>
+          <option value="similar">Author + Title</option>
+          <option value="path">Ta sama ścieżka</option>
+        </select>
+        <button type="button" id="rbBetaFindDupBtn">Szukaj duplikatów</button>
+        <button type="button" id="rbBetaRemoveDupBtn" class="danger" disabled>Usuń zaznaczone z dysku</button>
+      </div>
+      <div id="rbBetaDupResult" class="table-wrap" style="font-size: 13px; margin-top: 8px; max-height: 400px; overflow-y: auto;"></div>
+      <h4 style="margin: 16px 0 8px; font-size: 14px;">Remiksy / wersje</h4>
+      <div class="merge-row" style="flex-wrap: wrap; gap: 8px;">
+        <select id="rbBetaRemixMode">
+          <option value="versions">Wersje (Radio / Remix / Original)</option>
+          <option value="covers">Covere (różni wykonawcy)</option>
+          <option value="all">Wszystkie grupy</option>
+        </select>
+        <button type="button" id="rbBetaFindRemixBtn">Szukaj wersji</button>
+      </div>
+      <div id="rbBetaRemixResult" style="font-size: 13px; margin-top: 8px; max-height: 400px; overflow-y: auto;"></div>
+    </div>
   </div>
   </div>
 
@@ -713,6 +760,12 @@
       Utwory z tym samym tytułem, różnymi wykonawcami – np. „Sweets For My Sweet” (The Drifters, C.J. Lewis, ChrisS). DJ Play Count pokazuje, który utwór jest używany. Listy – na ilu i jakich listach występuje. Akcje: odtwórz, otwórz folder, usuń z bazy, usuń fizycznie.
     </p>
     <div class="merge-row" style="flex-wrap: wrap; gap: 8px;">
+      <label>Tryb:</label>
+      <select id="remixesMode">
+        <option value="covers">Covere (ten sam utwór, różni wykonawcy)</option>
+        <option value="versions">Wersje (ten sam artysta + tytuł, Radio/Remix/Edit)</option>
+        <option value="all">Wszystkie grupy</option>
+      </select>
       <button id="findRemixesBtn">Szukaj remiksów</button>
       <button id="remixesExcludeTidalBtn" title="Pokaż tylko wersje z dysku (bez Tidal)">Wyszukaj bez Tidal</button>
     </div>
@@ -1436,6 +1489,8 @@
         const r = await fetch(API + '/load-universal', { method: 'POST', body: fd });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.error || r.statusText);
+        rbBetaActive = false;
+        document.getElementById('rbBetaTools').style.display = 'none';
         const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
         setStatus(msg, 'loaded');
         updateSeratoExportHref();
@@ -1447,7 +1502,7 @@
         const plCount = d.playlists ?? d.vdjfolders ?? 0;
         document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
         document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');
-        const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML' };
+        const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML', folder_beta: 'RB Beta' };
         document.getElementById('statsSource').textContent = srcNames[d.source] || d.source || '—';
         document.getElementById('dbStats').style.display = 'flex';
         updateTagList();
@@ -3605,7 +3660,10 @@
       resultEl.innerHTML = '<p class="muted">Ładowanie…</p>';
       setStatus('Szukam remiksów…', '');
       try {
-        const url = API + '/remixes' + (excludeTidal ? '?excludeTidal=1' : '');
+        const mode = document.getElementById('remixesMode')?.value || 'covers';
+        const params = new URLSearchParams({ mode });
+        if (excludeTidal) params.set('excludeTidal', '1');
+        const url = API + '/remixes?' + params.toString();
         const d = await fetchJson(url);
         remixesData = d;
         const groups = d.groups || [];
@@ -3615,10 +3673,12 @@
           return;
         }
         const pathSourceLabel = { tidal: 'Tidal', cache: 'cache', dysk: 'dysk' };
-        let html = `<p style="margin-bottom: 12px;">Znaleziono ${groups.length} grup (${d.count || 0} pozycji). Kolumna DJ Play Count pokazuje, który utwór jest używany, a który zajmuje miejsce.</p>`;
+        const kindLabel = { covers: 'covery', versions: 'wersje', all: 'grupy' };
+        let html = `<p style="margin-bottom: 12px;">Znaleziono ${groups.length} ${kindLabel[mode] || 'grup'} (${d.count || 0} pozycji). Kolumna DJ Play Count pokazuje, który utwór jest używany, a który zajmuje miejsce.</p>`;
         groups.forEach((grp, gi) => {
+          const kindNote = grp.kind === 'versions' ? ' <span class="muted" style="font-size:11px">(wersje)</span>' : (grp.kind === 'covers' ? ' <span class="muted" style="font-size:11px">(covery)</span>' : '');
           html += `<div style="margin-bottom: 16px; padding: 10px; background: var(--bg); border-radius: 6px; border-left: 4px solid var(--warn);">`;
-          html += `<div style="margin-bottom: 8px;"><strong>${escapeHtml(grp.title)}</strong> — wykonawcy: ${escapeHtml(grp.authors.join(', '))}</div>`;
+          html += `<div style="margin-bottom: 8px;"><strong>${escapeHtml(grp.title)}</strong>${kindNote} — wykonawcy: ${escapeHtml((grp.authors || []).join(', '))}</div>`;
           const fmtLen = (v) => { if (!v) return '—'; const n = parseFloat(v); if (isNaN(n)) return v; const m = Math.floor(n/60), s = Math.floor(n%60); return m ? `${m}:${String(s).padStart(2,'0')}` : `${s}s`; };
           const fmtBpm = (v) => { if (!v) return '—'; const n = parseFloat(v); if (isNaN(n)) return v; return (0.2 <= n && n <= 2) ? (60/n).toFixed(1) : n.toFixed(1); };
           html += `<table style="font-size: 12px; width: 100%; border-collapse: collapse;"><thead><tr><th style="width:28px"></th><th style="text-align:left">Artist – Title</th><th class="col-nowrap" style="width:48px">Czas</th><th style="width:44px">BPM</th><th style="width:36px">★</th><th style="width:44px" title="Camelot">Key</th><th style="width:70px">DJ Play Count</th><th style="text-align:left;min-width:120px">Listy</th><th style="text-align:left;min-width:180px">Akcje</th></tr></thead><tbody>`;
@@ -3698,6 +3758,181 @@
     }
     document.getElementById('findRemixesBtn').onclick = () => doRemixesSearch(false);
     document.getElementById('remixesExcludeTidalBtn').onclick = () => doRemixesSearch(true);
+
+    let rbBetaActive = false;
+    let rbBetaFolders = [];
+    let rbBetaDupRemoveSet = new Set();
+
+    function renderRbBetaFolderList() {
+      const ul = document.getElementById('rbBetaFolderList');
+      if (!ul) return;
+      if (!rbBetaFolders.length) {
+        ul.innerHTML = '<li class="muted">Brak folderów — dodaj ścieżkę powyżej</li>';
+        return;
+      }
+      ul.innerHTML = rbBetaFolders.map((f, i) =>
+        `<li>${escapeHtml(f)} <button type="button" class="rb-beta-rm-folder" data-i="${i}" style="font-size:11px;margin-left:8px;">usuń</button></li>`
+      ).join('');
+      ul.querySelectorAll('.rb-beta-rm-folder').forEach(btn => {
+        btn.onclick = () => {
+          rbBetaFolders.splice(parseInt(btn.dataset.i), 1);
+          renderRbBetaFolderList();
+        };
+      });
+    }
+    renderRbBetaFolderList();
+
+    document.getElementById('rbBetaBrowseBtn').onclick = async () => {
+      try {
+        const d = await fetchJson(API + '/pick-folder');
+        if (d.path) document.getElementById('rbBetaFolderInput').value = d.path;
+      } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
+    };
+    document.getElementById('rbBetaAddFolderBtn').onclick = () => {
+      const v = (document.getElementById('rbBetaFolderInput').value || '').trim();
+      if (!v) return;
+      if (!rbBetaFolders.includes(v)) rbBetaFolders.push(v);
+      document.getElementById('rbBetaFolderInput').value = '';
+      renderRbBetaFolderList();
+    };
+    document.getElementById('rbBetaScanBtn').onclick = async () => {
+      const input = (document.getElementById('rbBetaFolderInput').value || '').trim();
+      if (input && !rbBetaFolders.includes(input)) rbBetaFolders.push(input);
+      if (!rbBetaFolders.length) {
+        setStatus('Dodaj co najmniej jeden folder', 'error');
+        return;
+      }
+      const computeHash = document.getElementById('rbBetaComputeHash').checked;
+      const info = document.getElementById('rbBetaScanInfo');
+      setStatus('Skanowanie folderów…', '');
+      if (info) info.textContent = 'Skanuję…';
+      try {
+        const d = await fetchJson(API + '/rb-beta/scan-folders', {
+          method: 'POST',
+          body: JSON.stringify({ folderPaths: rbBetaFolders, computeHash }),
+        });
+        rbBetaActive = true;
+        document.getElementById('rbBetaTools').style.display = 'block';
+        if (info) info.textContent = `${d.count} plików z ${(d.folders || []).length} folderów`;
+        setStatus(d.message || `RB Beta: ${d.count} plików`, 'loaded');
+        document.getElementById('status').textContent = `RB Beta: ${d.count} plików`;
+        updateTagList();
+      } catch (e) {
+        if (info) info.textContent = '';
+        setStatus('Błąd: ' + e.message, 'error');
+      }
+    };
+
+    async function rbBetaFindDuplicates() {
+      const method = document.getElementById('rbBetaDupMethod').value;
+      const resultEl = document.getElementById('rbBetaDupResult');
+      const removeBtn = document.getElementById('rbBetaRemoveDupBtn');
+      rbBetaDupRemoveSet.clear();
+      try {
+        const params = new URLSearchParams({ method, scope: 'files' });
+        const d = await fetchJson(API + '/duplicates?' + params.toString());
+        if (!d.groups || !d.groups.length) {
+          resultEl.innerHTML = '<p style="color: var(--success);">Brak duplikatów.</p>';
+          removeBtn.disabled = true;
+          return;
+        }
+        let html = `<p style="margin-bottom: 12px;">${d.totalDuplicates} duplikatów w ${d.groups.length} grupach. Zaznacz kopie do usunięcia z dysku.</p>`;
+        const fmtLen = (v) => { if (!v) return '—'; const n = parseFloat(v); if (isNaN(n)) return v; const m = Math.floor(n/60), s = Math.floor(n%60); return m ? `${m}:${String(s).padStart(2,'0')}` : `${s}s`; };
+        d.groups.forEach((grp, gi) => {
+          html += `<div style="margin-bottom: 12px;"><strong>Grupa ${gi + 1}</strong> (${grp.length})</div>`;
+          html += `<table class="dj-table" style="margin-bottom: 12px;"><thead><tr><th></th><th></th><th>Artist – Title</th><th>Czas</th><th>Bitrate</th><th>Plik</th></tr></thead><tbody>`;
+          grp.forEach(s => {
+            const shortPath = (s.path || s.pathDisplay || '').split(/[/\\]/).pop() || '—';
+            html += `<tr><td><input type="checkbox" class="rb-beta-dup-chk" data-idx="${s.idx}"></td>`;
+            html += `<td><button type="button" class="play-btn" data-idx="${s.idx}">▶</button></td>`;
+            html += `<td>${escapeHtml(s.author || '—')} – ${escapeHtml(s.title || '—')}</td>`;
+            html += `<td>${fmtLen(s.duration)}</td><td>${escapeHtml(String(s.bitrate || '—'))}</td>`;
+            html += `<td class="muted" title="${escapeHtml(s.path || '')}">${escapeHtml(shortPath)}</td></tr>`;
+          });
+          html += '</tbody></table>';
+        });
+        resultEl.innerHTML = html;
+        removeBtn.disabled = false;
+        resultEl.querySelectorAll('.rb-beta-dup-chk').forEach(cb => {
+          cb.onchange = () => {
+            const idx = parseInt(cb.dataset.idx);
+            if (cb.checked) rbBetaDupRemoveSet.add(idx);
+            else rbBetaDupRemoveSet.delete(idx);
+          };
+        });
+        resultEl.querySelectorAll('.play-btn').forEach(btn => {
+          btn.onclick = (e) => playTrack(parseInt(btn.dataset.idx), e);
+        });
+      } catch (e) {
+        resultEl.innerHTML = '';
+        removeBtn.disabled = true;
+        setStatus('Błąd: ' + e.message, 'error');
+      }
+    }
+    document.getElementById('rbBetaFindDupBtn').onclick = rbBetaFindDuplicates;
+    document.getElementById('rbBetaRemoveDupBtn').onclick = async () => {
+      const indices = Array.from(rbBetaDupRemoveSet);
+      if (!indices.length) { setStatus('Zaznacz pliki do usunięcia', 'error'); return; }
+      if (!confirm(`Usunąć ${indices.length} plików z dysku?\n\nOperacja nieodwracalna.`)) return;
+      try {
+        const r = await fetchJson(API + '/remove-duplicates', {
+          method: 'POST',
+          body: JSON.stringify({ indicesToRemove: indices, deleteFiles: true }),
+        });
+        setStatus(`Usunięto ${r.deletedFiles || r.removed} plików. Pozostało ${r.count}.`, 'loaded');
+        rbBetaFindDuplicates();
+      } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
+    };
+
+    async function rbBetaFindRemixes() {
+      const mode = document.getElementById('rbBetaRemixMode').value;
+      const resultEl = document.getElementById('rbBetaRemixResult');
+      resultEl.innerHTML = '<p class="muted">Szukam…</p>';
+      try {
+        const d = await fetchJson(API + '/remixes?mode=' + encodeURIComponent(mode));
+        const groups = d.groups || [];
+        if (!groups.length) {
+          resultEl.innerHTML = '<p style="color: var(--success);">Brak grup.</p>';
+          return;
+        }
+        let html = `<p style="margin-bottom: 12px;">${groups.length} grup (${d.count || 0} plików). ▶ odsłuch, „Z dysku” usuwa plik.</p>`;
+        groups.forEach((grp, gi) => {
+          const kind = grp.kind === 'versions' ? 'wersje' : (grp.kind === 'covers' ? 'covery' : 'grupa');
+          html += `<div style="margin-bottom: 14px; padding: 10px; background: var(--bg); border-radius: 6px; border-left: 4px solid var(--accent);">`;
+          html += `<strong>${escapeHtml(grp.title)}</strong> <span class="muted">(${kind})</span><br>`;
+          html += `<table class="dj-table" style="margin-top: 6px; font-size: 12px;"><tbody>`;
+          grp.items.forEach(it => {
+            html += `<tr><td style="width:28px"><button type="button" class="play-btn" data-idx="${it.idx}">▶</button></td>`;
+            html += `<td>${escapeHtml(it.author || '—')} – ${escapeHtml(it.title || '—')}</td>`;
+            html += `<td style="white-space:nowrap"><button type="button" class="rb-beta-rm-file" data-idx="${it.idx}" style="color:var(--err);font-size:11px;">Z dysku</button></td></tr>`;
+          });
+          html += '</tbody></table></div>';
+        });
+        resultEl.innerHTML = html;
+        resultEl.querySelectorAll('.play-btn').forEach(btn => {
+          btn.onclick = (e) => playTrack(parseInt(btn.dataset.idx), e);
+        });
+        resultEl.querySelectorAll('.rb-beta-rm-file').forEach(btn => {
+          btn.onclick = async () => {
+            const idx = parseInt(btn.dataset.idx);
+            const item = groups.flatMap(g => g.items).find(x => x.idx === idx);
+            const path = item?.FilePath || '';
+            if (!path || !confirm('Usunąć plik z dysku?\n\n' + path)) return;
+            try {
+              await fetchJson(API + '/remove-duplicates', {
+                method: 'POST',
+                body: JSON.stringify({ indicesToRemove: [idx], deleteFiles: true }),
+              });
+              setStatus('Usunięto plik', 'loaded');
+              rbBetaFindRemixes();
+            } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
+          };
+        });
+      } catch (e) {
+        resultEl.innerHTML = '<p style="color:var(--err);">' + escapeHtml(e.message) + '</p>';
+      }
+    }
+    document.getElementById('rbBetaFindRemixBtn').onclick = rbBetaFindRemixes;
 
     let splitItems = [];
     document.getElementById('findSplitBtn').onclick = async () => {

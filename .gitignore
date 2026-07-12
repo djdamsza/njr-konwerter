@@ -9,3 +9,5 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+editor/build/
+editor/dist/

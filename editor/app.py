@@ -67,6 +67,12 @@ from tag_writer import write_tags_batch
 
 import sys
 
+from version_info import read_app_version
+
+import app_state as st
+from constants import AUDIO_EXTENSIONS
+from routes import register_blueprints
+
 _static_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'static'
 app = Flask(__name__, static_folder=str(_static_dir))
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024  # 4 GB – bazy RB bywają 2 GB+
@@ -74,132 +80,49 @@ app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024  # 4 GB – bazy RB by
 _CORS_ORIGINS = [f'http://127.0.0.1:{p}' for p in range(5050, 5061)] + [f'http://localhost:{p}' for p in range(5050, 5061)]
 CORS(app, origins=_CORS_ORIGINS, supports_credentials=True)
 
-APP_VERSION = "1.0.0"  # Będzie z config przy integracji z GitHub
+APP_VERSION = read_app_version()
 
-# Stan w pamięci – baza załadowana w sesji
-_db_path: Optional[Path] = None
-_songs: list[dict] = []
-_version: str = ''
-_vdjfolders: dict[str, str] = {}  # {relative_path: content}
-_extra_files: dict[str, bytes] = {}  # History/*.m3u, *.subfolders/order – pliki spoza vdjfolder (zachowujemy 1:1)
-_source: str = 'vdj'  # 'vdj' | 'rb' – skąd załadowano
-_unified: Optional[UnifiedDatabase] = None  # Zachowane przy imporcie RB (playlisty)
+register_blueprints(app)
 
-# Cofnij – stos stanów przed modyfikacjami
-_undo_stack: list[dict] = []
-_UNDO_MAX = 10
-
-# Licencja – eksport wymaga klucza (wersja bezpłatna: pełna edycja, brak eksportu)
-try:
-    from license_njr import check_export_license, save_license_key, get_machine_id
-except ImportError:
-    def check_export_license():
-        return {'allowed': True}
-    def save_license_key(_):
-        return False
-    def get_machine_id():
-        return 'unknown'
-
-
+# Legacy aliases — trasy w app.py korzystają ze wspólnego stanu (app_state).
 def _ensure_loaded():
-    if not _songs:
-        raise ValueError(
-            'Baza nie została załadowana. Najpierw załaduj backup VDJ: '
-            '„VDJ: plik ZIP (backup)” lub „VDJ: folder” + Załaduj. '
-            'Uwaga: po restarcie serwera baza jest czyszczona – załaduj ponownie.'
-        )
+    st.ensure_loaded()
 
 
-def _get_allowed_path_roots() -> set:
-    """Zwraca katalogi nadrzędne plików z bazy – tylko tam wolno usuwać/modyfikować pliki."""
-    roots = set()
-    from file_analyzer import is_streaming
-    for s in _songs:
-        p = (s.get('FilePath') or s.get('path') or '').strip()
-        if not p or is_streaming(p):
-            continue
-        try:
-            resolved = Path(p).expanduser().resolve()
-            if resolved.is_file():
-                roots.add(resolved.parent)
-            elif resolved.parent and resolved.parent != resolved:
-                roots.add(resolved.parent)
-        except Exception:
-            pass
-    return roots
+def _get_allowed_path_roots():
+    return st.get_allowed_path_roots()
 
 
 def _is_path_safe(path: Path, *, must_be_file: bool = False) -> bool:
-    """Czy ścieżka znajduje się w dozwolonym katalogu (nadrzędnym względem plików z bazy)."""
-    if not path:
-        return False
-    try:
-        resolved = path.expanduser().resolve()
-        if must_be_file and not resolved.is_file():
-            return False
-        roots = _get_allowed_path_roots()
-        if not roots:
-            return False
-        for root in roots:
-            try:
-                resolved.relative_to(root)
-                return True
-            except ValueError:
-                continue
-        return False
-    except Exception:
-        return False
+    return st.is_path_safe(path, must_be_file=must_be_file)
+
+
+def _is_folder_scan_allowed(folder: Path) -> bool:
+    return st.is_folder_scan_allowed(folder)
+
+
+def _is_media_path_safe(path: Path, *, vdj_cache_path: Optional[str] = None, must_be_file: bool = True) -> bool:
+    return st.is_media_path_safe(path, vdj_cache_path=vdj_cache_path, must_be_file=must_be_file)
 
 
 def _clear_undo_stack():
-    """Czyści stos cofnięć przy ładowaniu nowej bazy."""
-    global _undo_stack
-    _undo_stack.clear()
+    st.clear_undo_stack()
 
 
 def _push_undo_state():
-    """Zapisuje bieżący stan przed modyfikacją (do cofnięcia)."""
-    global _undo_stack
-    if len(_undo_stack) >= _UNDO_MAX:
-        _undo_stack.pop(0)
-    _undo_stack.append({
-        'songs': copy.deepcopy(_songs),
-        'vdjfolders': copy.deepcopy(_vdjfolders),
-        'extra_files': {k: v for k, v in _extra_files.items()},
-        'version': _version,
-        'source': _source,
-        'db_path': str(_db_path) if _db_path else None,
-    })
+    st.push_undo_state()
 
 
 def _require_export_license():
-    """Zwraca (response, 403) gdy brak licencji, inaczej None."""
-    lic = check_export_license()
-    if not lic.get('allowed'):
-        return jsonify({
-            'error': 'license_required',
-            'reason': lic.get('reason', 'Eksport wymaga licencji. Zachowaj postęp i wykup licencję.'),
-            'machineId': lic.get('machineId', ''),
-        }), 403
-    return None
-
-
-_NJR_KEY = b'NJR-SAVE-KEY'
+    return st.require_export_license()
 
 
 def _encode_njr(data: dict) -> bytes:
-    """Koduje dane do formatu .njr (gzip + XOR) – tylko aplikacja może odczytać."""
-    import gzip
-    raw = json.dumps(data, ensure_ascii=False).encode('utf-8')
-    compressed = gzip.compress(raw)
-    return bytes(b ^ _NJR_KEY[i % len(_NJR_KEY)] for i, b in enumerate(compressed))
+    return st.encode_njr(data)
 
 
 def _decode_njr(encoded: bytes) -> dict:
-    """Dekoduje plik .njr."""
-    import gzip
-    decoded = bytes(b ^ _NJR_KEY[i % len(_NJR_KEY)] for i, b in enumerate(encoded))
-    return json.loads(gzip.decompress(decoded).decode('utf-8'))
+    return st.decode_njr(encoded)
 
 
 @app.errorhandler(ValueError)
@@ -208,114 +131,9 @@ def handle_value_error(e):
     return jsonify({'error': str(e)}), 400
 
 
-@app.route('/')
-def index():
-    return send_from_directory('static', 'index.html')
-
-
-@app.route('/tidal-embed-autoplay.user.js')
-def tidal_autoplay_script():
-    """Userscript Tampermonkey – auto-klik Play w Tidal embed."""
-    script_dir = Path(__file__).resolve().parent / 'scripts'
-    return send_from_directory(script_dir, 'tidal-embed-autoplay.user.js', mimetype='application/javascript')
-
-
-@app.route('/api/version')
-def api_version():
-    return jsonify({'version': APP_VERSION})
-
-
-@app.route('/api/check-updates', methods=['POST'])
-def api_check_updates():
-    """Placeholder – później: request do GitHub Releases."""
-    return jsonify({
-        'available': False,
-        'message': 'Masz najnowszą wersję.',
-        'manualUrl': '',
-    })
-
-
-@app.route('/favicon.ico')
-def favicon():
-    from flask import Response
-    return Response(b'', status=204)
-
-
-def _load_from_content(content: bytes) -> tuple[list, str]:
-    """Ładuje bazę z zawartości XML (bytes)."""
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as f:
-        f.write(content)
-        tmp = Path(f.name)
-    try:
-        songs, version = load_database(tmp)
-        return songs, version
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _fix_zip_filename_encoding(name: str) -> str:
-    """
-    Naprawia błędy kodowania nazw w ZIP (np. polskie ł).
-    Gdy ZIP ma UTF-8/CP1250 bez flagi, Python używa CP437 – przywracamy właściwe kodowanie.
-    """
-    try:
-        raw = name.encode('cp437')
-        try:
-            return raw.decode('utf-8')
-        except UnicodeDecodeError:
-            return raw.decode('cp1250')
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        return name
-
-
-def _load_from_zip(zip_path_or_file) -> tuple[bytes, dict[str, str], dict[str, bytes]]:
-    """
-    Czyta ZIP (backup VDJ) i zwraca (database.xml bytes, {rel_path: vdjfolder_content}, {rel_path: bytes}).
-    Zachowuje History/*.m3u, *.subfolders/order i inne pliki – zasada: nie usuwamy informacji.
-    """
-    db_content = None
-    vdjfiles: dict[str, str] = {}
-    extra_files: dict[str, bytes] = {}
-    try:
-        z = zipfile.ZipFile(zip_path_or_file, 'r', metadata_encoding='utf-8')
-    except TypeError:
-        z = zipfile.ZipFile(zip_path_or_file, 'r')
-    with z:
-        for name in z.namelist():
-            bn = name.split('/')[-1].split('\\')[-1].lower()
-            if bn.startswith('database') and bn.endswith('.xml'):
-                db_content = z.read(name)
-                break
-        if db_content is None:
-            for name in z.namelist():
-                if name.lower().endswith('database.xml') or '/database.xml' in name.lower():
-                    db_content = z.read(name)
-                    break
-        if db_content is None:
-            raise ValueError('W archiwum ZIP nie znaleziono database.xml')
-        for name in z.namelist():
-            if name.endswith('/'):
-                continue
-            bn = name.split('/')[-1].split('\\')[-1].lower()
-            if bn.startswith('database') and bn.endswith('.xml'):
-                continue
-            try:
-                fixed_name = _fix_zip_filename_encoding(name)
-                raw = z.read(name)
-                if name.lower().endswith('.vdjfolder'):
-                    vdjfiles[fixed_name] = raw.decode('utf-8', errors='replace')
-                else:
-                    extra_files[fixed_name] = raw
-            except Exception:
-                pass
-    return db_content, vdjfiles, extra_files
-
-
 @app.route('/api/load', methods=['POST'])
 def api_load():
     """Ładuje database.xml z podanej ścieżki (lub ZIP – backup VDJ)."""
-    global _db_path, _songs, _version, _vdjfolders, _source, _unified
     _clear_undo_stack()
     data = request.get_json() or {}
     path = data.get('path', '').strip()
@@ -333,42 +151,42 @@ def api_load():
             if serato_dir.is_dir() and db_v2.exists():
                 drive_root = (data.get("driveRoot") or "").strip() or None
                 db = load_serato_folder(p, drive_root=drive_root)
-                _songs = unified_to_vdj_songs(db)
-                _unified = db
-                _version = ""
-                _db_path = None
-                _vdjfolders = {}
-                _extra_files = {}
-                _source = "serato"
+                st.songs = unified_to_vdj_songs(db)
+                st.unified = db
+                st.version = ""
+                st.db_path = None
+                st.vdjfolders = {}
+                st.extra_files = {}
+                st.source = "serato"
                 return jsonify({
-                    "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                    "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                     "path": str(p), "loadedVia": "path", "source": "serato",
                 })
             raise ValueError("Folder nie zawiera biblioteki Serato (_Serato_/database V2)")
         if p.suffix.lower() == '.zip':
             db_content, vdjfiles, extra = _load_from_zip(p)
-            _songs, _version = _load_from_content(db_content)
-            _db_path = None
-            _vdjfolders = vdjfiles
-            _extra_files = extra
+            st.songs, st.version = _load_from_content(db_content)
+            st.db_path = None
+            st.vdjfolders = vdjfiles
+            st.extra_files = extra
         else:
-            _songs, _version = load_database(p)
-            _db_path = p
+            st.songs, st.version = load_database(p)
+            st.db_path = p
             # Skanuj folder w poszukiwaniu .vdjfolder (gdy ładowanie z folderu, nie ZIP)
             base = p.parent
             scanned = scan_vdjfolders(base)
-            _vdjfolders = {str(fp.relative_to(base)).replace("\\", "/"): content for fp, content in scanned.items()}
-            _extra_files = {}
-        _source = 'vdj'
-        _unified = None
+            st.vdjfolders = {str(fp.relative_to(base)).replace("\\", "/"): content for fp, content in scanned.items()}
+            st.extra_files = {}
+        st.source = 'vdj'
+        st.unified = None
         return jsonify({
             'ok': True,
-            'count': len(_songs),
-            'version': _version,
+            'count': len(st.songs),
+            'version': st.version,
             'path': str(p),
             'loadedVia': 'path',
             'source': 'vdj',
-            'vdjfolders': len(_vdjfolders),
+            'vdjfolders': len(st.vdjfolders),
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -377,7 +195,6 @@ def api_load():
 @app.route('/api/load-file', methods=['POST'])
 def api_load_file():
     """Ładuje database.xml i opcjonalnie pliki .vdjfolder z przesłanych plików. Obsługuje też ZIP (backup VDJ) – bez rozpakowywania."""
-    global _db_path, _songs, _version, _vdjfolders, _extra_files, _source, _unified
     _clear_undo_stack()
     db_content = None
     vdjfiles = {}
@@ -413,17 +230,17 @@ def api_load_file():
             err += f'. Otrzymano: {", ".join(received[:5])}{"…" if len(received) > 5 else ""}'
         return jsonify({'error': err}), 400
     try:
-        _songs, _version = _load_from_content(db_content)
-        _db_path = None
-        _vdjfolders = vdjfiles
-        _extra_files = extra if zip_loaded else {}
-        _source = 'vdj'
-        _unified = None
+        st.songs, st.version = _load_from_content(db_content)
+        st.db_path = None
+        st.vdjfolders = vdjfiles
+        st.extra_files = extra if zip_loaded else {}
+        st.source = 'vdj'
+        st.unified = None
         return jsonify({
             'ok': True,
-            'count': len(_songs),
-            'version': _version,
-            'vdjfolders': len(_vdjfolders),
+            'count': len(st.songs),
+            'version': st.version,
+            'vdjfolders': len(st.vdjfolders),
             'loadedVia': 'file',
             'source': 'vdj',
         })
@@ -438,7 +255,6 @@ def api_load_universal():
     Obsługuje: VDJ (ZIP, database.xml), Rekordbox (XML), DJXML, Engine DJ (m.db), Traktor (collection.nml).
     Jeden plik – jedna baza. Eksport na razie do VDJ (Pobierz database.xml). RB/DJXML/Engine/Traktor – eksport do tego samego formatu w planach.
     """
-    global _db_path, _songs, _version, _vdjfolders, _extra_files, _source, _unified
     _clear_undo_stack()
     f = request.files.get("file") or request.files.get("universal")
     if not f or not getattr(f, "filename", ""):
@@ -451,23 +267,23 @@ def api_load_universal():
             # Zachowany postęp (format aplikacji – tylko tu można odczytać)
             import base64
             data = _decode_njr(content)
-            _songs = data.get("songs", [])
-            _vdjfolders = data.get("vdjfolders", {})
-            _extra_files = {}
+            st.songs = data.get("songs", [])
+            st.vdjfolders = data.get("vdjfolders", {})
+            st.extra_files = {}
             for k, v in data.get("extra_files", {}).items():
                 try:
-                    _extra_files[k] = base64.b64decode(v) if isinstance(v, str) else bytes(v)
+                    st.extra_files[k] = base64.b64decode(v) if isinstance(v, str) else bytes(v)
                 except Exception:
                     pass
-            _version = data.get("version", "")
-            _source = data.get("source", "vdj")
-            _db_path = None
-            _unified = None
+            st.version = data.get("version", "")
+            st.source = data.get("source", "vdj")
+            st.db_path = None
+            st.unified = None
             return jsonify({
                 "ok": True,
-                "count": len(_songs),
-                "source": _source,
-                "vdjfolders": len(_vdjfolders),
+                "count": len(st.songs),
+                "source": st.source,
+                "vdjfolders": len(st.vdjfolders),
                 "message": "Załadowano zachowany postęp (.njr)",
             })
         if ext == ".zip" or "vdj" in fn:
@@ -482,27 +298,27 @@ def api_load_universal():
                     drive_root = (request.form.get("driveRoot") or "").strip() or None
                     serato_folder = Path(tmpdir) / Path(serato_db).parent
                     db = load_serato_folder(serato_folder, drive_root=drive_root)
-                    _songs = unified_to_vdj_songs(db)
-                    _unified = db
-                    _version = ""
-                    _db_path = None
-                    _vdjfolders = {}
-                    _extra_files = {}
-                    _source = "serato"
+                    st.songs = unified_to_vdj_songs(db)
+                    st.unified = db
+                    st.version = ""
+                    st.db_path = None
+                    st.vdjfolders = {}
+                    st.extra_files = {}
+                    st.source = "serato"
                     return jsonify({
-                        "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                        "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                         "source": "serato", "message": "Załadowano Serato DJ (ZIP z _Serato_)",
                     })
             db_content, vdjfiles, extra = _load_from_zip(BytesIO(content))
-            _songs, _version = _load_from_content(db_content)
-            _db_path = None
-            _vdjfolders = vdjfiles
-            _extra_files = extra
-            _source = "vdj"
-            _unified = None
+            st.songs, st.version = _load_from_content(db_content)
+            st.db_path = None
+            st.vdjfolders = vdjfiles
+            st.extra_files = extra
+            st.source = "vdj"
+            st.unified = None
             return jsonify({
-                "ok": True, "count": len(_songs), "version": _version,
-                "source": "vdj", "vdjfolders": len(_vdjfolders),
+                "ok": True, "count": len(st.songs), "version": st.version,
+                "source": "vdj", "vdjfolders": len(st.vdjfolders),
                 "message": "Załadowano backup VDJ (ZIP)",
             })
         if ext == ".m.db" or fn.endswith("m.db"):
@@ -513,15 +329,15 @@ def api_load_universal():
             try:
                 library_base = (request.form.get("libraryBase") or "").strip() or None
                 db = load_engine_db(tmp_path, library_base)
-                _songs = unified_to_vdj_songs(db)
-                _unified = db
-                _version = ""
-                _db_path = None
-                _vdjfolders = {}
-                _extra_files = {}
-                _source = "engine"
+                st.songs = unified_to_vdj_songs(db)
+                st.unified = db
+                st.version = ""
+                st.db_path = None
+                st.vdjfolders = {}
+                st.extra_files = {}
+                st.source = "engine"
                 return jsonify({
-                    "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                    "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                     "source": "engine", "message": "Załadowano Engine DJ (m.db)",
                 })
             finally:
@@ -533,15 +349,15 @@ def api_load_universal():
                 tmp_path = Path(tmp.name)
             try:
                 db = load_traktor_nml(tmp_path)
-                _songs = unified_to_vdj_songs(db)
-                _unified = db
-                _version = ""
-                _db_path = None
-                _vdjfolders = {}
-                _extra_files = {}
-                _source = "traktor"
+                st.songs = unified_to_vdj_songs(db)
+                st.unified = db
+                st.version = ""
+                st.db_path = None
+                st.vdjfolders = {}
+                st.extra_files = {}
+                st.source = "traktor"
                 return jsonify({
-                    "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                    "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                     "source": "traktor", "message": "Załadowano Traktor (collection.nml)",
                 })
             finally:
@@ -550,28 +366,28 @@ def api_load_universal():
         if "database v2" in fn_lower or "databasev2" in fn_lower or fn_lower == "database v2":
             drive_root = (request.form.get("driveRoot") or "").strip() or None
             db = load_serato_database_v2(content, drive_root=drive_root)
-            _songs = unified_to_vdj_songs(db)
-            _unified = db
-            _version = ""
-            _db_path = None
-            _vdjfolders = {}
-            _extra_files = {}
-            _source = "serato"
+            st.songs = unified_to_vdj_songs(db)
+            st.unified = db
+            st.version = ""
+            st.db_path = None
+            st.vdjfolders = {}
+            st.extra_files = {}
+            st.source = "serato"
             return jsonify({
-                "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                 "source": "serato", "message": "Załadowano Serato DJ (database V2)",
             })
         if ext == ".djxml":
             db = load_djxml(content)
-            _songs = unified_to_vdj_songs(db)
-            _db_path = None
-            _vdjfolders = {}
-            _extra_files = {}
-            _source = "djxml"
-            _unified = db
-            _version = "1.0"
+            st.songs = unified_to_vdj_songs(db)
+            st.db_path = None
+            st.vdjfolders = {}
+            st.extra_files = {}
+            st.source = "djxml"
+            st.unified = db
+            st.version = "1.0"
             return jsonify({
-                "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                 "source": "djxml", "message": "Załadowano DJXML",
             })
         if ext == ".xml":
@@ -582,40 +398,40 @@ def api_load_universal():
             try:
                 try:
                     db = load_rb_xml(tmp_path)
-                    _songs = unified_to_vdj_songs(db)
-                    _unified = db
-                    _version = ""
-                    _db_path = None
-                    _vdjfolders = {}
-                    _extra_files = {}
-                    _source = "rb"
+                    st.songs = unified_to_vdj_songs(db)
+                    st.unified = db
+                    st.version = ""
+                    st.db_path = None
+                    st.vdjfolders = {}
+                    st.extra_files = {}
+                    st.source = "rb"
                     return jsonify({
-                        "ok": True, "count": len(_songs), "playlists": len(db.playlists),
+                        "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
                         "source": "rb", "message": "Załadowano Rekordbox (XML)",
                     })
                 except Exception:
                     pass
-                _songs, _version = load_database(tmp_path)
-                _db_path = None
-                _vdjfolders = {}
-                _extra_files = {}
-                _source = "vdj"
-                _unified = None
+                st.songs, st.version = load_database(tmp_path)
+                st.db_path = None
+                st.vdjfolders = {}
+                st.extra_files = {}
+                st.source = "vdj"
+                st.unified = None
                 return jsonify({
-                    "ok": True, "count": len(_songs), "version": _version,
+                    "ok": True, "count": len(st.songs), "version": st.version,
                     "source": "vdj", "message": "Załadowano VirtualDJ (database.xml)",
                 })
             finally:
                 tmp_path.unlink(missing_ok=True)
         if "database" in fn and ext == ".xml":
-            _songs, _version = _load_from_content(content)
-            _db_path = None
-            _vdjfolders = {}
-            _extra_files = {}
-            _source = "vdj"
-            _unified = None
+            st.songs, st.version = _load_from_content(content)
+            st.db_path = None
+            st.vdjfolders = {}
+            st.extra_files = {}
+            st.source = "vdj"
+            st.unified = None
             return jsonify({
-                "ok": True, "count": len(_songs), "version": _version,
+                "ok": True, "count": len(st.songs), "version": st.version,
                 "source": "vdj", "message": "Załadowano VirtualDJ (database.xml)",
             })
         return jsonify({
@@ -628,7 +444,6 @@ def api_load_universal():
 @app.route('/api/load-djxml', methods=['POST'])
 def api_load_djxml():
     """Ładuje plik DJXML (otwarty format – Mixo, djxml.com)."""
-    global _db_path, _songs, _version, _vdjfolders, _source, _unified
     _clear_undo_stack()
     f = request.files.get('file') or request.files.get('djxml')
     if not f or not getattr(f, 'filename', ''):
@@ -636,16 +451,16 @@ def api_load_djxml():
     try:
         content = f.read()
         db = load_djxml(content)
-        _songs = unified_to_vdj_songs(db)
-        _db_path = None
-        _vdjfolders = {}
-        _extra_files = {}
-        _source = 'djxml'
-        _unified = db
-        _version = '1.0'
+        st.songs = unified_to_vdj_songs(db)
+        st.db_path = None
+        st.vdjfolders = {}
+        st.extra_files = {}
+        st.source = 'djxml'
+        st.unified = db
+        st.version = '1.0'
         return jsonify({
             'ok': True,
-            'count': len(_songs),
+            'count': len(st.songs),
             'playlists': len(db.playlists),
             'loadedVia': 'file',
             'source': 'djxml',
@@ -657,10 +472,9 @@ def api_load_djxml():
 @app.route('/api/save', methods=['POST'])
 def api_save():
     """Zapisuje zmiany do pliku (gdy jest ścieżka)."""
-    global _db_path, _songs, _version
     _ensure_loaded()
     data = request.get_json() or {}
-    path = data.get('path', '').strip() or (_db_path and str(_db_path))
+    path = data.get('path', '').strip() or (st.db_path and str(st.db_path))
     if not path:
         return jsonify({'error': 'Brak ścieżki. Załaduj przez wybór folderu – zapis przez pobranie pliku.'}), 400
     p = Path(path).expanduser().resolve()
@@ -668,7 +482,7 @@ def api_save():
         backup = p.with_suffix('.xml.bak')
         shutil.copy2(p, backup)
     try:
-        save_database(p, _songs, _version)
+        save_database(p, st.songs, st.version)
         return jsonify({'ok': True, 'path': str(p)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -695,18 +509,17 @@ def api_save_progress():
     Nie wymaga licencji. Plik można otworzyć ponownie w aplikacji.
     Eksport do VDJ/Serato/RB wymaga licencji.
     """
-    global _songs, _version, _vdjfolders, _extra_files, _source
     _ensure_loaded()
     import base64
     from datetime import datetime
     from flask import Response
     data = {
         'v': 1,
-        'songs': _songs,
-        'vdjfolders': _vdjfolders,
-        'extra_files': {k: base64.b64encode(v).decode('ascii') for k, v in _extra_files.items()},
-        'version': _version,
-        'source': _source,
+        'songs': st.songs,
+        'vdjfolders': st.vdjfolders,
+        'extra_files': {k: base64.b64encode(v).decode('ascii') for k, v in st.extra_files.items()},
+        'version': st.version,
+        'source': st.source,
     }
     encoded = _encode_njr(data)
     ts = datetime.now().strftime('%Y-%m-%d_%H%M')
@@ -723,15 +536,14 @@ def _do_download(filename=None):
     r = _require_export_license()
     if r:
         return r
-    global _songs, _version, _vdjfolders, _extra_files
     _ensure_loaded()
     from io import BytesIO
     from flask import Response
     import zipfile
 
-    if not _vdjfolders and not _extra_files and not filename:
+    if not st.vdjfolders and not st.extra_files and not filename:
         buf = BytesIO()
-        save_database(buf, _songs, _version)
+        save_database(buf, st.songs, st.version)
         data = buf.getvalue()
         return Response(
             data,
@@ -741,11 +553,11 @@ def _do_download(filename=None):
     z = BytesIO()
     with zipfile.ZipFile(z, 'w', zipfile.ZIP_DEFLATED) as zf:
         buf = BytesIO()
-        save_database(buf, _songs, _version)
+        save_database(buf, st.songs, st.version)
         zf.writestr('database.xml', buf.getvalue())
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             zf.writestr(rel_path, content.encode('utf-8'))
-        for rel_path, raw in _extra_files.items():
+        for rel_path, raw in st.extra_files.items():
             zf.writestr(rel_path, raw)
     data = z.getvalue()
     fn = filename or 'vdj-backup.zip'
@@ -807,10 +619,9 @@ def _song_matches_filter(filter_text: str, song: dict) -> bool:
 
 def _enrich_songs_with_lists(songs: list[dict]):
     """Dodaje do każdego utworu listę list/playlist i filter list, do których należy."""
-    global _vdjfolders
     from vdjfolder import normalize_path
     from vdj_streaming import is_tidal_path, extract_tidal_id
-    if not _vdjfolders:
+    if not st.vdjfolders:
         for s in songs:
             s['listsDisplay'] = ''
             s['lists'] = []
@@ -819,7 +630,7 @@ def _enrich_songs_with_lists(songs: list[dict]):
     filter_folders = []
     import xml.etree.ElementTree as ET
     import re
-    for rel_path, content in _vdjfolders.items():
+    for rel_path, content in st.vdjfolders.items():
         if _is_my_library_path(rel_path):
             continue
         name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
@@ -903,7 +714,6 @@ def api_search():
     Wyszukiwanie i filtrowanie.
     Body: { query, tagFilters: { User1: [...], User2: [...] }, groupBy, limit, offset, vdjCachePath? }
     """
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     query = (data.get('query') or '').strip().lower()
@@ -920,7 +730,7 @@ def api_search():
     def _str(v):
         return str(v or '').strip().lower()
 
-    indexed = list(enumerate(_songs))
+    indexed = list(enumerate(st.songs))
     if query:
         indexed = [
             (i, s) for i, s in indexed
@@ -1000,12 +810,11 @@ def api_search():
 @app.route('/api/tags', methods=['GET'])
 def api_tags():
     """Lista tagów z liczbą wystąpień dla User1, User2 lub Genre."""
-    global _songs
     _ensure_loaded()
     field = request.args.get('field', 'User1')
     if field not in ('User1', 'User2', 'Genre'):
         field = 'User1'
-    counts = get_all_tags(_songs, field)
+    counts = get_all_tags(st.songs, field)
     items = [{'tag': k, 'count': v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
     return jsonify({'tags': items})
 
@@ -1013,11 +822,10 @@ def api_tags():
 @app.route('/api/tags-all', methods=['GET'])
 def api_tags_all():
     """Lista tagów z Genre, User1 i User2 jednocześnie."""
-    global _songs
     _ensure_loaded()
     result = {}
     for field in ('Genre', 'User1', 'User2'):
-        counts = get_all_tags(_songs, field)
+        counts = get_all_tags(st.songs, field)
         result[field] = [{'tag': k, 'count': v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
     return jsonify(result)
 
@@ -1028,9 +836,8 @@ def _escape_xml_attr(s: str) -> str:
 
 def _update_vdjfolders_merge(selections: list, new_tag: str, target_field: str):
     """Aktualizuje vdjfoldery po scaleniu tagów."""
-    global _vdjfolders
     import re
-    for path, content in list(_vdjfolders.items()):
+    for path, content in list(st.vdjfolders.items()):
         m = re.search(r'filter="([^"]*)"', content)
         if not m:
             continue
@@ -1039,14 +846,13 @@ def _update_vdjfolders_merge(selections: list, new_tag: str, target_field: str):
         if new_filt != filt:
             old_full = m.group(0)
             new_full = f'filter="{_escape_xml_attr(new_filt)}"'
-            _vdjfolders[path] = content.replace(old_full, new_full, 1)
+            st.vdjfolders[path] = content.replace(old_full, new_full, 1)
 
 
 def _update_vdjfolders_remove(field: str, tags: list):
     """Aktualizuje vdjfoldery po usunięciu tagów."""
-    global _vdjfolders
     import re
-    for path, content in list(_vdjfolders.items()):
+    for path, content in list(st.vdjfolders.items()):
         m = re.search(r'filter="([^"]*)"', content)
         if not m:
             continue
@@ -1055,7 +861,7 @@ def _update_vdjfolders_remove(field: str, tags: list):
         if new_filt != filt:
             old_full = m.group(0)
             new_full = f'filter="{_escape_xml_attr(new_filt)}"'
-            _vdjfolders[path] = content.replace(old_full, new_full, 1)
+            st.vdjfolders[path] = content.replace(old_full, new_full, 1)
 
 
 @app.route('/api/tracks-by-tags', methods=['POST'])
@@ -1064,7 +870,6 @@ def api_tracks_by_tags():
     Zwraca utwory zawierające dowolny z podanych tagów.
     Body: { selections: [{field, tag}, ...] } – utwory z tagiem w danym polu (OR między selekcjami).
     """
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     selections = data.get('selections') or []
@@ -1078,13 +883,13 @@ def api_tracks_by_tags():
         if not tag or field not in ('User1', 'User2', 'Genre'):
             continue
         prefix = f'Tags.{field}'
-        for i, s in enumerate(_songs):
+        for i, s in enumerate(st.songs):
             if tag in parse_tags_value(s.get(prefix, '')):
                 matched.add(i)
     indices = sorted(matched)[:limit]
     page = []
     for i in indices:
-        s = dict(_songs[i])
+        s = dict(st.songs[i])
         s['idx'] = i
         page.append(s)
     _enrich_songs_with_lists(page)
@@ -1098,7 +903,6 @@ def api_merge_tags():
     - Jedno pole: { field, oldTags, newTag }
     - Między polami: { selections: [{field, tag}], newTag, targetField }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -1112,7 +916,7 @@ def api_merge_tags():
             return jsonify({'error': 'Podaj selections, newTag i targetField'}), 400
         if target_field not in ('User1', 'User2', 'Genre'):
             return jsonify({'error': 'targetField musi być User1, User2 lub Genre'}), 400
-        modified = merge_tags_across_fields(_songs, sel, new_tag, target_field)
+        modified = merge_tags_across_fields(st.songs, sel, new_tag, target_field)
         _update_vdjfolders_merge(sel, new_tag, target_field)
         return jsonify({'ok': True, 'modified': modified})
     else:
@@ -1123,7 +927,7 @@ def api_merge_tags():
             return jsonify({'error': 'Podaj oldTags i newTag'}), 400
         if field not in ('User1', 'User2', 'Genre'):
             return jsonify({'error': 'field musi być User1, User2 lub Genre'}), 400
-        modified = merge_tags_in_songs(_songs, field, old_tags, new_tag)
+        modified = merge_tags_in_songs(st.songs, field, old_tags, new_tag)
         sel = [(field, t) for t in old_tags]
         _update_vdjfolders_merge(sel, new_tag, field)
         return jsonify({'ok': True, 'modified': modified})
@@ -1136,12 +940,11 @@ def api_update_tags_selected():
     Body: { indices: [1,2,3], field: 'User1'|'User2'|'Genre', oldTags: ['LATA20'], newTag: 'LATA10' }
     Jeśli newTag jest puste – usuwa oldTags. W przeciwnym razie zamienia oldTags na newTag.
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
     indices = [int(x) for x in (data.get('indices') or []) if isinstance(x, (int, str)) and str(x).isdigit()]
-    indices = [i for i in indices if 0 <= i < len(_songs)]
+    indices = [i for i in indices if 0 <= i < len(st.songs)]
     if not indices:
         return jsonify({'error': 'Podaj indices (lista indeksów utworów)'}), 400
     field = (data.get('field') or 'User1').strip()
@@ -1152,23 +955,23 @@ def api_update_tags_selected():
     idx_set = set(indices)
     if new_tag:
         if old_tags:
-            modified = merge_tags_in_songs_by_indices(_songs, idx_set, field, old_tags, new_tag)
+            modified = merge_tags_in_songs_by_indices(st.songs, idx_set, field, old_tags, new_tag)
             sel = [(field, t) for t in old_tags]
             _update_vdjfolders_merge(sel, new_tag, field)
         else:
             modified = 0
             for i in idx_set:
-                if i < len(_songs):
-                    val = _songs[i].get(f'Tags.{field}', '')
+                if i < len(st.songs):
+                    val = st.songs[i].get(f'Tags.{field}', '')
                     tags = parse_tags_value(val)
                     if new_tag not in tags:
                         tags.append(new_tag)
-                        _songs[i][f'Tags.{field}'] = join_tags(tags)
+                        st.songs[i][f'Tags.{field}'] = join_tags(tags)
                         modified += 1
     else:
         if not old_tags:
             return jsonify({'error': 'Podaj oldTags (do usunięcia)'}), 400
-        modified = remove_tags_in_songs_by_indices(_songs, idx_set, field, old_tags)
+        modified = remove_tags_in_songs_by_indices(st.songs, idx_set, field, old_tags)
         _update_vdjfolders_remove(field, old_tags)
     return jsonify({'ok': True, 'modified': modified})
 
@@ -1176,14 +979,13 @@ def api_update_tags_selected():
 @app.route('/api/tags-for-indices', methods=['POST'])
 def api_tags_for_indices():
     """Zwraca tagi (Genre, User1, User2) dla podanych indeksów utworów."""
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     indices = [int(x) for x in (data.get('indices') or []) if isinstance(x, (int, str)) and str(x).isdigit()]
-    indices = [i for i in indices if 0 <= i < len(_songs)]
+    indices = [i for i in indices if 0 <= i < len(st.songs)]
     result = []
     for i in indices:
-        s = _songs[i]
+        s = st.songs[i]
         result.append({
             'idx': i,
             'Tags.Genre': s.get('Tags.Genre', ''),
@@ -1199,26 +1001,25 @@ def api_set_tags_selected():
     Ustawia tagi dla zaznaczonych utworów.
     Body: { indices: [1,2,3], tags: { Genre: ['#A','#B'], User1: [...], User2: [...] } }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
     indices = [int(x) for x in (data.get('indices') or []) if isinstance(x, (int, str)) and str(x).isdigit()]
-    indices = [i for i in indices if 0 <= i < len(_songs)]
+    indices = [i for i in indices if 0 <= i < len(st.songs)]
     if not indices:
         return jsonify({'error': 'Podaj indices (lista indeksów utworów)'}), 400
     tags_by_field = data.get('tags') or {}
     modified = 0
     for i in indices:
-        if i >= len(_songs):
+        if i >= len(st.songs):
             continue
         changed = False
         for field in ('Genre', 'User1', 'User2'):
             tag_list = [t.strip() for t in (tags_by_field.get(field) or []) if t and str(t).strip()]
-            old_val = _songs[i].get(f'Tags.{field}', '')
+            old_val = st.songs[i].get(f'Tags.{field}', '')
             new_val = join_tags(tag_list)
             if old_val != new_val:
-                _songs[i][f'Tags.{field}'] = new_val
+                st.songs[i][f'Tags.{field}'] = new_val
                 changed = True
         if changed:
             modified += 1
@@ -1231,7 +1032,6 @@ def api_remove_tags():
     Usuwa tagi z utworów (utwory pozostają).
     Body: { field: 'User1'|'User2'|'Genre', tags: ['#A','#B'] }
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -1241,7 +1041,7 @@ def api_remove_tags():
         return jsonify({'error': 'Podaj tagi do usunięcia'}), 400
     if field not in ('User1', 'User2', 'Genre'):
         return jsonify({'error': 'field musi być User1, User2 lub Genre'}), 400
-    modified = remove_tags_in_songs(_songs, field, tags)
+    modified = remove_tags_in_songs(st.songs, field, tags)
     _update_vdjfolders_remove(field, tags)
     return jsonify({'ok': True, 'modified': modified})
 
@@ -1249,7 +1049,6 @@ def api_remove_tags():
 @app.route('/api/update-song', methods=['POST'])
 def api_update_song():
     """Aktualizuje pojedynczy utwór (po FilePath)."""
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -1257,7 +1056,7 @@ def api_update_song():
     updates = data.get('updates', {})
     if not path or not updates:
         return jsonify({'error': 'Brak FilePath lub updates'}), 400
-    for s in _songs:
+    for s in st.songs:
         if s.get('FilePath') == path:
             for k, v in updates.items():
                 s[k] = v
@@ -1271,7 +1070,6 @@ def api_import_rb():
     Import z Rekordbox (rbxml.xml).
     Body: path (ścieżka) lub plik w FormData.
     """
-    global _songs, _version, _db_path, _vdjfolders, _source, _unified
     _clear_undo_stack()
     rb_content = None
     if request.files:
@@ -1299,16 +1097,16 @@ def api_import_rb():
             tmp = Path(f.name)
         try:
             db = load_rb_xml(tmp)
-            _songs = unified_to_vdj_songs(db)
-            _unified = db
-            _version = ''
-            _db_path = None
-            _vdjfolders = {}
-            _extra_files = {}
-            _source = 'rb'
+            st.songs = unified_to_vdj_songs(db)
+            st.unified = db
+            st.version = ''
+            st.db_path = None
+            st.vdjfolders = {}
+            st.extra_files = {}
+            st.source = 'rb'
             return jsonify({
                 'ok': True,
-                'count': len(_songs),
+                'count': len(st.songs),
                 'playlists': len(db.playlists),
                 'source': 'rb',
             })
@@ -1328,15 +1126,14 @@ def api_export_rb():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     try:
-        db = vdj_songs_to_unified(_songs)
-        if _unified and _unified.playlists:
-            db.playlists = _unified.playlists
-        elif _source == 'vdj' and _vdjfolders:
-            valid = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
-            db.playlists = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+        db = vdj_songs_to_unified(st.songs)
+        if st.unified and st.unified.playlists:
+            db.playlists = st.unified.playlists
+        elif st.source == 'vdj' and st.vdjfolders:
+            valid = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
+            db.playlists = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
         path_replace = None
         path_from = (request.args.get('pathFrom') or '').strip().rstrip('/')
         path_to = (request.args.get('pathTo') or '').strip().rstrip('/')
@@ -1364,7 +1161,6 @@ def api_export_rb_playlists():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     rb_content = None
     if request.files:
@@ -1390,12 +1186,12 @@ def api_export_rb_playlists():
                 if t.source_id and t.path:
                     path_to_rb_id[normalize_path(t.path)] = t.source_id
 
-            db = vdj_songs_to_unified(_songs)
-            if _unified and _unified.playlists:
-                playlists = _unified.playlists
-            elif _source == 'vdj' and _vdjfolders:
-                valid = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
-                playlists = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+            db = vdj_songs_to_unified(st.songs)
+            if st.unified and st.unified.playlists:
+                playlists = st.unified.playlists
+            elif st.source == 'vdj' and st.vdjfolders:
+                valid = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
+                playlists = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
             else:
                 playlists = db.playlists or []
 
@@ -1570,9 +1366,8 @@ def api_serato_drive_root_suggestion():
     Serato „main drive” na macOS = root / (gdy _Serato_ jest w ~/Music/).
     Zewnętrzny dysk = /Volumes/Nazwa/.
     """
-    global _songs
     _ensure_loaded()
-    paths = [(s.get('FilePath') or '').strip() for s in _songs]
+    paths = [(s.get('FilePath') or '').strip() for s in st.songs]
     for fp in paths:
         if not fp:
             continue
@@ -1602,11 +1397,10 @@ def api_export_serato():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     try:
         drive_root = (request.args.get('driveRoot') or request.args.get('pathFrom') or '').strip()
-        db_content = save_serato_database_v2(_songs, drive_root or None)
+        db_content = save_serato_database_v2(st.songs, drive_root or None)
         def _flat_playlists(pls, out=None):
             out = out or []
             for pl in pls:
@@ -1617,11 +1411,11 @@ def api_export_serato():
             return out
 
         playlists = []
-        if _unified and _unified.playlists:
-            playlists = _flat_playlists(_unified.playlists)
-        if _vdjfolders:
-            valid = {normalize_path(s.get("FilePath")) for s in _songs if s.get("FilePath")}
-            vdj_pls = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+        if st.unified and st.unified.playlists:
+            playlists = _flat_playlists(st.unified.playlists)
+        if st.vdjfolders:
+            valid = {normalize_path(s.get("FilePath")) for s in st.songs if s.get("FilePath")}
+            vdj_pls = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
             seen = {pl.name.lower() for pl in playlists}
             for pl in vdj_pls:
                 if pl.name.lower() not in seen:
@@ -1655,15 +1449,14 @@ def api_export_djxml():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     try:
-        db = vdj_songs_to_unified(_songs)
-        if _unified and _unified.playlists:
-            db.playlists = _unified.playlists
-        elif _source == 'vdj' and _vdjfolders:
-            valid = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
-            db.playlists = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+        db = vdj_songs_to_unified(st.songs)
+        if st.unified and st.unified.playlists:
+            db.playlists = st.unified.playlists
+        elif st.source == 'vdj' and st.vdjfolders:
+            valid = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
+            db.playlists = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
         path_replace = None
         path_from = (request.args.get('pathFrom') or '').strip().rstrip('/')
         path_to = (request.args.get('pathTo') or '').strip().rstrip('/')
@@ -1691,17 +1484,16 @@ def api_export_rb_restore():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     template_path = None
     tmp_template = None
     try:
-        db = vdj_songs_to_unified(_songs)
-        if _unified and _unified.playlists:
-            db.playlists = _unified.playlists
-        elif _source == 'vdj' and _vdjfolders:
-            valid = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
-            db.playlists = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+        db = vdj_songs_to_unified(st.songs)
+        if st.unified and st.unified.playlists:
+            db.playlists = st.unified.playlists
+        elif st.source == 'vdj' and st.vdjfolders:
+            valid = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
+            db.playlists = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
         path_replace = None
         use_template = True
         if request.method == 'POST':
@@ -1789,7 +1581,6 @@ def api_export_rb_sync():
     r = _require_export_license()
     if r:
         return r
-    global _songs, _unified, _vdjfolders, _source
     _ensure_loaded()
     import platform
     import shutil
@@ -1824,12 +1615,12 @@ def api_export_rb_sync():
             tmp.close()
             tmp_template = Path(tmp.name)
 
-        db = vdj_songs_to_unified(_songs)
-        if _unified and _unified.playlists:
-            db.playlists = _unified.playlists
-        elif _source == 'vdj' and _vdjfolders:
-            valid = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
-            db.playlists = filter_lists_to_regular_playlists(_vdjfolders, _songs, valid)
+        db = vdj_songs_to_unified(st.songs)
+        if st.unified and st.unified.playlists:
+            db.playlists = st.unified.playlists
+        elif st.source == 'vdj' and st.vdjfolders:
+            valid = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
+            db.playlists = filter_lists_to_regular_playlists(st.vdjfolders, st.songs, valid)
 
         path_from = (request.form.get('pathFrom') or '').strip().rstrip('/')
         path_to = (request.form.get('pathTo') or '').strip().rstrip('/')
@@ -1974,23 +1765,46 @@ def api_write_tags():
     r = _require_export_license()
     if r:
         return r
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     path_from = (data.get('pathFrom') or '').strip().rstrip('/')
     path_to = (data.get('pathTo') or '').strip().rstrip('/')
     path_replace = {path_from: path_to} if path_from and path_to and path_from != path_to else None
+    if path_replace:
+        dest_root = Path(path_to).expanduser()
+        if not _is_folder_scan_allowed(dest_root) and not _is_path_safe(dest_root, must_be_file=False):
+            return jsonify({'error': 'pathTo poza dozwolonymi katalogami biblioteki'}), 403
 
     def resolve_path(track):
         p = track.path
         if path_replace:
             for old, new in path_replace.items():
                 if p.startswith(old):
-                    return new + p[len(old):]
+                    p = new + p[len(old):]
+        candidate = Path(p)
+        if not _is_path_safe(candidate, must_be_file=True):
+            raise PermissionError(f'Ścieżka niedozwolona: {p}')
         return p
 
-    db = vdj_songs_to_unified(_songs)
-    ok, skipped, err, errors = write_tags_batch(db.tracks, path_resolver=resolve_path if path_replace else None)
+    db = vdj_songs_to_unified(st.songs)
+    skipped_pre = 0
+    errors_pre: list[str] = []
+    if not path_replace:
+        safe_tracks = []
+        for track in db.tracks:
+            if _is_path_safe(Path(track.path), must_be_file=True):
+                safe_tracks.append(track)
+            else:
+                skipped_pre += 1
+                errors_pre.append(f'{track.path}: Ścieżka niedozwolona')
+        db.tracks = safe_tracks
+
+    try:
+        ok, skipped, err, errors = write_tags_batch(db.tracks, path_resolver=resolve_path if path_replace else None)
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    skipped += skipped_pre
+    errors = errors_pre + errors
     # Grupuj błędy po typie (np. "Plik nie istnieje" vs "Format nieobsługiwany")
     error_summary = {}
     for e in errors:
@@ -2009,10 +1823,9 @@ def api_write_tags():
 
 def _get_problematic_missing(vdj_cache_path=None):
     """Zwraca listę brakujących plików (ścieżki w bazie, plik nie istnieje)."""
-    global _songs
     from file_analyzer import is_streaming
     missing = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         path = s.get('FilePath', '') or ''
         if not path or is_streaming(path):
             continue
@@ -2043,9 +1856,8 @@ def _is_folder_container(root) -> bool:
 
 def _get_problematic_empty_playlists():
     """Zwraca listę pustych list odtwarzania (vdjfolder bez utworów z bazy)."""
-    global _songs, _vdjfolders
     from vdjfolder import normalize_path
-    valid_paths = {normalize_path(s.get('FilePath')) for s in _songs if s.get('FilePath')}
+    valid_paths = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
     _EMPTY_SKIP_NAMES = frozenset({
         "database", "livelists", "artist", "album", "title", "key", "bpm", "genre", "hashtags",
         "year", "added", "rating", "popular", "played", "edits", "extras", "hawaje", "audio",
@@ -2055,9 +1867,9 @@ def _get_problematic_empty_playlists():
         "sylwester", "święta", "biesiada", "ideas", "filters",
     })
     empty_playlists = []
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             if _is_my_library_path(rel_path):
                 continue
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
@@ -2101,10 +1913,9 @@ def _parse_bitrate_from_db(val):
 
 def _get_problematic_low_bitrate(bitrate_max, vdj_cache_path=None):
     """Zwraca listę utworów z bitrate poniżej progu."""
-    global _songs
     from file_analyzer import is_streaming, _get_bitrate
     low_bitrate = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         path = s.get('FilePath', '') or ''
         if not path or is_streaming(path):
             continue
@@ -2127,7 +1938,6 @@ def api_relocate_scan():
     Dla każdego brakującego rekordu szuka pliku o tej samej nazwie (stem+ext) w searchPaths.
     Zwraca: { candidates: [{ idx, oldPath, newPath, author, title }, ...], notFound: [...] }
     """
-    global _songs
     _ensure_loaded()
     from file_analyzer import is_streaming
     data = request.get_json() or {}
@@ -2171,8 +1981,8 @@ def api_relocate_scan():
                 'idx': idx,
                 'oldPath': old_path,
                 'newPath': matches[0],
-                'author': _songs[idx].get('Tags.Author', ''),
-                'title': _songs[idx].get('Tags.Title', ''),
+                'author': st.songs[idx].get('Tags.Author', ''),
+                'title': st.songs[idx].get('Tags.Title', ''),
                 'alternatives': matches[1:5],
             })
         else:
@@ -2187,7 +1997,6 @@ def api_relocate_apply():
     Aktualizuje ścieżki w bazie i vdjfolderach.
     POST body: { updates: [{ idx: 5, newPath: "/new/path/song.mp3" }, ...] }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     from vdjfolder import normalize_path
@@ -2202,21 +2011,21 @@ def api_relocate_apply():
         new_path = (u.get('newPath') or '').strip()
         if idx is None or not new_path:
             continue
-        if not (0 <= idx < len(_songs)):
+        if not (0 <= idx < len(st.songs)):
             continue
-        old_path = _songs[idx].get('FilePath', '') or ''
+        old_path = st.songs[idx].get('FilePath', '') or ''
         if not old_path:
             continue
         np_old = normalize_path(old_path)
         np_new = normalize_path(new_path)
         if np_old != np_new:
             path_map[np_old] = new_path
-            _songs[idx]['FilePath'] = new_path
+            st.songs[idx]['FilePath'] = new_path
 
-    if _vdjfolders and path_map:
+    if st.vdjfolders and path_map:
         import xml.etree.ElementTree as ET
         new_vdjfolders = {}
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             try:
                 root = ET.fromstring(content)
                 if root.tag != "VirtualFolder":
@@ -2236,15 +2045,14 @@ def api_relocate_apply():
                     new_vdjfolders[rel_path] = content
             except ET.ParseError:
                 new_vdjfolders[rel_path] = content
-        _vdjfolders = new_vdjfolders
+        st.vdjfolders = new_vdjfolders
 
-    return jsonify({'ok': True, 'updated': len(path_map), 'count': len(_songs)})
+    return jsonify({'ok': True, 'updated': len(path_map), 'count': len(st.songs)})
 
 
 @app.route('/api/problematic-missing', methods=['GET'])
 def api_problematic_missing():
     """Brakujące pliki – rekordy w bazie, plik nie istnieje na dysku."""
-    global _songs, _source
     _ensure_loaded()
     vdj_cache_path = (request.args.get('vdjCachePath') or '').strip() or None
     missing = _get_problematic_missing(vdj_cache_path)
@@ -2254,7 +2062,6 @@ def api_problematic_missing():
 @app.route('/api/problematic-empty-playlists', methods=['GET'])
 def api_problematic_empty_playlists():
     """Puste listy – vdjfolder bez utworów z bazy."""
-    global _vdjfolders, _source
     _ensure_loaded()
     empty_playlists = _get_problematic_empty_playlists()
     return jsonify({'empty_playlists': empty_playlists, 'summary': {'empty_playlists_count': len(empty_playlists)}})
@@ -2263,12 +2070,11 @@ def api_problematic_empty_playlists():
 @app.route('/api/playlists', methods=['GET'])
 def api_playlists():
     """Lista playlist i filter list (vdjfolder). Pomija My Library, folder-kontenery (taneczne, gatunki)."""
-    global _vdjfolders
     _ensure_loaded()
     items = []
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             if _is_my_library_path(rel_path):
                 continue
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
@@ -2296,7 +2102,6 @@ def api_playlists():
 @app.route('/api/playlist-tracks', methods=['GET'])
 def api_playlist_tracks():
     """Utwory w danej playliście lub filter liście."""
-    global _songs, _vdjfolders
     _ensure_loaded()
     name = (request.args.get('name') or '').strip()
     if not name:
@@ -2304,7 +2109,7 @@ def api_playlist_tracks():
     from vdjfolder import normalize_path
     from vdj_streaming import is_tidal_path, extract_tidal_id
     path_to_idx = {}
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         p = s.get('FilePath', '') or ''
         if p:
             np = normalize_path(p)
@@ -2319,9 +2124,9 @@ def api_playlist_tracks():
     tracks = []
     rel_path_found = None
     is_filter_list = False
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if n != name:
                 continue
@@ -2335,7 +2140,7 @@ def api_playlist_tracks():
                         filt = child.get("filter") or child.get("Filter") or ""
                 is_filter_list = bool(filt)
                 if filt:
-                    for i, s in enumerate(_songs):
+                    for i, s in enumerate(st.songs):
                         if _song_matches_filter(filt, s):
                             rec = {'idx': i, **s}
                             _enrich_song_for_display(rec, None)
@@ -2348,7 +2153,7 @@ def api_playlist_tracks():
                             np = normalize_path(p)
                             idx = path_to_idx.get(np)
                             if idx is not None:
-                                s = _songs[idx]
+                                s = st.songs[idx]
                                 rec = {'idx': idx, **s}
                                 _enrich_song_for_display(rec, None)
                                 _enrich_songs_with_lists([rec])
@@ -2386,7 +2191,6 @@ def api_playlist_remove_from():
     - Dla filter listy: usuwa tag z utworu (utwór przestaje pasować do filtra).
     Body: { playlistName, indices: [1,2,3] }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -2397,7 +2201,7 @@ def api_playlist_remove_from():
     from vdjfolder import normalize_path
     rel_path_found = None
     content = None
-    for rel_path, c in _vdjfolders.items():
+    for rel_path, c in st.vdjfolders.items():
         n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
         if n == name:
             rel_path_found = rel_path
@@ -2415,23 +2219,23 @@ def api_playlist_remove_from():
         if not filter_tags:
             return jsonify({'error': 'Nie można usunąć z filter listy (brak tagów w filtrze)'}), 400
         for idx in indices:
-            if 0 <= idx < len(_songs):
-                s = _songs[idx]
+            if 0 <= idx < len(st.songs):
+                s = st.songs[idx]
                 for field, tag in filter_tags:
                     tags = parse_tags_value(s.get(f'Tags.{field}', ''))
                     tags_normalized = [t.lstrip('#').lower() for t in tags]
                     if tag.lower() in tags_normalized:
                         to_remove = [t for t in tags if t.lstrip('#').lower() == tag.lower()]
                         if to_remove:
-                            remove_tags_in_songs_by_indices(_songs, {idx}, field, to_remove)
+                            remove_tags_in_songs_by_indices(st.songs, {idx}, field, to_remove)
                             _update_vdjfolders_remove(field, to_remove)
                             modified += 1
                         break
     else:
         paths_to_remove = set()
         for idx in indices:
-            if 0 <= idx < len(_songs):
-                p = _songs[idx].get('FilePath', '') or ''
+            if 0 <= idx < len(st.songs):
+                p = st.songs[idx].get('FilePath', '') or ''
                 if p:
                     paths_to_remove.add(normalize_path(p))
         if not paths_to_remove:
@@ -2443,7 +2247,7 @@ def api_playlist_remove_from():
                 root.remove(song_elem)
                 modified += 1
         new_content = ET.tostring(root, encoding='unicode', default_namespace='')
-        _vdjfolders[rel_path_found] = new_content
+        st.vdjfolders[rel_path_found] = new_content
     return jsonify({'ok': True, 'modified': modified})
 
 
@@ -2452,9 +2256,8 @@ def api_playlist_replace_tidal():
     """
     Zamienia utwory Tidal na lokalne w playliście (tylko zwykłe listy, nie filter).
     Body: { playlistName, relPath, replacements: [{ tidalPath, acceptedIdx }] }
-    tidalPath: ścieżka Tidal (td123, netsearch://td123), acceptedIdx: indeks w _songs pliku lokalnego.
+    tidalPath: ścieżka Tidal (td123, netsearch://td123), acceptedIdx: indeks w st.songs pliku lokalnego.
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -2465,7 +2268,7 @@ def api_playlist_replace_tidal():
         return jsonify({'error': 'Podaj playlistName i replacements'}), 400
     from vdjfolder import normalize_path
     content = None
-    for rp, c in _vdjfolders.items():
+    for rp, c in st.vdjfolders.items():
         n = rp.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
         if n == name:
             content = c
@@ -2494,8 +2297,8 @@ def api_playlist_replace_tidal():
                 ai = int(ai)
             except (TypeError, ValueError):
                 continue
-            if 0 <= ai < len(_songs):
-                lp = _songs[ai].get('FilePath', '') or ''
+            if 0 <= ai < len(st.songs):
+                lp = st.songs[ai].get('FilePath', '') or ''
                 if lp and not is_streaming(lp):
                     valid_paths.append(lp)
         if valid_paths:
@@ -2529,7 +2332,7 @@ def api_playlist_replace_tidal():
                 idx += 1
             modified += len(local_paths)
     out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode', default_namespace='')
-    _vdjfolders[rel_path] = out
+    st.vdjfolders[rel_path] = out
     return jsonify({'ok': True, 'modified': modified})
 
 
@@ -2540,7 +2343,6 @@ def api_playlist_offline_to_tidal_substitutes():
     Body: { playlistName }
     Zwraca: { matches: [{ trackIdx, idx, author, title, tidalCandidates: [{ id, title, artist }] }], error?: string }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     data = request.get_json() or {}
     name = (data.get('playlistName') or data.get('playlist') or '').strip()
@@ -2550,15 +2352,15 @@ def api_playlist_offline_to_tidal_substitutes():
     from vdjfolder import normalize_path
     import xml.etree.ElementTree as ET
     path_to_idx = {}
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         p = s.get('FilePath', '') or ''
         if p:
             np = normalize_path(p)
             path_to_idx[np] = i
     local_tracks = []  # (order_in_playlist, idx, author, title)
     rel_path_found = None
-    if _vdjfolders:
-        for rel_path, content in _vdjfolders.items():
+    if st.vdjfolders:
+        for rel_path, content in st.vdjfolders.items():
             n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if n != name:
                 continue
@@ -2577,7 +2379,7 @@ def api_playlist_offline_to_tidal_substitutes():
                         idx = path_to_idx.get("netsearch://" + p)
                     if idx is None:
                         continue
-                    s = _songs[idx]
+                    s = st.songs[idx]
                     if is_streaming(s.get('FilePath', '') or ''):
                         continue
                     author = (s.get('Tags.Author') or s.get('Tags.Artist') or '').strip()
@@ -2610,7 +2412,6 @@ def api_playlist_create_from_tidal():
     Body: { name, items: [{ trackIdx, tidalId }] } lub { name, tidalIds: ["123","456"] }
     Kolejność: items według trackIdx, lub tidalIds w podanej kolejności.
     """
-    global _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -2627,7 +2428,7 @@ def api_playlist_create_from_tidal():
     from vdjfolder import create_vdjfolder_playlist
     rel_path = _vdjfolders_create_new_path(name)
     content = create_vdjfolder_playlist(paths, name)
-    _vdjfolders[rel_path] = content
+    st.vdjfolders[rel_path] = content
     return jsonify({'name': name, 'relPath': rel_path, 'count': len(paths)})
 
 
@@ -2638,7 +2439,6 @@ def api_delete_files():
     Ścieżka musi być w katalogu nadrzędnym plików z załadowanej bazy (ochrona path traversal).
     Body: { paths: ["/path/to/file.mp3", ...] }
     """
-    global _songs
     _ensure_loaded()
     from file_analyzer import is_streaming
     data = request.get_json() or {}
@@ -2667,7 +2467,6 @@ def api_delete_files():
 @app.route('/api/problematic-low-bitrate', methods=['GET'])
 def api_problematic_low_bitrate():
     """Niski bitrate – utwory poniżej progu kbps. GET ?bitrateMax=128"""
-    global _songs, _source
     _ensure_loaded()
     bitrate_max = int(request.args.get('bitrateMax', 128))
     vdj_cache_path = (request.args.get('vdjCachePath') or '').strip() or None
@@ -2677,11 +2476,10 @@ def api_problematic_low_bitrate():
 
 def _todo_collect():
     """Zbiera listy utworów: cache VDJ i z brakującym plikiem. Zwraca (cache_list, missing_list)."""
-    global _songs
     from file_analyzer import is_streaming
     cache_list = []
     missing_list = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         path = (s.get('FilePath') or s.get('path') or '').strip()
         if not path:
             continue
@@ -2704,7 +2502,6 @@ def api_todo():
     Lista rzeczy do zrobienia: liczba utworów z cache VDJ (.vdjcache) i utworów z brakującym plikiem.
     Zwraca: { cacheCount, missingCount }.
     """
-    global _songs
     _ensure_loaded()
     cache_list, missing_list = _todo_collect()
     return jsonify({'cacheCount': len(cache_list), 'missingCount': len(missing_list)})
@@ -2717,7 +2514,6 @@ def api_todo_save():
     POST body: { "directory": "ścieżka/do/katalogu" } – jeśli puste, używany jest katalog nadrzędny edytora (VoteBattle).
     Plik: RZECZY_DO_ZROBIENIA.md
     """
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     directory = (data.get('directory') or '').strip()
@@ -2776,7 +2572,6 @@ def api_play_count_list():
     tagFilters: JSON np. {"Genre":["tag1"],"User1":[]} – utwór musi mieć którykolwiek z tagów w danym polu.
     sortBy: title|author|length|bpm|key|rating|genre|user1|user2|playcount|path (domyślnie playcount).
     """
-    global _songs
     _ensure_loaded()
     filter_type = (request.args.get('filter') or 'all').strip().lower()
     if filter_type not in ('all', 'never', 'lessthan'):
@@ -2807,7 +2602,7 @@ def api_play_count_list():
         except (ValueError, TypeError):
             return 0
 
-    indexed = [(i, s, _play_count_val(s)) for i, s in enumerate(_songs)]
+    indexed = [(i, s, _play_count_val(s)) for i, s in enumerate(st.songs)]
     if filter_type == 'never':
         indexed = [(i, s, pc) for i, s, pc in indexed if pc == 0]
     elif filter_type == 'lessthan':
@@ -2942,7 +2737,6 @@ def api_replace_with_tidal():
     Zastępuje ścieżkę utworu wersją Tidal.
     POST body: { idx: 123, tidalId: "252147049" }
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -2954,10 +2748,10 @@ def api_replace_with_tidal():
         idx = int(idx)
     except (TypeError, ValueError):
         return jsonify({"error": "Nieprawidłowy idx"}), 400
-    if idx < 0 or idx >= len(_songs):
+    if idx < 0 or idx >= len(st.songs):
         return jsonify({"error": "Indeks poza zakresem"}), 404
     new_path = f"td{tidal_id}"
-    _songs[idx]["FilePath"] = new_path
+    st.songs[idx]["FilePath"] = new_path
     return jsonify({"ok": True, "idx": idx, "newPath": new_path})
 
 
@@ -2968,7 +2762,6 @@ def api_remove_songs():
     Również usuwa wpisy tych ścieżek z wszystkich plików .vdjfolder (playlisty/filtry),
     żeby po zapisie backupu VDJ nie pokazywał setek „brakujących plików” z list.
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -2976,28 +2769,28 @@ def api_remove_songs():
     from vdjfolder import normalize_path, remove_paths_from_vdjfolder_content
     paths_to_remove = set()
     for i in indices:
-        if 0 <= i < len(_songs):
-            p = (_songs[i].get("FilePath") or "").strip()
+        if 0 <= i < len(st.songs):
+            p = (st.songs[i].get("FilePath") or "").strip()
             if p:
                 paths_to_remove.add(normalize_path(p))
     removed = 0
     for i in indices:
-        if 0 <= i < len(_songs):
-            _songs.pop(i)
+        if 0 <= i < len(st.songs):
+            st.songs.pop(i)
             removed += 1
     vdjfolders_refs_removed = 0
-    if _vdjfolders and paths_to_remove:
+    if st.vdjfolders and paths_to_remove:
         new_vdjfolders = {}
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             new_content, n = remove_paths_from_vdjfolder_content(content, paths_to_remove)
             if n:
                 vdjfolders_refs_removed += n
                 new_vdjfolders[rel_path] = new_content
             else:
                 new_vdjfolders[rel_path] = content
-        _vdjfolders.clear()
-        _vdjfolders.update(new_vdjfolders)
-    return jsonify({"ok": True, "removed": removed, "count": len(_songs), "vdjfolders_refs_removed": vdjfolders_refs_removed})
+        st.vdjfolders.clear()
+        st.vdjfolders.update(new_vdjfolders)
+    return jsonify({"ok": True, "removed": removed, "count": len(st.songs), "vdjfolders_refs_removed": vdjfolders_refs_removed})
 
 
 @app.route('/api/tidal-track-list', methods=['GET'])
@@ -3006,12 +2799,11 @@ def api_tidal_track_list():
     Zwraca listę utworów Tidal w bazie (bez sprawdzania dostępności).
     GET – zwraca { tracks: [{ idx, tidalId, author, title }, ...] }.
     """
-    global _songs
     _ensure_loaded()
     from vdj_streaming import is_tidal_path, extract_tidal_id
 
     tracks = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         path = s.get('FilePath', '') or ''
         if not is_tidal_path(path):
             continue
@@ -3048,13 +2840,12 @@ def api_tidal_unavailable():
     Uwaga: wymaga połączenia z internetem, sprawdza każdy utwór osobno.
     Dla wielu utworów lepiej użyć tidal-track-list + tidal-check-one (inkrementalnie).
     """
-    global _songs
     _ensure_loaded()
     from vdj_streaming import is_tidal_path, extract_tidal_id
 
     unavailable = []
     tidal_count = 0
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         path = s.get('FilePath', '') or ''
         if not is_tidal_path(path):
             continue
@@ -3282,7 +3073,6 @@ def api_online_match():
     POST body: { onlineTracks: [{ artist, title, duration, source, externalId }] }
     Zwraca: { matches: [{ onlineIdx, candidates: [{ idx, author, title, duration, bpm, rating, key, playlists, score }] }] }
     """
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     online_tracks = data.get('onlineTracks') or []
@@ -3291,9 +3081,9 @@ def api_online_match():
 
     from vdjfolder import normalize_path
     path_to_playlists = {}
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if not name:
                 continue
@@ -3311,7 +3101,7 @@ def api_online_match():
                 pass
 
     def _candidate_rec(i: int) -> dict:
-        s = _songs[i]
+        s = st.songs[i]
         path = s.get('FilePath', '') or ''
         np = normalize_path(path) if path else ''
         playlists = list(dict.fromkeys(path_to_playlists.get(np, [])))
@@ -3341,7 +3131,7 @@ def api_online_match():
     for oi, ot in enumerate(online_tracks):
         scored = []
         seen_paths = set()
-        for i, s in enumerate(_songs):
+        for i, s in enumerate(st.songs):
             from file_analyzer import is_streaming
             path = s.get('FilePath', '') or ''
             if is_streaming(path) or _is_vdj_cache_path(path):
@@ -3383,7 +3173,6 @@ def _online_playlist_resolve_paths(mappings: list, online_tracks: list) -> list:
 def _online_playlist_resolve_entries(mappings: list, online_tracks: list) -> list:
     """Buduje listę wpisów {path, artist, title, size, songlength, bpm, key, remix} dla vdjfolder VDJ."""
     import re
-    global _songs
     mapping_by_oi = {int(m.get('onlineIdx')): m for m in mappings if m.get('onlineIdx') is not None}
     entries = []
     n = len(online_tracks or [])
@@ -3419,8 +3208,8 @@ def _online_playlist_resolve_entries(mappings: list, online_tracks: list) -> lis
                     ai = int(ai)
                 except (TypeError, ValueError):
                     continue
-                if 0 <= ai < len(_songs):
-                    s = _songs[ai]
+                if 0 <= ai < len(st.songs):
+                    s = st.songs[ai]
                     p = s.get('FilePath', '') or ''
                     if p:
                         if re.match(r"^td\d+$", p.strip(), re.I):
@@ -3445,7 +3234,6 @@ def api_online_playlist_create():
     POST body: { name: string, mappings: [{ onlineIdx, acceptedIdx }], onlineTracks?: [...] }
     acceptedIdx: indeks w bazie lub null (zostaw oryginalny streaming)
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -3459,7 +3247,7 @@ def api_online_playlist_create():
     from vdjfolder import create_vdjfolder_playlist
     rel_path = _vdjfolders_create_new_path(name)
     content = create_vdjfolder_playlist(paths, name, entries=entries)
-    _vdjfolders[rel_path] = content
+    st.vdjfolders[rel_path] = content
     return jsonify({'name': name, 'relPath': rel_path, 'count': len(paths)})
 
 
@@ -3471,7 +3259,6 @@ def api_online_playlist_download():
     format: m3u (domyślnie) – uniwersalny, VDJ/Rekordbox/Serato; vdjfolder – VirtualDJ.
     Pomija utwory ze streamingu (td..., spotify:) – tylko pliki offline.
     """
-    global _songs
     _ensure_loaded()
     data = request.get_json() or {}
     name = (data.get('name') or '').strip() or 'Online na Offline'
@@ -3514,7 +3301,6 @@ def api_online_playlist_download_backup():
     VDJ wymaga backupu (nie pojedynczego pliku), aby poprawnie załadować playlistę.
     POST body: { name, mappings, onlineTracks } – jak online-playlist-download.
     """
-    global _songs, _version, _vdjfolders
     _ensure_loaded()
     data = request.get_json() or {}
     name = (data.get('name') or '').strip() or 'Online na Offline'
@@ -3536,7 +3322,7 @@ def api_online_playlist_download_backup():
     z = BytesIO()
     with zipfile.ZipFile(z, 'w', zipfile.ZIP_DEFLATED) as zf:
         buf = BytesIO()
-        save_database(buf, _songs, _version)
+        save_database(buf, st.songs, st.version)
         zf.writestr('database.xml', buf.getvalue())
         zf.writestr(vdjfolder_rel, vdjfolder_content.encode('utf-8'))
     data_out = z.getvalue()
@@ -3586,7 +3372,6 @@ def api_online_playlist_save_to_vdj():
     Zapisuje playlistę bezpośrednio do folderu VDJ (Folders/) – żeby VDJ rozpoznał plik.
     POST body: { name, mappings, onlineTracks, format: 'vdjfolder'|'vdjbackup' }
     """
-    global _songs, _version, _vdjfolders
     _ensure_loaded()
     data = request.get_json() or {}
     name = (data.get('name') or '').strip() or 'Online na Offline'
@@ -3615,7 +3400,7 @@ def api_online_playlist_save_to_vdj():
         try:
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 buf = BytesIO()
-                save_database(buf, _songs, _version)
+                save_database(buf, st.songs, st.version)
                 zf.writestr('database.xml', buf.getvalue())
                 zf.writestr(f"Folders/{safe_name}.vdjfolder", vdjfolder_content.encode('utf-8'))
             return jsonify({'ok': True, 'path': str(zip_path), 'msg': f'Zapisano backup. W VDJ: File → Restore, wybierz {zip_path.name}'})
@@ -3633,14 +3418,13 @@ def api_online_playlist_save_to_vdj():
 
 def _vdjfolders_create_new_path(name: str) -> str:
     """Tworzy unikalną ścieżkę dla nowego vdjfolder."""
-    global _vdjfolders
     base = name.replace('/', '_').replace('\\', '_').strip() or 'playlist'
     rel = f"{base}.vdjfolder"
-    if rel not in _vdjfolders:
+    if rel not in st.vdjfolders:
         return rel
     for i in range(1, 1000):
         rel = f"{base}_{i}.vdjfolder"
-        if rel not in _vdjfolders:
+        if rel not in st.vdjfolders:
             return rel
     return f"{base}_new.vdjfolder"
 
@@ -3705,11 +3489,10 @@ def _stream_vdjsample_as_ogg(p: Path):
 def api_audio():
     """
     Streamuje plik audio do odsłuchu.
-    GET ?idx=123 – indeks utworu w _songs. HEAD – tylko nagłówki (bez streamu).
+    GET ?idx=123 – indeks utworu w st.songs. HEAD – tylko nagłówki (bez streamu).
     Bezpieczeństwo: tylko pliki z załadowanej bazy.
     """
     try:
-        global _songs
         try:
             _ensure_loaded()
         except ValueError as e:
@@ -3721,9 +3504,9 @@ def api_audio():
             idx = int(idx)
         except ValueError:
             return jsonify({'error': 'Nieprawidłowy idx'}), 400
-        if idx < 0 or idx >= len(_songs):
+        if idx < 0 or idx >= len(st.songs):
             return jsonify({'error': 'Indeks poza zakresem'}), 404
-        path = _songs[idx].get('FilePath', '') or ''
+        path = st.songs[idx].get('FilePath', '') or ''
         if not path:
             return jsonify({'error': 'Brak ścieżki'}), 404
         vdj_cache_path = (request.args.get('vdjCachePath') or '').strip() or None
@@ -3804,10 +3587,9 @@ def _dup_rec(songs: list, i: int) -> dict:
 
 
 def _api_duplicates_impl():
-    global _songs
     _ensure_loaded()
     method = (request.args.get('method') or 'path').lower()
-    if method not in ('path', 'similar', 'tidal'):
+    if method not in ('path', 'similar', 'tidal', 'hash'):
         method = 'path'
     scope = (request.args.get('scope') or 'all').lower()
     if scope not in ('all', 'files', 'tidal', 'cache'):
@@ -3840,28 +3622,47 @@ def _api_duplicates_impl():
     groups = []
     if method == 'tidal':
         by_tidal_id = defaultdict(list)
-        for i, s in enumerate(_songs):
+        for i, s in enumerate(st.songs):
             path = s.get('FilePath', '') or ''
             tid = extract_tidal_id(path)
             if tid:
                 by_tidal_id[tid].append(i)
         for tid, indices in by_tidal_id.items():
             if len(indices) > 1:
-                groups.append([_dup_rec(_songs, i) for i in indices])
+                groups.append([_dup_rec(st.songs, i) for i in indices])
     elif method == 'path':
         by_path = defaultdict(list)
-        for i, s in enumerate(_songs):
+        for i, s in enumerate(st.songs):
             p = normalize_path(s.get('FilePath', '') or '')
             if p:
                 by_path[p].append(i)
         for path, indices in by_path.items():
             if len(indices) > 1:
                 groups.append([
-                    _dup_rec(_songs, i) for i in indices
+                    _dup_rec(st.songs, i) for i in indices
                 ])
+    elif method == 'hash':
+        by_hash = defaultdict(list)
+        for i, s in enumerate(st.songs):
+            fp = s.get('FilePath', '') or ''
+            if not fp or is_streaming(fp):
+                continue
+            h = (s.get('Infos.FileHash') or '').strip()
+            if not h:
+                try:
+                    from folder_library import file_md5
+                    h = file_md5(fp)
+                    s['Infos.FileHash'] = h
+                except OSError:
+                    continue
+            if h:
+                by_hash[h].append(i)
+        for _h, indices in by_hash.items():
+            if len(indices) > 1:
+                groups.append([_dup_rec(st.songs, i) for i in indices])
     else:  # similar
         by_key = defaultdict(list)
-        for i, s in enumerate(_songs):
+        for i, s in enumerate(st.songs):
             author = _norm(s.get('Tags.Author', ''))
             title = _norm(s.get('Tags.Title', ''))
             if author or title:
@@ -3869,7 +3670,7 @@ def _api_duplicates_impl():
                 by_key[key].append(i)
         for key, indices in by_key.items():
             if len(indices) > 1:
-                groups.append([_dup_rec(_songs, i) for i in indices])
+                groups.append([_dup_rec(st.songs, i) for i in indices])
 
     # Filtruj grupy według scope – zostaw tylko rekordy pasujące do zakresu
     if scope != 'all':
@@ -3884,9 +3685,9 @@ def _api_duplicates_impl():
 
     # path → lista nazw playlist (w ilu listach jest utwór)
     path_to_playlists = {}
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if not name:
                 continue
@@ -3936,17 +3737,45 @@ def api_remove_duplicates():
     POST body: { indicesToRemove: [5, 10, 15, ...] }
     Indeksy do usunięcia – usuwa w kolejności malejącej, żeby nie przesuwać indeksów.
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
     indices = sorted(set(data.get('indicesToRemove', [])), reverse=True)
+    delete_files = bool(data.get('deleteFiles')) or st.is_folder_beta()
     removed = 0
+    deleted_files = 0
+    file_errors: list[str] = []
+    paths_to_delete: list[str] = []
     for i in indices:
-        if 0 <= i < len(_songs):
-            _songs.pop(i)
+        if 0 <= i < len(st.songs):
+            if delete_files:
+                fp = (st.songs[i].get('FilePath') or '').strip()
+                if fp:
+                    paths_to_delete.append(fp)
+            st.songs.pop(i)
             removed += 1
-    return jsonify({'ok': True, 'removed': removed, 'count': len(_songs)})
+    if paths_to_delete:
+        from file_analyzer import is_streaming
+        for path in paths_to_delete:
+            if is_streaming(path):
+                continue
+            p = Path(path)
+            if not _is_path_safe(p, must_be_file=True):
+                file_errors.append(f'Ścieżka niedozwolona: {path[:50]}…')
+                continue
+            if p.exists():
+                try:
+                    p.unlink()
+                    deleted_files += 1
+                except OSError as e:
+                    file_errors.append(f'{path[:50]}…: {e}')
+    return jsonify({
+        'ok': True,
+        'removed': removed,
+        'count': len(st.songs),
+        'deletedFiles': deleted_files,
+        'fileErrors': file_errors,
+    })
 
 
 @app.route('/api/merge-duplicate', methods=['POST'])
@@ -3957,7 +3786,6 @@ def api_merge_duplicate():
     - removeIdx: indeks rekordu do usunięcia (jego ścieżka zostanie zastąpiona)
     - keepIdx: indeks rekordu do zachowania (jego ścieżka będzie używana)
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -3972,11 +3800,11 @@ def api_merge_duplicate():
         return jsonify({'error': 'Nieprawidłowe indeksy'}), 400
     if remove_idx == keep_idx:
         return jsonify({'error': 'removeIdx i keepIdx muszą być różne'}), 400
-    if remove_idx < 0 or remove_idx >= len(_songs) or keep_idx < 0 or keep_idx >= len(_songs):
+    if remove_idx < 0 or remove_idx >= len(st.songs) or keep_idx < 0 or keep_idx >= len(st.songs):
         return jsonify({'error': 'Indeks poza zakresem'}), 404
 
-    path_remove = _songs[remove_idx].get('FilePath', '') or ''
-    path_keep = _songs[keep_idx].get('FilePath', '') or ''
+    path_remove = st.songs[remove_idx].get('FilePath', '') or ''
+    path_keep = st.songs[keep_idx].get('FilePath', '') or ''
     if not path_remove or not path_keep:
         return jsonify({'error': 'Brak ścieżki w rekordzie'}), 400
 
@@ -3988,10 +3816,10 @@ def api_merge_duplicate():
 
     # W vdjfolder: zamień path_remove na path_keep
     updated_folders = 0
-    if _vdjfolders:
+    if st.vdjfolders:
         import xml.etree.ElementTree as ET
         new_vdjfolders = {}
-        for rel_path, content in _vdjfolders.items():
+        for rel_path, content in st.vdjfolders.items():
             try:
                 root = ET.fromstring(content)
                 if root.tag != "VirtualFolder":
@@ -4011,11 +3839,11 @@ def api_merge_duplicate():
                     new_vdjfolders[rel_path] = content
             except ET.ParseError:
                 new_vdjfolders[rel_path] = content
-        _vdjfolders.clear()
-        _vdjfolders.update(new_vdjfolders)
+        st.vdjfolders.clear()
+        st.vdjfolders.update(new_vdjfolders)
 
     # Usuń rekord removeIdx
-    _songs.pop(remove_idx)
+    st.songs.pop(remove_idx)
     new_keep_idx = keep_idx if keep_idx < remove_idx else keep_idx - 1
 
     return jsonify({
@@ -4023,7 +3851,7 @@ def api_merge_duplicate():
         'removed_idx': remove_idx,
         'kept_idx': new_keep_idx,
         'playlists_updated': updated_folders,
-        'count': len(_songs),
+        'count': len(st.songs),
     })
 
 
@@ -4033,7 +3861,6 @@ def api_merge_duplicate_group():
     Scal grupę duplikatów: zostaw keepIdx, usuń pozostałe (removeIndices), w playlistach zamień ich ścieżki na ścieżkę keepIdx.
     POST body: { keepIdx: 5, removeIndices: [10, 15, 20] }
     """
-    global _songs, _vdjfolders
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -4046,11 +3873,11 @@ def api_merge_duplicate_group():
         remove_indices = [int(x) for x in remove_indices if x is not None]
     except (TypeError, ValueError):
         return jsonify({'error': 'Nieprawidłowe indeksy'}), 400
-    remove_indices = [i for i in remove_indices if i != keep_idx and 0 <= i < len(_songs)]
+    remove_indices = [i for i in remove_indices if i != keep_idx and 0 <= i < len(st.songs)]
     if not remove_indices:
         return jsonify({'error': 'Brak indeksów do usunięcia (różnych od keepIdx)'}), 400
 
-    path_keep = _songs[keep_idx].get('FilePath', '') or ''
+    path_keep = st.songs[keep_idx].get('FilePath', '') or ''
     if not path_keep:
         return jsonify({'error': 'Brak ścieżki w rekordzie do zachowania'}), 400
 
@@ -4061,24 +3888,24 @@ def api_merge_duplicate_group():
 
     # Sortuj malejąco, żeby przy usuwaniu nie przesuwać indeksów
     for remove_idx in sorted(set(remove_indices), reverse=True):
-        if remove_idx == keep_idx or remove_idx < 0 or remove_idx >= len(_songs):
+        if remove_idx == keep_idx or remove_idx < 0 or remove_idx >= len(st.songs):
             continue
-        path_remove = _songs[remove_idx].get('FilePath', '') or ''
+        path_remove = st.songs[remove_idx].get('FilePath', '') or ''
         if not path_remove:
-            _songs.pop(remove_idx)
+            st.songs.pop(remove_idx)
             actually_removed += 1
             continue
         np_remove = normalize_path(path_remove)
         if np_remove == np_keep:
-            _songs.pop(remove_idx)
+            st.songs.pop(remove_idx)
             actually_removed += 1
             continue
 
         # Zamień w vdjfolder
-        if _vdjfolders:
+        if st.vdjfolders:
             import xml.etree.ElementTree as ET
             new_vdjfolders = {}
-            for rel_path, content in _vdjfolders.items():
+            for rel_path, content in st.vdjfolders.items():
                 try:
                     root = ET.fromstring(content)
                     if root.tag != "VirtualFolder":
@@ -4098,10 +3925,10 @@ def api_merge_duplicate_group():
                         new_vdjfolders[rel_path] = content
                 except ET.ParseError:
                     new_vdjfolders[rel_path] = content
-            _vdjfolders.clear()
-            _vdjfolders.update(new_vdjfolders)
+            st.vdjfolders.clear()
+            st.vdjfolders.update(new_vdjfolders)
 
-        _songs.pop(remove_idx)
+        st.songs.pop(remove_idx)
         actually_removed += 1
         if keep_idx > remove_idx:
             keep_idx -= 1
@@ -4110,7 +3937,7 @@ def api_merge_duplicate_group():
         'ok': True,
         'removed': actually_removed,
         'playlists_updated': total_updated,
-        'count': len(_songs),
+        'count': len(st.songs),
     })
 
 
@@ -4186,7 +4013,6 @@ def api_encoding_fixes():
     GET ?field=author|title|both&includeSuspicious=1 (opcjonalnie: także rekordy z podejrzanymi znakami)
     Zwraca: { items: [{ idx, field, before, after, needsReview? }, ...] }
     """
-    global _songs
     _ensure_loaded()
     field = (request.args.get('field') or 'both').lower()
     if field not in ('author', 'title', 'both', 'all'):
@@ -4205,7 +4031,7 @@ def api_encoding_fixes():
         check_tags = [(field, tag_map[field])]
     items = []
     seen = set()  # (idx, field) – unikamy duplikatów
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         for fk, tag_key in check_tags:
             val = s.get(tag_key, '') or ''
             if not val:
@@ -4231,7 +4057,6 @@ def api_apply_encoding_fixes():
     POST body: { changes: [{ idx, field, newValue }, ...] }
     field: 'author' | 'title' | 'genre' | 'user1' | 'user2'
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -4242,12 +4067,12 @@ def api_apply_encoding_fixes():
         idx = c.get('idx')
         field = c.get('field')
         new_val = c.get('newValue', '')
-        if idx is None or field not in tag_map or idx < 0 or idx >= len(_songs):
+        if idx is None or field not in tag_map or idx < 0 or idx >= len(st.songs):
             continue
         key = tag_map[field]
-        _songs[idx][key] = str(new_val)
+        st.songs[idx][key] = str(new_val)
         applied += 1
-    return jsonify({'ok': True, 'applied': applied, 'count': len(_songs)})
+    return jsonify({'ok': True, 'applied': applied, 'count': len(st.songs)})
 
 
 def _same_after_normalize(a: str, b: str) -> bool:
@@ -4358,7 +4183,6 @@ def api_clean_title_suggestions():
     ignore: frazy do zostawienia (po nowej linii lub przecinku)
     Zwraca: { items: [{ idx, field, before, after }, ...] }
     """
-    global _songs
     _ensure_loaded()
     pattern = (request.args.get('pattern') or 'all').lower()
     if pattern not in ('urls', 'brackets', 'remix', 'all'):
@@ -4373,7 +4197,7 @@ def api_clean_title_suggestions():
     key_title = 'Tags.Title'
     key_author = 'Tags.Author'
     key_artist = 'Tags.Artist'  # fallback (VDJ/Rekordbox)
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         if field in ('title', 'both'):
             val = str(s.get(key_title, '') or '').strip()
             cleaned = _clean_title(val, pattern)
@@ -4396,7 +4220,6 @@ def api_apply_clean_title():
     POST body: { changes: [{ idx, field, newValue }, ...] }
     field: 'title' | 'author'
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -4408,12 +4231,12 @@ def api_apply_clean_title():
         f = c.get('field', 'title')
         new_val = c.get('newValue', '')
         key = key_map.get(f, 'Tags.Title')
-        if idx is not None and 0 <= idx < len(_songs):
-            _songs[idx][key] = str(new_val)
+        if idx is not None and 0 <= idx < len(st.songs):
+            st.songs[idx][key] = str(new_val)
             if f == 'author':
-                _songs[idx]['Tags.Artist'] = str(new_val)  # sync (VDJ używa Author/Artist)
+                st.songs[idx]['Tags.Artist'] = str(new_val)  # sync (VDJ używa Author/Artist)
             applied += 1
-    return jsonify({'ok': True, 'applied': applied, 'count': len(_songs)})
+    return jsonify({'ok': True, 'applied': applied, 'count': len(st.songs)})
 
 
 def _normalize_value(value: str, pattern: str) -> str:
@@ -4508,7 +4331,6 @@ def api_normalize_suggestions():
     GET ?field=author|title|both&fuzzy=0|1
     Zwraca: { groups: [{ key, variants, suggested, items: [{idx, field, before, pathSource, author, title}], ... }] }
     """
-    global _songs
     _ensure_loaded()
     import re
     field = (request.args.get('field') or 'both').lower()
@@ -4523,7 +4345,7 @@ def api_normalize_suggestions():
         key = tag_map.get(fk, 'Tags.Title')
         return str(s.get(key, '') or (s.get('Tags.Artist', '') if fk == 'author' else '') or '').strip()
 
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         for fk, tag_key in tag_map.items():
             if field != 'both' and field != fk:
                 continue
@@ -4632,10 +4454,12 @@ def api_remixes():
 
 def _api_remixes_impl():
     """Implementacja api_remixes – wzór jak api_duplicates."""
-    global _songs
     _ensure_loaded()
     exclude_tidal = request.args.get('excludeTidal', '0') in ('1', 'true', 'yes')
-    groups = _get_remix_groups()
+    mode = (request.args.get('mode') or 'covers').lower()
+    if mode not in ('covers', 'versions', 'all'):
+        mode = 'covers'
+    groups = _get_remix_groups(mode=mode)
     if exclude_tidal:
         for grp in groups:
             grp['items'] = [it for it in grp['items'] if it.get('pathSource') == 'dysk']
@@ -4644,7 +4468,7 @@ def _api_remixes_impl():
         grp['authors'] = sorted(set(it['author'] or '(brak)' for it in grp['items']))
         grp['titleNorm'] = _normalize_for_grouping(_title_core_for_remix(grp['title']))
         for it in grp['items']:
-            s = _songs[it['idx']]
+            s = st.songs[it['idx']]
             it['FilePath'] = s.get('FilePath', '') or ''
             it['playCount'] = s.get('Infos.PlayCount') or s.get('PlayCount') or ''
             it['duration'] = s.get('Infos.SongLength') or s.get('Infos.Duration') or ''
@@ -4665,14 +4489,14 @@ def _api_remixes_impl():
             idx = it['idx']
             if idx not in seen_idx:
                 seen_idx.add(idx)
-                unique_songs.append(_songs[idx])
+                unique_songs.append(st.songs[idx])
     if unique_songs:
         _enrich_songs_with_lists(unique_songs)
     for grp in groups:
         for it in grp['items']:
             try:
                 idx = it['idx']
-                s = _songs[idx]
+                s = st.songs[idx]
                 it['playlists'] = s.get('lists', [])
                 it['playlists_count'] = len(it['playlists'])
                 it['listsDisplay'] = s.get('listsDisplay', '')
@@ -4690,38 +4514,97 @@ def _api_remixes_impl():
     return jsonify({'groups': groups, 'count': total})
 
 
-def _get_remix_groups():
-    """Buduje grupy remiksów (ten sam tytuł, różni wykonawcy). Zwraca listę grup z items zawierającymi idx, pathSource."""
-    global _songs
+def _get_remix_groups(mode: str = 'covers'):
+    """
+    Buduje grupy remiksów/wersji.
+    mode:
+      - covers: ten sam tytuł (bez nawiasów), różni wykonawcy
+      - versions: ten sam wykonawca + tytuł bazowy, różne wersje (Radio Edit, Remix…)
+      - all: oba typy (deduplikacja po zestawie idx)
+    """
     tag_author = 'Tags.Author'
     tag_title = 'Tags.Title'
-    by_title = {}
-    for i, s in enumerate(_songs):
-        author = str(s.get(tag_author, '') or s.get('Tags.Artist', '') or '').strip()
-        title = str(s.get(tag_title, '') or '').strip()
-        if not title:
-            continue
-        title_core = _title_core_for_remix(title)
-        key = _normalize_for_grouping(title_core) if title_core else _normalize_for_grouping(title)
-        if not key:
-            continue
-        path = s.get('FilePath', '') or ''
-        if key not in by_title:
-            by_title[key] = {'titleOrig': title, 'authors': set(), 'items': []}
-        by_title[key]['authors'].add(author or '(brak)')
-        by_title[key]['items'].append({
-            'idx': i, 'author': author, 'title': title,
+
+    def _item(i: int, author: str, title: str, path: str) -> dict:
+        return {
+            'idx': i,
+            'author': author,
+            'title': title,
             'pathSource': _path_source(path),
-        })
-    groups = []
-    for key, data in by_title.items():
-        if len(data['authors']) < 2:
-            continue
-        groups.append({
-            'title': data['titleOrig'],
-            'authors': sorted(data['authors']),
-            'items': data['items'],
-        })
+        }
+
+    groups: list[dict] = []
+    seen_group_keys: set[tuple] = set()
+
+    if mode in ('covers', 'all'):
+        by_title: dict[str, dict] = {}
+        for i, s in enumerate(st.songs):
+            author = str(s.get(tag_author, '') or s.get('Tags.Artist', '') or '').strip()
+            title = str(s.get(tag_title, '') or '').strip()
+            if not title:
+                continue
+            title_core = _title_core_for_remix(title)
+            key = _normalize_for_grouping(title_core) if title_core else _normalize_for_grouping(title)
+            if not key:
+                continue
+            path = s.get('FilePath', '') or ''
+            if key not in by_title:
+                by_title[key] = {'titleOrig': title, 'authors': set(), 'items': []}
+            by_title[key]['authors'].add(author or '(brak)')
+            by_title[key]['items'].append(_item(i, author, title, path))
+        for key, data in by_title.items():
+            if len(data['authors']) < 2:
+                continue
+            gkey = ('covers', key)
+            if gkey in seen_group_keys:
+                continue
+            seen_group_keys.add(gkey)
+            groups.append({
+                'kind': 'covers',
+                'title': data['titleOrig'],
+                'authors': sorted(data['authors']),
+                'items': data['items'],
+            })
+
+    if mode in ('versions', 'all'):
+        by_artist_title: dict[tuple[str, str], dict] = {}
+        for i, s in enumerate(st.songs):
+            author = str(s.get(tag_author, '') or s.get('Tags.Artist', '') or '').strip()
+            title = str(s.get(tag_title, '') or '').strip()
+            if not title:
+                continue
+            title_core = _title_core_for_remix(title)
+            author_key = _normalize_for_grouping(author) if author else '(brak)'
+            title_key = _normalize_for_grouping(title_core) if title_core else _normalize_for_grouping(title)
+            if not title_key:
+                continue
+            pair = (author_key, title_key)
+            path = s.get('FilePath', '') or ''
+            if pair not in by_artist_title:
+                by_artist_title[pair] = {
+                    'titleOrig': title_core or title,
+                    'author': author or '(brak)',
+                    'titles': set(),
+                    'items': [],
+                }
+            by_artist_title[pair]['titles'].add(title)
+            by_artist_title[pair]['items'].append(_item(i, author, title, path))
+        for pair, data in by_artist_title.items():
+            if len(data['items']) < 2:
+                continue
+            if len(data['titles']) < 2 and len({it['title'] for it in data['items']}) < 2:
+                continue
+            gkey = ('versions', pair)
+            if gkey in seen_group_keys:
+                continue
+            seen_group_keys.add(gkey)
+            groups.append({
+                'kind': 'versions',
+                'title': data['titleOrig'],
+                'authors': [data['author']],
+                'items': data['items'],
+            })
+
     return groups
 
 
@@ -4731,7 +4614,6 @@ def api_remixes_skip_tidal():
     Usuwa z bazy remiksy/wersje z Tidal w grupach, gdzie istnieje wersja z dysku.
     Zostawia tylko wersje z dysku.
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     groups = _get_remix_groups()
@@ -4746,10 +4628,10 @@ def api_remixes_skip_tidal():
     to_remove = sorted(set(to_remove), reverse=True)
     removed = 0
     for i in to_remove:
-        if 0 <= i < len(_songs):
-            _songs.pop(i)
+        if 0 <= i < len(st.songs):
+            st.songs.pop(i)
             removed += 1
-    return jsonify({'ok': True, 'removed': removed, 'count': len(_songs)})
+    return jsonify({'ok': True, 'removed': removed, 'count': len(st.songs)})
 
 
 @app.route('/api/normalize-suggestions-legacy', methods=['GET'])
@@ -4757,7 +4639,6 @@ def api_normalize_suggestions_legacy():
     """
     Stary format (pojedyncze pozycje) – dla kompatybilności.
     """
-    global _songs
     _ensure_loaded()
     field = (request.args.get('field') or 'both').lower()
     pattern = (request.args.get('pattern') or 'titlecase').lower()
@@ -4767,7 +4648,7 @@ def api_normalize_suggestions_legacy():
         pattern = 'titlecase'
     tag_map = {'author': 'Tags.Author', 'title': 'Tags.Title'}
     items = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         for fk, tag_key in tag_map.items():
             if field != 'both' and field != fk:
                 continue
@@ -4784,7 +4665,6 @@ def api_apply_normalize():
     Stosuje ujednolicenie nazw (Author/Title).
     POST body: { changes: [{ idx, field, newValue }, ...] }
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -4795,14 +4675,14 @@ def api_apply_normalize():
         idx = c.get('idx')
         field = c.get('field')
         new_val = c.get('newValue', '')
-        if idx is None or field not in tag_map or idx < 0 or idx >= len(_songs):
+        if idx is None or field not in tag_map or idx < 0 or idx >= len(st.songs):
             continue
         key = tag_map[field]
-        _songs[idx][key] = str(new_val)
+        st.songs[idx][key] = str(new_val)
         if field == 'author':
-            _songs[idx]['Tags.Artist'] = str(new_val)
+            st.songs[idx]['Tags.Artist'] = str(new_val)
         applied += 1
-    return jsonify({'ok': True, 'applied': applied, 'count': len(_songs)})
+    return jsonify({'ok': True, 'applied': applied, 'count': len(st.songs)})
 
 
 def _split_artist_title(s: str):
@@ -4836,11 +4716,10 @@ def api_split_author_title_suggestions():
     Domyślnie: lewa → Author, prawa → Title.
     Zwraca: { items: [{ idx, source, left, right, newAuthor, newTitle, currentAuthor, currentTitle }, ...] }
     """
-    global _songs
     _ensure_loaded()
 
     items = []
-    for i, s in enumerate(_songs):
+    for i, s in enumerate(st.songs):
         author = (s.get('Tags.Author', '') or s.get('Tags.Artist', '') or '').strip()
         title = (s.get('Tags.Title', '') or '').strip()
 
@@ -4869,7 +4748,6 @@ def api_apply_split_author_title():
     Stosuje podział Artist/Title.
     POST body: { changes: [{ idx, newAuthor, newTitle }, ...] }
     """
-    global _songs
     _ensure_loaded()
     _push_undo_state()
     data = request.get_json() or {}
@@ -4879,12 +4757,12 @@ def api_apply_split_author_title():
         idx = c.get('idx')
         new_author = c.get('newAuthor', '')
         new_title = c.get('newTitle', '')
-        if idx is not None and 0 <= idx < len(_songs):
-            _songs[idx]['Tags.Author'] = str(new_author)
-            _songs[idx]['Tags.Title'] = str(new_title)
-            _songs[idx]['Tags.Artist'] = str(new_author)
+        if idx is not None and 0 <= idx < len(st.songs):
+            st.songs[idx]['Tags.Author'] = str(new_author)
+            st.songs[idx]['Tags.Title'] = str(new_title)
+            st.songs[idx]['Tags.Artist'] = str(new_author)
             applied += 1
-    return jsonify({'ok': True, 'applied': applied, 'count': len(_songs)})
+    return jsonify({'ok': True, 'applied': applied, 'count': len(st.songs)})
 
 
 AUDIO_EXTENSIONS = {'.mp3', '.m4a', '.mp4', '.wav', '.flac', '.ogg', '.aac', '.vdjsample', '.vdjcache'}
@@ -4965,181 +4843,6 @@ def _stream_vdj_as_ogg(p: Path):
         return jsonify({'error': f'Nie można odczytać pliku: {e}'}), 500
 
 
-def _pick_folder_native() -> Optional[str]:
-    """Otwiera natywne okno wyboru folderu. Zwraca ścieżkę lub None."""
-    try:
-        sys_name = platform.system()
-        if sys_name == 'Darwin':
-            r = subprocess.run(
-                ['osascript', '-e', 'return POSIX path of (choose folder with prompt "Wybierz folder z muzyką")'],
-                capture_output=True, text=True, timeout=60
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
-            return None  # Nie używaj tkinter na macOS – crashuje w kontekście serwera Flask
-        elif sys_name == 'Windows':
-            r = subprocess.run(
-                ['powershell', '-NoProfile', '-Command',
-                 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "Wybierz folder z muzyką"; if ($f.ShowDialog() -eq "OK") { $f.SelectedPath }'],
-                capture_output=True, text=True, timeout=60
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
-            return None
-        else:
-            for cmd in [['zenity', '--file-selection', '--directory', '--title=Wybierz folder z muzyką'],
-                        ['kdialog', '--getexistingdirectory', str(Path.home())]]:
-                try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                    if r.returncode == 0 and r.stdout.strip():
-                        return r.stdout.strip()
-                except FileNotFoundError:
-                    continue
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.withdraw()
-                root.attributes('-topmost', True)
-                path = filedialog.askdirectory(title='Wybierz folder z muzyką')
-                root.destroy()
-                return path if path else None
-            except Exception:
-                pass
-    except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        pass
-    return None
-
-
-@app.route('/api/pick-folder', methods=['GET'])
-def api_pick_folder():
-    """
-    Otwiera natywne okno wyboru folderu. Zwraca { path: "..." } lub { error: "..." }.
-    """
-    path = _pick_folder_native()
-    if path:
-        return jsonify({'path': path})
-    return jsonify({'error': 'Nie wybrano folderu lub brak obsługi okna dialogowego'}), 400
-
-
-@app.route('/api/database-folders', methods=['GET'])
-def api_database_folders():
-    """
-    Zwraca unikalne foldery, w których znajdują się pliki z bazy (katalog nadrzędny każdej ścieżki).
-    Tylko foldery istniejące na dysku, ze ścieżkami bezwzględnymi.
-    Zwraca: { folders: ["/path/to/folder", ...], count }
-    """
-    global _songs
-    _ensure_loaded()
-    folders = set()
-    for s in _songs:
-        fp = s.get('FilePath', '') or ''
-        if fp and not fp.strip().startswith(('td', 'netsearch:', 'soundcloud:', 'beatport:', 'deezer:')):
-            if not fp.lower().endswith('.vdjcache'):
-                try:
-                    p = Path(fp.replace('\\', '/'))
-                    parent = p.parent.resolve()
-                    if parent and str(parent) not in ('.', '') and parent.exists() and parent.is_dir():
-                        folders.add(str(parent))
-                except (OSError, ValueError):
-                    pass
-    return jsonify({'folders': sorted(folders), 'count': len(folders)})
-
-
-def _scan_folder_for_orphans(folder: str, db_paths: set) -> list:
-    """Skanuje folder, zwraca listę plików sierot."""
-    orphans = []
-    p = Path(folder)
-    for f in p.rglob('*'):
-        if not f.is_file():
-            continue
-        if f.suffix.lower() not in AUDIO_EXTENSIONS:
-            continue
-        np = normalize_path(str(f.resolve()))
-        if np not in db_paths:
-            orphans.append({'path': np, 'name': f.name})
-    return orphans
-
-
-def _enrich_orphan_with_metadata(o: dict) -> dict:
-    """Wzbogaca rekord sieroty o metadane z pliku (artist, title, length, bpm, key, rating)."""
-    try:
-        from file_analyzer import read_file_metadata_extended
-        meta = read_file_metadata_extended(o['path'])
-        o['Tags.Author'] = meta.get('artist') or ''
-        o['Tags.Artist'] = meta.get('artist') or ''
-        o['Tags.Title'] = meta.get('title') or o.get('name', '').rsplit('.', 1)[0] if o.get('name') else ''
-        o['Tags.Genre'] = meta.get('genre') or ''
-        o['Tags.User1'] = ''
-        o['Tags.User2'] = ''
-        o['Infos.PlayCount'] = ''
-        o['Infos.SongLength'] = meta.get('length') or 0
-        bpm = meta.get('bpm') or 0
-        o['Tags.Bpm'] = str(60 / bpm) if bpm and bpm > 0 else ''
-        o['Tags.Key'] = meta.get('key') or ''
-        o['Tags.Stars'] = meta.get('rating') or ''
-        o['FilePath'] = o['path']
-        o['pathDisplay'] = o['path']
-    except Exception:
-        pass
-    return o
-
-
-@app.route('/api/scan-orphan-files', methods=['POST'])
-def api_scan_orphan_files():
-    """
-    Skanuje folder(y) w poszukiwaniu plików muzycznych, które nie są w bazie.
-    POST body: { folderPath: "/path" } lub { folderPaths: ["/path1", "/path2"] }
-    Zwraca: { files: [{ path, name }], count }
-    """
-    global _songs
-    _ensure_loaded()
-    data = request.get_json() or {}
-    folders = []
-    if data.get('folderPaths'):
-        folders = [str(f).strip() for f in data['folderPaths'] if str(f).strip()]
-    if not folders and (data.get('folderPath') or '').strip():
-        folders = [(data.get('folderPath') or '').strip()]
-    if not folders:
-        return jsonify({'error': 'Podaj ścieżkę folderu lub foldery'}), 400
-
-    db_paths = set()
-    for s in _songs:
-        fp = s.get('FilePath', '') or ''
-        if fp and not fp.strip().startswith(('td', 'netsearch:', 'soundcloud:', 'beatport:', 'deezer:')):
-            if not fp.lower().endswith('.vdjcache'):
-                np = normalize_path(fp)
-                if np:
-                    db_paths.add(np)
-
-    all_orphans = []
-    seen_paths = set()
-    errors = []
-    for folder in folders:
-        p = Path(folder)
-        if not p.exists():
-            errors.append(f'Folder nie istnieje: {folder}')
-            continue
-        if not p.is_dir():
-            errors.append(f'Ścieżka nie jest folderem: {folder}')
-            continue
-        try:
-            for o in _scan_folder_for_orphans(folder, db_paths):
-                np = normalize_path(o['path'])
-                if np and np not in seen_paths:
-                    seen_paths.add(np)
-                    all_orphans.append(_enrich_orphan_with_metadata(o))
-        except PermissionError as e:
-            errors.append(f'Brak dostępu do {folder}: {e}')
-        except OSError as e:
-            errors.append(f'Błąd skanowania {folder}: {e}')
-    if errors and not all_orphans:
-        return jsonify({'error': '; '.join(errors)}), 400
-    return jsonify({'files': all_orphans, 'count': len(all_orphans), 'errors': errors if errors else None})
-
-
 @app.route('/api/audio-file', methods=['GET'])
 def api_audio_file():
     """
@@ -5154,6 +4857,8 @@ def api_audio_file():
         p = _resolve_audio_path(path, vdj_cache_path)
         if p is None:
             return jsonify({'error': 'Plik nie istnieje'}), 404
+        if not _is_media_path_safe(p, vdj_cache_path=vdj_cache_path, must_be_file=True):
+            return jsonify({'error': 'Ścieżka niedozwolona (poza katalogami bazy)'}), 403
         ext = p.suffix.lower()
         if ext not in AUDIO_EXTENSIONS:
             return jsonify({'error': 'Format nieobsługiwany'}), 400
@@ -5165,142 +4870,6 @@ def api_audio_file():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 400
-
-
-@app.route('/api/open-folder', methods=['POST'])
-def api_open_folder():
-    """
-    Otwiera folder w systemowym menedżerze plików (Finder na macOS, Explorer na Windows).
-    POST body: { path: "/path/to/file/or/folder" } – otwiera katalog nadrzędny jeśli to plik.
-    """
-    data = request.get_json() or {}
-    path = (data.get('path') or '').strip()
-    if not path:
-        return jsonify({'error': 'Brak ścieżki'}), 400
-    try:
-        p = Path(path)
-        if p.is_file():
-            folder = str(p.parent)
-        elif p.is_dir():
-            folder = str(p)
-        else:
-            folder = str(p.parent) if p.parent else str(p)
-        if platform.system() == 'Darwin':
-            subprocess.run(['open', folder], check=True, timeout=5)
-        elif platform.system() == 'Windows':
-            subprocess.run(['explorer', folder], check=True, timeout=5)
-        else:
-            for cmd in [['xdg-open', folder], ['nautilus', folder], ['dolphin', folder]]:
-                try:
-                    subprocess.run(cmd, check=True, timeout=5)
-                    break
-                except (FileNotFoundError, subprocess.CalledProcessError):
-                    continue
-            else:
-                return jsonify({'error': 'Brak obsługi otwierania folderu na tym systemie'}), 400
-        return jsonify({'ok': True})
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'Przekroczono limit czasu'}), 500
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/orphan-file', methods=['DELETE'])
-def api_delete_orphan_file():
-    """
-    Usuwa plik po ścieżce (dla plików sierot).
-    Ścieżka musi być w katalogu nadrzędnym plików z bazy (ochrona path traversal).
-    Body: { path: "..." }
-    """
-    global _songs
-    _ensure_loaded()
-    data = request.get_json() or {}
-    path = (data.get('path') or '').strip()
-    if not path:
-        return jsonify({'error': 'Brak ścieżki'}), 400
-    p = Path(path)
-    if not _is_path_safe(p, must_be_file=True):
-        return jsonify({'error': 'Ścieżka niedozwolona (poza katalogami bazy)'}), 403
-    if not p.exists():
-        return jsonify({'error': 'Plik nie istnieje'}), 404
-    if not p.is_file():
-        return jsonify({'error': 'Nie jest plikiem'}), 400
-    if p.suffix.lower() not in AUDIO_EXTENSIONS:
-        return jsonify({'error': 'Nieprawidłowy typ pliku'}), 400
-    try:
-        p.unlink()
-    except PermissionError:
-        return jsonify({'error': 'Brak uprawnień do usunięcia'}), 403
-    except OSError as e:
-        return jsonify({'error': 'Błąd usuwania: ' + str(e)}), 500
-    return jsonify({'ok': True})
-
-
-@app.route('/api/license/status', methods=['GET'])
-def api_license_status():
-    """Status licencji – czy eksport jest dozwolony."""
-    lic = check_export_license()
-    return jsonify({
-        'canExport': lic.get('allowed', False),
-        'machineId': lic.get('machineId', get_machine_id()),
-        'reason': lic.get('reason') if not lic.get('allowed') else None,
-    })
-
-
-@app.route('/api/license/machine-id', methods=['GET'])
-def api_license_machine_id():
-    """Machine ID – do zamówienia licencji."""
-    return jsonify({'machineId': get_machine_id()})
-
-
-@app.route('/api/license/activate', methods=['POST'])
-def api_license_activate():
-    """Aktywacja licencji – body: { "key": "IMPREZJA-RSA-..." }."""
-    data = request.get_json() or {}
-    key = (data.get('key') or '').strip()
-    if not key:
-        return jsonify({'error': 'Brak klucza licencji'}), 400
-    if save_license_key(key):
-        return jsonify({'ok': True, 'message': 'Licencja aktywowana'})
-    lic = check_export_license()
-    return jsonify({'error': lic.get('reason', 'Nieprawidłowy klucz')}), 400
-
-
-@app.route('/api/undo-available', methods=['GET'])
-def api_undo_available():
-    """Sprawdza, czy można cofnąć ostatnią operację."""
-    return jsonify({'available': len(_undo_stack) > 0, 'count': len(_undo_stack)})
-
-
-@app.route('/api/undo', methods=['POST'])
-def api_undo():
-    """Cofa ostatnią operację – przywraca poprzedni stan bazy."""
-    global _songs, _vdjfolders, _extra_files, _version, _source, _db_path
-    if not _undo_stack:
-        return jsonify({'error': 'Brak operacji do cofnięcia'}), 400
-    state = _undo_stack.pop()
-    _songs = state['songs']
-    _vdjfolders = state['vdjfolders']
-    _extra_files = state.get('extra_files', {})
-    _version = state['version']
-    _source = state['source']
-    _db_path = Path(state['db_path']) if state.get('db_path') else None
-    return jsonify({'ok': True, 'count': len(_songs), 'undoRemaining': len(_undo_stack)})
-
-
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    """Status załadowanej bazy."""
-    return jsonify({
-        'loaded': len(_songs) > 0,
-        'count': len(_songs),
-        'version': _version,
-        'path': str(_db_path) if _db_path else None,
-        'loadedVia': 'path' if _db_path else ('file' if _songs else None),
-        'source': _source,
-        'undoAvailable': len(_undo_stack) > 0,
-        'undoCount': len(_undo_stack),
-    })
 
 
 if __name__ == '__main__':

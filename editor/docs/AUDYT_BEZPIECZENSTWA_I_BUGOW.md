@@ -1,8 +1,24 @@
 # Audyt konwertera NJR – błędy, podatności i ryzyka
 
-**Data:** 2025-03-13  
-**Zakres:** `tools/vdj-database-editor` – serwer Flask, frontend, licencjonowanie  
-**Status:** Naprawy krytyczne i średnie – wprowadzone 2025-03-13
+**Data pierwotna:** 2025-03-13  
+**Ostatnia aktualizacja:** 2026-07-12  
+**Zakres:** `editor/` – serwer Flask, frontend, licencjonowanie  
+
+## Status po odświeżeniu (2026-07-12)
+
+| Obszar | Status |
+|--------|--------|
+| CORS localhost | ✅ Naprawione |
+| `_is_path_safe` na delete/orphan | ✅ Było |
+| `_is_path_safe` na audio-file, open-folder, scan-orphan, write-tags | ✅ Dodane 2026-07-12 |
+| `MAX_CONTENT_LENGTH` | ✅ 4 GB (świadomie — duże bazy RB) |
+| Klucz testowy licencji | ✅ Tylko przy `NJR_DEV=1` |
+| `VERSION` → runtime | ✅ `version_info.read_app_version()` |
+| CI testy | ✅ `test_roundtrip_formats` w `verify.yml` |
+| macOS entitlements w repo | ✅ `.github/macos-entitlements.plist` |
+| Duplikat `njr_license.py` | ✅ Usunięty |
+
+**Status historyczny (2025-03-13):** Naprawy krytyczne i średnie — wprowadzone 2025-03-13
 
 ---
 
@@ -124,7 +140,7 @@ W `_load_from_zip` pliki są odczytywane do pamięci (`z.read(name)`), nie wypak
 
 ### 10. Licencjonowanie – poprawne
 
-`license_njr.py` i `njr_license.py` – weryfikacja RSA, sprawdzanie machine_id, brak oczywistych luk w logice licencjonowania.
+`license_njr.py` – weryfikacja RSA, sprawdzanie machine_id, brak oczywistych luk w logice licencjonowania.
 
 ---
 

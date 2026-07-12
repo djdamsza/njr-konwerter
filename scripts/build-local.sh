@@ -30,8 +30,7 @@ echo "Aplikacja (PyInstaller): $APP"
 echo "Wersja (VERSION): $VERSION"
 
 cd "$APP"
-python3 -m pip install -q -r requirements.txt
-python3 -m pip install -q pyinstaller
+python3 -m pip install -q -r requirements-dev.txt
 python3 -m PyInstaller njr.spec --clean --noconfirm
 
 mkdir -p "$OUT_DIR"

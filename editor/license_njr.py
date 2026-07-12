@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 import os
+import os
 import re
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def verify_license_key(license_key: str) -> dict:
         return {'valid': False, 'reason': 'Nieprawidłowy format klucza'}
     key = license_key.strip()
 
-    if key == 'IMPREZJA-TEST-TEST-TEST-TEST':
+    if key == 'IMPREZJA-TEST-TEST-TEST-TEST' and os.environ.get('NJR_DEV') == '1':
         return {'valid': True, 'type': 'test', 'expires': None}
 
     if key.startswith('IMPREZJA-RSA-'):

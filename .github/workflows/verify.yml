@@ -1,5 +1,6 @@
 # Osobne repozytorium NJR — korzeń clone = ten pakiet (README, scripts, editor, …).
 name: NJR Konwerter — pakiet
+
 on:
   push:
     branches: [main, master]
@@ -10,6 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            editor/requirements.txt
+            editor/requirements-dev.txt
+
       - name: Struktura i uprawnienia
         run: |
           test -f VERSION
@@ -17,6 +27,31 @@ jobs:
           test -f BUILD.md
           test -f DEPLOY-SERVER.md
           test -f GITHUB.md
+          test -f .github/macos-entitlements.plist
           test -x scripts/build-local.sh
           test -x scripts/github-bootstrap.sh
           test -f scripts/deploy-to-server.example.sh
+          test -f editor/njr.spec
+          test -f editor/version_info.py
+
+      - name: Zależności Python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r editor/requirements.txt
+
+      - name: Testy round-trip formatów
+        working-directory: editor
+        run: python -m unittest test_roundtrip_formats -v
+
+      - name: Wersja spójna z plikiem VERSION
+        run: |
+          VERSION="$(tr -d ' \t\r\n' < VERSION)"
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "editor")
+          from version_info import read_app_version
+          file_v = open("VERSION").read().strip()
+          app_v = read_app_version()
+          assert file_v == app_v, f"VERSION={file_v!r} vs read_app_version()={app_v!r}"
+          print("OK:", app_v)
+          PY
