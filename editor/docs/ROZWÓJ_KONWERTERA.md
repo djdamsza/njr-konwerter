@@ -178,17 +178,17 @@ Problemy występują przy:
 
 ## Zadania do wprowadzenia na później
 
+**Status (2026-07-17):** Zapis Markers2 zaimplementowany (`serato_markers.py`, eksport `writeCues=1`, `POST /api/write-serato-cues`). BeatGrid nadal TODO.
+
 ### 1. Serato Markers2 – zapis cue points do plików audio
 
 **Cel:** Cue points z naszej bazy → tag Serato Markers2 w plikach MP3/FLAC/M4A.
 
 **Zakres:**
-- Parser/generator formatu binarnego Serato Markers2
-- Zapis GEOB (MP3), Vorbis comment (FLAC), MP4 atom (M4A)
-- Mapowanie kolorów VDJ ↔ Serato
-- Endpoint + UI: „Zapisz cue points do plików (Serato)”
-
-**Szczegóły:** Zobacz plan w poprzedniej dyskusji (serato32, struktura cue, serato-tools / triseratops).
+- ~~Parser/generator formatu binarnego Serato Markers2~~ ✅
+- ~~Zapis GEOB (MP3), Vorbis comment (FLAC), MP4 atom (M4A)~~ ✅
+- Mapowanie kolorów VDJ ↔ Serato (podstawowe RGB + domyślne Serato)
+- ~~Endpoint + UI: „Zapisz cue points do plików (Serato)”~~ ✅
 
 ---
 

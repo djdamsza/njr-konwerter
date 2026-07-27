@@ -2,6 +2,8 @@
 Analiza plików audio – brakujące, bitrate, metadane ID3.
 Wymaga dostępu do plików na dysku.
 """
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -234,9 +236,92 @@ def _get_bitrate(path: str) -> Optional[int]:
                 return int(f.info.bitrate / 1000) if f.info.bitrate else None
             except Exception:
                 return None
+        if ext == ".wav":
+            try:
+                import wave
+
+                with wave.open(str(p), "rb") as wf:
+                    rate = wf.getframerate()
+                    channels = wf.getnchannels()
+                    sample_width = wf.getsampwidth()
+                if rate and channels and sample_width:
+                    return int(rate * channels * sample_width * 8 / 1000)
+            except Exception:
+                pass
+            try:
+                from mutagen.wave import WAVE
+
+                info = WAVE(path).info
+                if info.sample_rate and info.channels:
+                    bits = getattr(info, "bits_per_sample", 16) or 16
+                    return int(info.sample_rate * info.channels * bits / 1000)
+            except Exception:
+                return None
     except Exception:
         pass
     return None
+
+
+def get_audio_channels(file_path: Path | str) -> int | None:
+    """Liczba kanałów audio (1=mono). None jeśli nie można odczytać."""
+    if not file_path:
+        return None
+    p = Path(file_path)
+    if not p.is_file():
+        return None
+    try:
+        import wave
+
+        with wave.open(str(p), "rb") as wf:
+            return wf.getnchannels()
+    except Exception:
+        pass
+    ext = p.suffix.lower()
+    try:
+        if ext == ".mp3":
+            from mutagen.mp3 import MP3
+
+            return MP3(str(p)).info.channels
+        if ext in (".m4a", ".mp4", ".aac"):
+            from mutagen.mp4 import MP4
+
+            return MP4(str(p)).info.channels
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+
+            return FLAC(str(p)).info.channels
+    except Exception:
+        pass
+    try:
+        import subprocess
+
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=channels",
+                "-of",
+                "csv=p=0",
+                str(p),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if r.stdout.strip().isdigit():
+            return int(r.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def is_stereo_audio(file_path: Path | str) -> bool:
+    ch = get_audio_channels(file_path)
+    return ch is not None and ch >= 2
 
 
 def is_streaming(path: str) -> bool:

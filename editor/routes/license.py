@@ -12,9 +12,10 @@ bp = Blueprint('license', __name__)
 def api_license_status():
     lic = check_export_license()
     return jsonify({
-        'canExport': lic.get('allowed', False),
+        'canExport': True,
         'machineId': lic.get('machineId', get_machine_id()),
-        'reason': lic.get('reason') if not lic.get('allowed') else None,
+        'reason': None,
+        'mode': 'opensource',
     })
 
 

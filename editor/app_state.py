@@ -34,6 +34,8 @@ folder_roots: set[Path] = set()
 undo_stack: list[dict] = []
 UNDO_MAX = 10
 
+trash_items: list[dict] = []
+
 _NJR_KEY = b'NJR-SAVE-KEY'
 
 
@@ -158,13 +160,7 @@ def push_undo_state() -> None:
 
 
 def require_export_license():
-    lic = check_export_license()
-    if not lic.get('allowed'):
-        return jsonify({
-            'error': 'license_required',
-            'reason': lic.get('reason', 'Eksport wymaga licencji. Zachowaj postęp i wykup licencję.'),
-            'machineId': lic.get('machineId', ''),
-        }), 403
+    """Open source: brak blokady eksportu."""
     return None
 
 
@@ -180,7 +176,7 @@ def decode_njr(encoded: bytes) -> dict:
 
 
 def reset_session() -> None:
-    global db_path, songs, version, vdjfolders, extra_files, source, unified, folder_roots
+    global db_path, songs, version, vdjfolders, extra_files, source, unified, folder_roots, trash_items
     db_path = None
     songs = []
     version = ''
@@ -190,15 +186,17 @@ def reset_session() -> None:
     unified = None
     folder_roots = set()
     clear_undo_stack()
+    trash_items = []
 
 
 def load_folder_beta(folders: list[str], *, compute_hash: bool = False) -> dict:
     """Skan folderów → sesja RB Beta."""
-    global songs, version, vdjfolders, extra_files, source, unified, db_path, folder_roots
+    global songs, version, vdjfolders, extra_files, source, unified, db_path, folder_roots, trash_items
 
     from folder_library import scan_folders
 
     clear_undo_stack()
+    trash_items = []
     scanned, roots, errors = scan_folders(folders, compute_hash=compute_hash)
     songs = scanned
     version = ''

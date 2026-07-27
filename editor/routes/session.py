@@ -30,6 +30,7 @@ def api_undo():
 
 @bp.route('/api/status', methods=['GET'])
 def api_status():
+    import session_trash as trash
     return jsonify({
         'loaded': len(st.songs) > 0,
         'count': len(st.songs),
@@ -39,4 +40,5 @@ def api_status():
         'source': st.source,
         'undoAvailable': len(st.undo_stack) > 0,
         'undoCount': len(st.undo_stack),
+        'trash': trash.trash_summary(),
     })

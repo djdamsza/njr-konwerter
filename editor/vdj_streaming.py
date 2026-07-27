@@ -73,38 +73,41 @@ def get_path_status(path: str, vdj_cache_path: Optional[str] = None) -> Optional
     return None
 
 
+def is_vdj_cache_path(path: str) -> bool:
+    return bool(path and str(path).strip().lower().endswith(".vdjcache"))
+
+
 def is_tidal_path(path: str) -> bool:
-    """Czy ścieżka to utwór Tidal w formacie VDJ."""
-    if not path or not isinstance(path, str):
-        return False
-    p = path.strip()
-    # td123456 lub netsearch://td123456
-    if p.startswith("netsearch://td") or (p.startswith("td") and len(p) > 2 and p[2:].isdigit()):
-        return True
-    # td + same cyfry (np. td1, td123)
-    if re.match(r"^td\d+$", p):
-        return True
-    return False
+    """Czy ścieżka to utwór Tidal (VDJ / Serato / RB)."""
+    return extract_tidal_id(path) is not None
 
 
 def extract_tidal_id(path: str) -> Optional[str]:
     """
-    Wyciąga Tidal track ID ze ścieżki VDJ.
-    Obsługuje: td123456, netsearch://td123456, oraz pliki .vdjcache (td123456.vdjcache, 123456.vdjcache).
-    Zwraca None jeśli nie Tidal.
+    Wyciąga Tidal track ID ze ścieżki VDJ / Serato / RB.
+    Obsługuje: td123, netsearch://td123, streaming://tidal/123, tidal:tracks:123,
+    file://localhosttidal:tracks:123, .vdjcache.
     """
     if not path:
         return None
     p = path.strip()
-    # netsearch://td123456 (wielkość liter)
     pl = p.lower()
     if pl.startswith("netsearch://td"):
         num = p[len("netsearch://td"):].strip()
         return num if num.isdigit() else None
-    # td123456 / TD123456
+    if pl.startswith("streaming://tidal/"):
+        num = p[len("streaming://tidal/"):].strip().split("/", 1)[0]
+        return num if num.isdigit() else None
+    if pl.startswith("tidal:tracks:"):
+        num = p[len("tidal:tracks:"):].strip()
+        return num if num.isdigit() else None
+    if "tidal:tracks:" in pl:
+        # file://localhosttidal:tracks:123
+        idx = pl.index("tidal:tracks:")
+        num = p[idx + len("tidal:tracks:"):].strip()
+        return num if num.isdigit() else None
     if pl.startswith("td") and len(p) > 2 and p[2:].isdigit():
         return p[2:]
-    # .vdjcache: stem td123456 lub 123456 (VDJ cache Tidal)
     if p.lower().endswith(".vdjcache"):
         stem = Path(p).stem
         if stem.startswith("td") and len(stem) > 2 and stem[2:].isdigit():
@@ -125,3 +128,48 @@ def vdj_to_rb_location(path: str) -> Optional[str]:
         return f"file://localhosttidal:tracks:{tid}"
     # TODO: SoundCloud (sc), Beatport (bp?) – gdy znamy format
     return None
+
+
+def vdj_to_serato_tidal_path(path: str) -> Optional[str]:
+    """
+    VDJ td123 / netsearch://td123 → ścieżka streamingu Serato Library.
+    Nowoczesne Serato (Library SQLite): streaming://tidal/TRACK_ID
+    (stary tidal:tracks:ID jest odrzucany przy imporcie .crate / database V2).
+    """
+    tid = extract_tidal_id(path)
+    if tid:
+        return f"streaming://tidal/{tid}"
+    return None
+
+
+def is_serato_tidal_path(path: str) -> bool:
+    """Serato streaming URI (aktualny lub legacy)."""
+    p = (path or "").strip().lower()
+    return p.startswith("streaming://tidal/") or p.startswith("tidal:tracks:")
+
+
+def expand_valid_paths_with_tidal_aliases(
+    valid_paths: set[str],
+    songs: list[dict],
+) -> set[str]:
+    """Dopina aliasy td123 / netsearch://td123 do valid_paths z bazy VDJ."""
+    out = set(valid_paths or [])
+    for s in songs or []:
+        fp = (s.get("FilePath") or "").strip()
+        if not fp or not is_tidal_path(fp):
+            continue
+        np = fp.replace("\\", "/")
+        # normalize_path jest w vdjfolder — unikamy importu cyklicznego tutaj
+        from vdjfolder import normalize_path
+
+        out.add(normalize_path(fp))
+        tid = extract_tidal_id(fp)
+        if tid:
+            for alias in (
+                f"td{tid}",
+                f"netsearch://td{tid}",
+                f"streaming://tidal/{tid}",
+                f"tidal:tracks:{tid}",
+            ):
+                out.add(normalize_path(alias))
+    return out

@@ -2,7 +2,11 @@
 """
 Launcher NJR konwerter – uruchamia serwer Flask i otwiera przeglądarkę.
 Użycie: python launcher.py
+
+Zmienne środowiska:
+  NJR_NO_BROWSER=1  – nie otwieraj karty (restart z terminala / agenta)
 """
+import os
 import socket
 import webbrowser
 import threading
@@ -25,15 +29,27 @@ def main():
     from app import app
     port = _find_free_port()
     url = f'http://127.0.0.1:{port}'
-    def open_browser():
-        time.sleep(1.5)
-        webbrowser.open(url)
-    threading.Thread(target=open_browser, daemon=True).start()
+    open_browser = os.environ.get('NJR_NO_BROWSER', '').strip().lower() not in (
+        '1', 'true', 'yes', 'on',
+    )
+    if open_browser:
+        def _open():
+            time.sleep(1.5)
+            webbrowser.open(url)
+        threading.Thread(target=_open, daemon=True).start()
     if port != 5050:
         print(f'NJR konwerter: {url} (port 5050 zajęty)')
     else:
         print(f'NJR konwerter: {url}')
-    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+    if not open_browser:
+        print('(bez otwierania przeglądarki – NJR_NO_BROWSER=1)')
+    app.run(
+        host='127.0.0.1',
+        port=port,
+        debug=False,
+        use_reloader=False,
+        threaded=True,
+    )
 
 
 if __name__ == '__main__':

@@ -109,6 +109,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r "$NJR_DIR/requirements-dev.txt"
 
+      - name: Buduj njr-engine-export (libdjinterop)
+        run: |
+          cmake --version
+          cd "$NJR_DIR/engine_bridge"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j 4
+          ls -la build/
+
       - name: PyInstaller (onefile)
         run: |
           cd "$NJR_DIR"

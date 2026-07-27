@@ -4,14 +4,17 @@ Konwersja między formatem _songs (dict) a UnifiedDatabase.
 """
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Optional
 from unified_model import (
     UnifiedDatabase,
     Track,
     Playlist,
     BeatgridPoint,
     CuePoint,
+    LoopPoint,
 )
 from vdj_parser import parse_tags_value, join_tags
+from vdjfolder import normalize_path
 
 
 def _parse_comment(children_xml: list) -> str:
@@ -38,16 +41,125 @@ def _parse_scan_key(children_xml: list) -> str:
     return ""
 
 
-def _parse_poi_children(children_xml: list) -> tuple[list[BeatgridPoint], list[CuePoint]]:
-    """Parsuje _children_xml i wyciąga beatgrid + cue points z elementów Poi."""
-    beatgrid = []
-    cue_points = []
+def _parse_scan_bpm(children_xml: list) -> float:
+    """Wyciąga Bpm z elementu Scan (gdy brak beatgrid / Tags.Bpm).
+
+    VDJ zapisuje Scan.Bpm zwykle jako 60/BPM (np. 0.444433 ≈ 135),
+    rzadziej jako bezpośrednie BPM 20–300.
+    """
+    for xml_str in children_xml or []:
+        try:
+            elem = ET.fromstring(xml_str)
+            if elem.tag != "Scan":
+                continue
+            raw = (elem.get("Bpm") or "").strip()
+            if not raw:
+                continue
+            val = float(raw)
+            if 0.2 <= val <= 2.0:
+                return 60.0 / val
+            if 20 <= val <= 300:
+                return val
+        except (ET.ParseError, ValueError):
+            continue
+    return 0.0
+
+
+def _parse_scan_phase(children_xml: list) -> Optional[float]:
+    """Wyciąga Phase (sekundy) z <Scan> — pozycja pierwszego beatgridu."""
+    for xml_str in children_xml or []:
+        try:
+            elem = ET.fromstring(xml_str)
+            if elem.tag != "Scan":
+                continue
+            raw = (elem.get("Phase") or "").strip()
+            if not raw:
+                continue
+            return float(raw)
+        except (ET.ParseError, ValueError):
+            continue
+    return None
+
+
+def _parse_beatgrid_pos_without_bpm(children_xml: list) -> Optional[float]:
+    """Pos z <Poi Type=beatgrid> gdy brak atrybutu Bpm (VDJ często tak zapisuje)."""
     for xml_str in children_xml or []:
         try:
             elem = ET.fromstring(xml_str)
             if elem.tag != "Poi":
                 continue
-            poi_type = elem.get("Type", "")
+            if (elem.get("Type") or "").lower() != "beatgrid":
+                continue
+            bpm_raw = (elem.get("Bpm") or "").strip()
+            if bpm_raw:
+                continue
+            return float(elem.get("Pos", "0") or "0")
+        except (ET.ParseError, ValueError):
+            continue
+    return None
+
+
+def _vdj_loop_slot(num: int, slot_attr: Optional[str]) -> Optional[int]:
+    """VDJ loop Num 1–8 → slot 0–7; opcjonalny atrybut Slot."""
+    if slot_attr is not None and str(slot_attr).strip() != "":
+        try:
+            s = int(slot_attr)
+            if 0 <= s <= 7:
+                return s
+        except ValueError:
+            pass
+    if 1 <= num <= 8:
+        return num - 1
+    if 0 <= num <= 7:
+        return num
+    return None
+
+
+def _loops_from_vdj_poi(
+    raw_loops: list[dict],
+    *,
+    bpm: float,
+) -> list[LoopPoint]:
+    """Konwertuje surowe Poi Type=loop na LoopPoint (end_ms z Size w beatach)."""
+    out: list[LoopPoint] = []
+    used: set[int] = set()
+    for item in raw_loops or []:
+        slot = item.get("slot")
+        if slot is None or slot in used or slot > 7:
+            continue
+        pos_sec = float(item.get("pos_sec") or 0)
+        size_beats = float(item.get("size_beats") or 0)
+        if size_beats <= 0 or bpm <= 0:
+            continue
+        start_ms = int(round(pos_sec * 1000.0))
+        length_ms = int(round(size_beats / bpm * 60.0 * 1000.0))
+        end_ms = start_ms + max(1, length_ms)
+        used.add(slot)
+        out.append(
+            LoopPoint(
+                slot=slot,
+                label=(item.get("name") or f"Loop {slot + 1}")[:64],
+                position_ms=start_ms,
+                end_ms=end_ms,
+                color=item.get("color"),
+            )
+        )
+    return out
+
+
+def _parse_poi_children(
+    children_xml: list,
+) -> tuple[list[BeatgridPoint], list[CuePoint], list[dict]]:
+    """Parsuje _children_xml → beatgrid, cue points, surowe loop POI."""
+    beatgrid = []
+    cue_points = []
+    raw_loops: list[dict] = []
+    for xml_str in children_xml or []:
+        try:
+            elem = ET.fromstring(xml_str)
+            if elem.tag != "Poi":
+                continue
+            poi_type = (elem.get("Type") or "").lower()
             if poi_type == "beatgrid":
                 pos = float(elem.get("Pos", "0") or "0")
                 bpm = float(elem.get("Bpm", "0") or "0")
@@ -60,9 +172,29 @@ def _parse_poi_children(children_xml: list) -> tuple[list[BeatgridPoint], list[C
                 color_str = elem.get("Color", "")
                 color = int(color_str) if color_str else None
                 cue_points.append(CuePoint(name=name, pos=pos, num=num, color=color))
+            elif poi_type == "loop":
+                pos = float(elem.get("Pos", "0") or "0")
+                size_beats = float(elem.get("Size", "0") or "0")
+                num = int(elem.get("Num", "0") or "0")
+                slot_attr = elem.get("Slot")
+                slot = _vdj_loop_slot(num, slot_attr)
+                if slot is None:
+                    continue
+                name = elem.get("Name", f"Loop {slot + 1}")
+                color_str = elem.get("Color", "")
+                color = int(color_str) if color_str else None
+                raw_loops.append(
+                    {
+                        "slot": slot,
+                        "pos_sec": pos,
+                        "size_beats": size_beats,
+                        "name": name,
+                        "color": color,
+                    }
+                )
         except (ET.ParseError, ValueError):
             continue
-    return beatgrid, cue_points
+    return beatgrid, cue_points, raw_loops
 
 
 def vdj_songs_to_unified(songs: list[dict]) -> UnifiedDatabase:
@@ -82,7 +214,7 @@ def vdj_songs_to_unified(songs: list[dict]) -> UnifiedDatabase:
         tags = list(parse_tags_value(genre)) + list(parse_tags_value(user1)) + list(parse_tags_value(user2))
         tags = list(dict.fromkeys(tags))  # unikalne bez zmiany kolejności
 
-        beatgrid, cue_points = _parse_poi_children(s.get("_children_xml", []))
+        beatgrid, cue_points, raw_loops = _parse_poi_children(s.get("_children_xml", []))
         children_xml = s.get("_children_xml", [])
 
         # Key: Tags.Key lub Scan.Key
@@ -95,6 +227,7 @@ def vdj_songs_to_unified(songs: list[dict]) -> UnifiedDatabase:
 
         # BPM: preferuj beatgrid (Poi Bpm=130.0) – zawsze rzeczywiste BPM
         # Tags.Bpm = 60/bpm_display gdy val 0.2–2; czasem val to bezpośrednio BPM (30–300)
+        # Scan.Bpm w VDJ zwykle jako 60/BPM (np. 0.444 ≈ 135)
         bpm = 0.0
         if beatgrid:
             bpm = beatgrid[0].bpm  # pierwszy punkt beatgridu
@@ -108,6 +241,18 @@ def vdj_songs_to_unified(songs: list[dict]) -> UnifiedDatabase:
                     bpm = val  # bezpośrednio BPM
             except ValueError:
                 pass
+        if not bpm:
+            bpm = _parse_scan_bpm(children_xml)
+
+        # Beatgrid POI bez atrybutu Bpm (częste) — uzupełnij z Scan Phase + bpm
+        if not beatgrid and bpm > 0:
+            bg_pos = _parse_beatgrid_pos_without_bpm(children_xml)
+            if bg_pos is None:
+                bg_pos = _parse_scan_phase(children_xml)
+            if bg_pos is not None:
+                beatgrid = [BeatgridPoint(pos=bg_pos, bpm=bpm)]
+
+        loops = _loops_from_vdj_poi(raw_loops, bpm=bpm)
 
         # Duration z Infos.SongLength (sekundy)
         duration = 0.0
@@ -202,6 +347,7 @@ def vdj_songs_to_unified(songs: list[dict]) -> UnifiedDatabase:
             comment=comment,
             beatgrid=beatgrid,
             cue_points=cue_points,
+            loops=loops,
             source_id=None,
         ))
     return UnifiedDatabase(tracks=tracks, playlists=[], smart_playlists=[], source="vdj")
@@ -228,6 +374,19 @@ def _track_to_vdj_dict(t: Track) -> dict:
     for cp in t.cue_points:
         color_attr = f' Color="{cp.color}"' if cp.color is not None else ""
         children_xml.append(f'<Poi Name="{_esc(cp.name)}" Pos="{cp.pos:.6f}" Num="{cp.num}" Type="cue"{color_attr} />')
+    track_bpm = t.bpm or (t.beatgrid[0].bpm if t.beatgrid else 0.0)
+    for lp in t.loops or []:
+        if lp.slot < 0 or lp.slot > 7 or track_bpm <= 0:
+            continue
+        pos_sec = lp.position_ms / 1000.0
+        length_sec = max(0.001, (lp.end_ms - lp.position_ms) / 1000.0)
+        size_beats = length_sec / 60.0 * track_bpm
+        num = lp.slot + 1
+        color_attr = f' Color="{lp.color}"' if lp.color is not None else ""
+        children_xml.append(
+            f'<Poi Name="{_esc(lp.label)}" Pos="{pos_sec:.6f}" Num="{num}" '
+            f'Type="loop" Size="{size_beats:.4f}"{color_attr} />'
+        )
     if t.comment:
         children_xml.append(f"<Comment>{_esc(t.comment)}</Comment>")
 
@@ -236,7 +395,7 @@ def _track_to_vdj_dict(t: Track) -> dict:
     # Infos.SongLength: VDJ używa SongLength (sekundy), nie Duration
     song_len = str(int(t.duration)) if t.duration else ""
     result = {
-        "FilePath": t.path,
+        "FilePath": normalize_path(t.path) if t.path else "",
         "FileSize": "",
         "Flag": "",
         "Tags.Author": t.artist,

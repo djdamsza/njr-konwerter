@@ -167,6 +167,7 @@ def api_open_folder():
 @bp.route('/api/orphan-file', methods=['DELETE'])
 def api_delete_orphan_file():
     st.ensure_loaded()
+    import session_trash as trash
     data = request.get_json() or {}
     path = (data.get('path') or '').strip()
     if not path:
@@ -181,9 +182,12 @@ def api_delete_orphan_file():
     if p.suffix.lower() not in AUDIO_EXTENSIONS:
         return jsonify({'error': 'Nieprawidłowy typ pliku'}), 400
     try:
-        p.unlink()
+        trash.move_file_to_system_trash(p)
+        trash.add_file_trash(str(p), source='orphan-file')
     except PermissionError:
         return jsonify({'error': 'Brak uprawnień do usunięcia'}), 403
     except OSError as e:
         return jsonify({'error': 'Błąd usuwania: ' + str(e)}), 500
-    return jsonify({'ok': True})
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'ok': True, 'trash': trash.trash_summary()})

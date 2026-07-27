@@ -2,7 +2,21 @@
 # PyInstaller spec – NJR konwerter
 # Build: pyinstaller njr.spec
 
+import os
+import platform
+from pathlib import Path
+
 block_cipher = None
+
+_engine_bin = []
+for _cand in [
+    Path('engine_bridge/build/njr-engine-export'),
+    Path('engine_bridge/build/Release/njr-engine-export.exe'),
+    Path('engine_bridge/build/njr-engine-export.exe'),
+]:
+    if _cand.is_file():
+        _engine_bin.append((str(_cand), '.'))
+        break
 
 # Moduły wymagane przez NJR (hiddenimports)
 # Uwaga: importy wewnątrz funkcji w app.py (Tidal, playlisty online, Rekordbox DB)
@@ -20,6 +34,8 @@ hidden_imports = [
     'rb_masterdb_generator',
     'serato_parser',
     'engine_parser',
+    'engine_generator',
+    'engine_libdjinterop',
     'traktor_parser',
     'djxml_parser',
     'djxml_generator',
@@ -54,7 +70,7 @@ hidden_imports = [
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=_engine_bin,
     datas=[
         ('static', 'static'),
         ('../VERSION', '.'),

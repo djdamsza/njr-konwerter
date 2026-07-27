@@ -11,3 +11,10 @@ Thumbs.db
 *.log
 editor/build/
 editor/dist/
+editor/__pycache__/
+editor/**/__pycache__/
+editor/.venv/
+editor/.venv-*/
+editor/.pytest_cache/
+editor/logs/
+editor/engine_bridge/build/

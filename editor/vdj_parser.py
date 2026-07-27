@@ -2,14 +2,91 @@
 Parser bazy danych VirtualDJ (database.xml).
 Obsługuje odczyt, modyfikację i zapis z zachowaniem formatu.
 """
+import copy
+import io
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Union
 import re
 
+from vdjfolder import normalize_path
+
 
 # Wzorce koniunkcji – nie dzielić na osobne tagi (np. "Drum n Bass" → jeden tag, nie ["Drum","n","Bass"])
 _CONJUNCTION_PATTERNS = frozenset({'n', "n'", "'n'", "'n", '&'})
+
+
+def _song_keep_score(s: dict) -> int:
+    """Wyższy = lepszy kandydat przy scalaniu bliźniaków ścieżki (/Users vs //Users)."""
+    score = 0
+    fp = str(s.get("FilePath") or "")
+    # Preferuj ścieżkę bez wiodącego // (przed normalizacją)
+    if fp.startswith("//") and not fp.startswith("///"):
+        score -= 100
+    for key in (
+        "Tags.Title",
+        "Tags.Author",
+        "Tags.Artist",
+        "Tags.Album",
+        "Tags.Bpm",
+        "Tags.Key",
+        "Tags.Genre",
+        "Tags.User1",
+        "Tags.User2",
+        "Tags.Stars",
+        "Infos.SongLength",
+        "Infos.PlayCount",
+        "FileSize",
+    ):
+        if str(s.get(key) or "").strip():
+            score += 1
+    score += len(s.get("_children_xml") or [])
+    return score
+
+
+def prepare_songs_for_vdj_write(songs: list[dict]) -> list[dict]:
+    """
+    Przygotowuje utwory do zapisu database.xml:
+    - zawala FilePath // → / (z zachowaniem netsearch://)
+    - scala bliźniaki o tej samej ścieżce kanonicznej (zostawia bogatszy wpis)
+    """
+    prepared: list[dict] = []
+    by_norm: dict[str, int] = {}
+    for raw in songs:
+        s = copy.copy(raw)
+        fp = str(s.get("FilePath") or "").strip()
+        if fp:
+            s["FilePath"] = normalize_path(fp)
+        np = str(s.get("FilePath") or "")
+        if not np:
+            prepared.append(s)
+            continue
+        if np in by_norm:
+            i = by_norm[np]
+            if _song_keep_score(s) > _song_keep_score(prepared[i]):
+                prepared[i] = s
+        else:
+            by_norm[np] = len(prepared)
+            prepared.append(s)
+    return prepared
+
+
+def _write_vdj_xml_bytes(root: ET.Element) -> bytes:
+    """Serializacja jak VDJ na macOS: UTF-8 + CRLF (LF-only VDJ oznacza jako corrupted)."""
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space=" ", level=0)
+    buf = io.BytesIO()
+    tree.write(
+        buf,
+        encoding="utf-8",
+        xml_declaration=True,
+        default_namespace="",
+        method="xml",
+    )
+    data = buf.getvalue()
+    # Ujednolić do CRLF (nie podwajać istniejących \\r\\n)
+    data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return data
 
 
 def _merge_conjunction_tokens(tokens: list[str]) -> list[str]:
@@ -57,12 +134,28 @@ def song_to_dict(elem: ET.Element) -> dict:
         for k, v in infos.attrib.items():
             d[f'Infos.{k}'] = v or ''
     # Zachowaj raw XML dla pozostałych elementów (Poi, Comment, Link, Scan, CustomMix itd.).
-    # Link = powiązania między utworami (linked tracks) w VDJ – są zachowane przy zapisie.
+    # <Link NetSearch=…> = powiązanie ze streamingiem — NIE to samo co filtr „Has Links”
+    # (Linked Tracks są w extra.db). HasLinks ustawiane później przez vdj_linked_tracks.
     children_xml = []
+    has_netsearch_link = False
+    link_netsearch = ""
     for child in elem:
         if child.tag not in ('Tags', 'Infos'):
             children_xml.append(ET.tostring(child, encoding='unicode'))
+            if child.tag == "Link":
+                ns = (
+                    child.get("NetSearch")
+                    or child.get("netsearch")
+                    or ""
+                ).strip()
+                if ns:
+                    has_netsearch_link = True
+                    if not link_netsearch:
+                        link_netsearch = ns
     d['_children_xml'] = children_xml
+    d["HasNetSearchLink"] = "1" if has_netsearch_link else "0"
+    if link_netsearch:
+        d["Link.NetSearch"] = link_netsearch
     return d
 
 
@@ -70,7 +163,8 @@ def dict_to_song(d: dict, ns: dict) -> ET.Element:
     """Tworzy element <Song> z słownika."""
     attrib = {}
     if d.get('FilePath'):
-        attrib['FilePath'] = str(d['FilePath'])
+        # Zawsze kanoniczna ścieżka – VDJ traktuje /Users i //Users jako dwa utwory
+        attrib['FilePath'] = normalize_path(str(d['FilePath']))
     if d.get('FileSize'):
         attrib['FileSize'] = str(d['FileSize'])
     if d.get('Flag'):
@@ -100,34 +194,77 @@ def dict_to_song(d: dict, ns: dict) -> ET.Element:
     return song
 
 
+_ATTR_PAIR_RE = re.compile(r'(\w+)=(\"[^\"]*\"|\'[^\']*\')')
+_OPEN_TAG_RE = re.compile(
+    r'<([A-Za-z][\w.-]*)((?:\s+[\w.:$-]+=(?:"[^"]*"|\'[^\']*\'))*)\s*(/?>)'
+)
+
+
+def _sanitize_vdj_xml_duplicate_attrs(xml_text: str) -> str:
+    """VirtualDJ czasem zapisuje powtórzone atrybuty (np. Artist dwa razy) – ET.parse wtedy pada."""
+    def fix_tag(m: re.Match) -> str:
+        tag_name = m.group(1)
+        attrs_str = m.group(2) or ''
+        closing = m.group(3)
+        seen: dict[str, str] = {}
+        order: list[str] = []
+        for am in _ATTR_PAIR_RE.finditer(attrs_str):
+            key = am.group(1)
+            if key not in seen:
+                order.append(key)
+            seen[key] = am.group(0)
+        if not seen:
+            return f'<{tag_name}{closing}'
+        new_attrs = ' '.join(seen[k] for k in order)
+        return f'<{tag_name} {new_attrs}{closing}'
+
+    return _OPEN_TAG_RE.sub(fix_tag, xml_text)
+
+
 def load_database(path: Union[str, Path]) -> tuple[list[dict], str]:
     """
     Wczytuje database.xml. Zwraca (lista utworów, wersja bazy).
+    FilePath jest normalizowany (// → /), żeby porównań/zapis nie mnożyły bliźniaków.
+    HasLinks ustawiane z extra.db (Linked Tracks), nie z <Link NetSearch>.
     """
-    tree = ET.parse(path)
-    root = tree.getroot()
-    version = root.get('Version', '')
+    xml_text = Path(path).read_text(encoding="utf-8", errors="replace")
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        root = ET.fromstring(_sanitize_vdj_xml_duplicate_attrs(xml_text))
+    version = root.get("Version", "")
     songs = []
-    for song_elem in root.findall('Song'):
-        songs.append(song_to_dict(song_elem))
+    for song_elem in root.findall("Song"):
+        d = song_to_dict(song_elem)
+        fp = d.get("FilePath") or ""
+        if fp:
+            d["FilePath"] = normalize_path(fp)
+        songs.append(d)
+    try:
+        from vdj_linked_tracks import apply_linked_tracks_flags
+
+        apply_linked_tracks_flags(songs, Path(path).resolve().parent)
+    except Exception:
+        pass
     return songs, version
 
 
-def save_database(path: Union[str, Path], songs: list[dict], version: str) -> None:
-    """Zapisuje database.xml."""
-    root = ET.Element('VirtualDJ_Database', Version=version)
-    for d in songs:
-        song = dict_to_song(d, {})
-        root.append(song)
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space=' ', level=0)
-    tree.write(
-        path,
-        encoding='utf-8',
-        xml_declaration=True,
-        default_namespace='',
-        method='xml',
-    )
+def save_database(path: Union[str, Path, io.BufferedIOBase, io.BytesIO], songs: list[dict], version: str) -> None:
+    """
+    Zapisuje database.xml w formacie akceptowanym przez VirtualDJ:
+    - CRLF
+    - FilePath bez //Users (kanonicznie)
+    - bez podwójnych wpisów tej samej ścieżki
+    """
+    prepared = prepare_songs_for_vdj_write(songs)
+    root = ET.Element("VirtualDJ_Database", Version=version or "")
+    for d in prepared:
+        root.append(dict_to_song(d, {}))
+    data = _write_vdj_xml_bytes(root)
+    if hasattr(path, "write"):
+        path.write(data)
+        return
+    Path(path).write_bytes(data)
 
 
 def get_all_tags(songs: list[dict], field: str) -> dict[str, int]:

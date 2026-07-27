@@ -1,5 +1,5 @@
 """
-Model uniwersalny dla konwertera VDJ ↔ Rekordbox.
+Model uniwersalny dla konwertera VDJ ↔ Serato ↔ Engine DJ.
 Używany jako pośrednia reprezentacja przy imporcie i eksporcie.
 """
 from dataclasses import dataclass, field
@@ -23,6 +23,16 @@ class CuePoint:
 
 
 @dataclass
+class LoopPoint:
+    """Pętla (loop) — slot 0–7 (VDJ Num 1–8 / Serato Markers_ wpisy 5–12 / Engine)."""
+    slot: int  # 0–7
+    label: str = ""
+    position_ms: int = 0
+    end_ms: int = 0
+    color: Optional[int] = None  # ARGB/RGB (VDJ) lub None
+
+
+@dataclass
 class Track:
     """Uniwersalna reprezentacja utworu."""
     path: str
@@ -40,6 +50,7 @@ class Track:
     rating: int = 0
     beatgrid: list[BeatgridPoint] = field(default_factory=list)
     cue_points: list[CuePoint] = field(default_factory=list)
+    loops: list[LoopPoint] = field(default_factory=list)
     # Identyfikator źródłowy (TrackID w RB, ścieżka w VDJ)
     source_id: Optional[str] = None
 
@@ -51,6 +62,7 @@ class Playlist:
     track_ids: list[str]  # path lub TrackID
     is_folder: bool = False
     children: list["Playlist"] = field(default_factory=list)
+    filter_text: str = ""  # VDJ filter list → Engine Smartlist (gdy ustawione)
 
 
 @dataclass
@@ -67,4 +79,4 @@ class UnifiedDatabase:
     tracks: list[Track] = field(default_factory=list)
     playlists: list[Playlist] = field(default_factory=list)
     smart_playlists: list[SmartPlaylist] = field(default_factory=list)
-    source: str = ""  # "vdj" | "rb"
+    source: str = ""  # "vdj" | "rb" | "serato" | "engine"

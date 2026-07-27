@@ -1,9 +1,12 @@
 """RB Beta — porządek na plikach muzycznych bez bazy Rekordbox."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from flask import Blueprint, jsonify, request
 
 import app_state as st
+import session_trash as trash
 
 bp = Blueprint('rb_beta', __name__)
 
@@ -52,13 +55,12 @@ def api_rb_beta_scan_folders():
 @bp.route('/api/rb-beta/delete-files', methods=['POST'])
 def api_rb_beta_delete_files():
     """
-    Usuwa pliki fizycznie z dysku (tylko w obrębie zeskanowanych folderów RB Beta).
+    Przenosi pliki do kosza systemowego i usuwa z sesji RB Beta.
     Body: { paths: [...] }
     """
     if not st.is_folder_beta():
         return jsonify({'error': 'Dostępne tylko w trybie RB Beta'}), 400
 
-    from pathlib import Path
     from file_analyzer import is_streaming
 
     data = request.get_json() or {}
@@ -81,20 +83,24 @@ def api_rb_beta_delete_files():
         if not st.is_path_safe(p, must_be_file=True):
             errors.append(f'Ścieżka niedozwolona: {path[:50]}…')
             continue
+        idx = path_to_idx.get(path)
+        song = st.songs[idx] if idx is not None and 0 <= idx < len(st.songs) else None
         if p.exists():
             try:
-                p.unlink()
+                trash.move_file_to_system_trash(p)
                 deleted += 1
-                idx = path_to_idx.get(path)
-                if idx is not None:
-                    removed_indices.append(idx)
+                if song is not None and idx is not None:
+                    trash.add_combined_trash(song, original_index=idx, path=path, source='rb-beta')
+                else:
+                    trash.add_file_trash(path, source='rb-beta')
             except OSError as e:
                 errors.append(f'Błąd {path[:50]}…: {e}')
         else:
             errors.append(f'Nie istnieje: {path[:50]}…')
-            idx = path_to_idx.get(path)
-            if idx is not None:
-                removed_indices.append(idx)
+            if song is not None and idx is not None:
+                trash.add_db_track_trash(song, original_index=idx, source='rb-beta')
+        if idx is not None:
+            removed_indices.append(idx)
 
     for i in sorted(set(removed_indices), reverse=True):
         if 0 <= i < len(st.songs):
@@ -106,4 +112,5 @@ def api_rb_beta_delete_files():
         'removedFromSession': len(set(removed_indices)),
         'count': len(st.songs),
         'errors': errors,
+        'trash': trash.trash_summary(),
     })

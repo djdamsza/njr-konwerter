@@ -89,6 +89,9 @@
     .sidebar-nav-item:hover { background: rgba(255,255,255,0.05); }
     .sidebar-nav-item.active { background: rgba(63, 63, 70, 0.5); border-left-color: var(--accent); }
     .sidebar-nav-item.import-export { font-weight: 600; color: var(--success); }
+    .nav-badge { margin-left: 6px; font-size: 10px; background: var(--err); color: #fff; border-radius: 10px; padding: 1px 6px; vertical-align: middle; }
+    .trash-filter-btn { font-size: 12px; padding: 4px 10px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg); color: var(--text); cursor: pointer; }
+    .trash-filter-btn.active { background: rgba(63, 63, 70, 0.6); border-color: var(--success); }
     .sidebar-sep { height: 1px; background: var(--accent); margin: 8px 12px; opacity: 0.5; }
     .sidebar.collapsed .sidebar-sep { margin: 8px 8px; }
     @media (max-width: 768px) {
@@ -152,6 +155,15 @@
     }
     .status.loaded { color: var(--success); }
     .status.error { color: var(--err); }
+    .status.working { color: var(--accent); }
+    .tidal-cache-progress.working {
+      color: var(--accent);
+      animation: tidal-cache-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes tidal-cache-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.55; }
+    }
     .db-stats {
       display: flex;
       gap: 24px;
@@ -199,6 +211,19 @@
     .orphan-path-link { cursor: pointer; }
     .orphan-path-link:hover { text-decoration: underline !important; }
     #orphanResult .table-wrap { max-height: 450px; overflow: auto; }
+    #card-tidalCacheSerato.active,
+    .main-content .card-panel.active#card-tidalCacheSerato {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    #tidalCacheSeratoPanel { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+    #tidalCacheResult.table-wrap {
+      flex: 1;
+      min-height: 180px;
+      max-height: min(58vh, calc(100vh - 300px));
+      overscroll-behavior: contain;
+    }
     #orphanResult .dj-table { font-size: 13px; }
     .tag-list {
       display: flex;
@@ -332,6 +357,39 @@
     }
     #tidalModal .modal-close { position: absolute; top: 8px; right: 8px; background: transparent; border: none; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; padding: 0; width: 24px; }
     #tidalModal .modal-close:hover { color: var(--text); }
+    #jobOverlay {
+      display: none; position: fixed; inset: 0; z-index: 1300;
+      background: rgba(0, 0, 0, 0.72); align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; padding: 24px;
+    }
+    #jobOverlay .job-spinner {
+      width: 48px; height: 48px; border: 4px solid var(--accent);
+      border-top-color: var(--success); border-radius: 50%;
+      animation: jobSpin 0.9s linear infinite;
+    }
+    @keyframes jobSpin { to { transform: rotate(360deg); } }
+    #jobOverlay .job-overlay-title { font-size: 18px; font-weight: 600; text-align: center; }
+    #jobOverlay .job-overlay-detail { font-size: 13px; color: var(--muted); text-align: center; max-width: 420px; line-height: 1.45; }
+    #jobDoneBackdrop {
+      display: none; position: fixed; inset: 0; z-index: 1400;
+      background: rgba(0, 0, 0, 0.55); align-items: center; justify-content: center; padding: 20px;
+    }
+    #jobDoneModal {
+      background: var(--bg2); border: 2px solid var(--accent); border-radius: 10px;
+      padding: 22px 24px; min-width: 340px; max-width: 520px; width: 100%;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45); position: relative;
+    }
+    #jobDoneModal .job-done-title { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+    #jobDoneModal .job-done-title.success { color: var(--success); }
+    #jobDoneModal .job-done-title.error { color: var(--err); }
+    #jobDoneModal .job-done-message { margin: 0 0 8px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
+    #jobDoneModal .job-done-detail { margin: 0 0 16px; font-size: 12px; color: var(--muted); line-height: 1.4; max-height: 160px; overflow-y: auto; }
+    #jobDoneModal .job-done-ok {
+      width: 100%; padding: 10px 16px; border: none; border-radius: 6px;
+      background: var(--success); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #jobDoneModal .job-done-ok.error-btn { background: var(--err); }
+    #jobDoneModal .job-done-ok:hover { filter: brightness(1.08); }
     #tidalModal h4 { margin: 0 0 12px; font-size: 14px; }
     #tidalModal .tidal-result { margin: 8px 0; padding: 10px 12px; background: var(--bg); border-radius: 4px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .tidal-play-btn { width: 28px; height: 28px; padding: 0; border: none; border-radius: 50%; background: #00d4aa; color: #18181b; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
@@ -365,6 +423,7 @@
         <button type="button" class="sidebar-nav-item" data-card="playCount" title="Play Count"><span class="nav-label">Play Count</span><span class="nav-short">Y</span></button>
         <button type="button" class="sidebar-nav-item" data-card="tidal" title="Tidal"><span class="nav-label">Tidal</span><span class="nav-short">T</span></button>
         <button type="button" class="sidebar-nav-item" data-card="online2offline" title="Online na Offline"><span class="nav-label">Online na Offline</span><span class="nav-short">O</span></button>
+        <button type="button" class="sidebar-nav-item" data-card="tidalCacheSerato" title="Tidal Cache → Serato"><span class="nav-label">Tidal → Serato</span><span class="nav-short">S</span></button>
         <button type="button" class="sidebar-nav-item" data-card="duplicates" title="Duplikaty"><span class="nav-label">Duplikaty</span><span class="nav-short">D</span></button>
         <button type="button" class="sidebar-nav-item" data-card="encoding" title="Popraw kodowanie"><span class="nav-label">Popraw kodowanie</span><span class="nav-short">K</span></button>
         <button type="button" class="sidebar-nav-item" data-card="cleanTitle" title="Czyszczenie tytułów"><span class="nav-label">Czyszczenie tytułów</span><span class="nav-short">C</span></button>
@@ -376,6 +435,7 @@
         <button type="button" class="sidebar-nav-item" data-card="tags" title="Edytor tagów"><span class="nav-label">Edytor tagów</span><span class="nav-short">G</span></button>
         <button type="button" class="sidebar-nav-item" data-card="tagMerge" title="Scalanie tagów"><span class="nav-label">Scalanie tagów</span><span class="nav-short">S</span></button>
         <button type="button" class="sidebar-nav-item" data-card="wishlist" title="Lista życzeń"><span class="nav-label">Lista życzeń</span><span class="nav-short">Ż</span></button>
+        <button type="button" class="sidebar-nav-item" data-card="trash" title="Kosz sesji — przywracanie usuniętych elementów"><span class="nav-label">Kosz</span><span class="nav-short">🗑</span><span id="trashNavBadge" class="nav-badge" style="display: none;">0</span></button>
         <div class="sidebar-sep"></div>
         <button type="button" class="sidebar-nav-item import-export" data-card="export" title="Eksport"><span class="nav-label">Eksport</span><span class="nav-short">E</span></button>
       </nav>
@@ -598,6 +658,48 @@
       <span id="hintVdj" style="display:none;"><strong>vdjfolder/ZIP</strong> – przeciąganie nie działa. Kliknij <strong>Zapisz do VDJ</strong> – plik trafi we właściwe miejsce. ZIP: w VDJ wybierz File → Restore.</span>
     </p>
     <div id="online2offlineResult" style="font-size: 13px; margin-top: 12px; max-height: 60vh; overflow-y: auto;"></div>
+  </div>
+  </div>
+
+  <div class="card-panel" id="card-tidalCacheSerato">
+  <div class="merge-panel" id="tidalCacheSeratoPanel">
+    <h3>Tidal Cache → Serato</h3>
+    <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
+      Utwory Tidal <strong>pobrane do cache VDJ</strong> (.vdjcache) — Serato ich nie odtwarza. Ten panel pobiera je ponownie z Tidal jako pliki audio. W terminalu raz uruchom: <code>/Users/test/Documents/njr-konwerter/editor/.venv-tiddl/bin/tiddl auth login</code> (z katalogu projektu: <code>cd ~/Documents/njr-konwerter</code>).
+    </p>
+    <div class="merge-row" style="align-items: center; gap: 12px; flex-wrap: wrap;">
+      <span id="tidalCacheToolStatus" style="font-size: 12px; color: var(--muted);">tiddl: …</span>
+      <span id="tidalCacheStats" style="font-size: 12px; color: var(--muted);"></span>
+    </div>
+    <div class="merge-row" style="align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+      <label>Folder pobierania:</label>
+      <input type="text" id="tidalCacheOutputDir" placeholder="~/Music/NJR-Tidal-Serato" style="flex: 1; min-width: 220px;">
+      <button type="button" id="tidalCachePickOutputBtn">Wybierz…</button>
+      <button type="button" id="tidalCacheSaveOutputBtn">Zapisz folder</button>
+    </div>
+    <div class="merge-row" style="align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+      <label>Cache VDJ:</label>
+      <input type="text" id="tidalCacheVdjPath" placeholder="~/Library/.../VirtualDJ/Cache" style="flex: 1; min-width: 220px;">
+      <button type="button" id="tidalCacheScanBtn" class="primary">Odśwież skan</button>
+      <select id="tidalCacheFilter">
+        <option value="cached">Tylko w cache VDJ</option>
+        <option value="pending">Do pobrania (cached, bez pliku NJR)</option>
+        <option value="errors">Błędy pobierania</option>
+        <option value="tidal_removed">Usunięte z Tidal (404)</option>
+        <option value="no_tidal_id">Cache bez Tidal ID (osierocone)</option>
+        <option value="downloaded">Pobrane NJR</option>
+        <option value="all">Wszystkie Tidal w bazie (4262+)</option>
+        <option value="disk">Wszystkie pliki .vdjcache na dysku</option>
+      </select>
+      <button type="button" id="tidalCacheDownloadSelectedBtn">Pobierz zaznaczone</button>
+      <button type="button" id="tidalCacheDownloadAllBtn">Pobierz wszystkie cached</button>
+      <button type="button" id="tidalCacheDeleteBtn">Usuń pobrane</button>
+      <button type="button" id="tidalCacheApplyMetaBtn" title="Zapisuje tagi, BPM, key, rating i hot cues z VDJ do wszystkich pobranych plików NJR">Uzupełnij metadane VDJ (wszystkie)</button>
+      <button type="button" id="tidalCacheInstallSeratoBtn" class="export-requires-license" style="background:#be123c;">Instaluj crates Serato</button>
+    </div>
+    <p id="tidalCacheProgress" class="tidal-cache-progress" style="font-size: 13px; color: var(--muted); margin: 10px 0 0; min-height: 1.4em; font-weight: 500;"></p>
+    <div id="tidalCachePager" style="display: none; align-items: center; gap: 10px; margin-top: 8px; font-size: 12px; flex-wrap: wrap;"></div>
+    <div id="tidalCacheResult" class="table-wrap" style="font-size: 13px; margin-top: 8px;"></div>
   </div>
   </div>
 
@@ -867,6 +969,31 @@
   </div>
   </div>
 
+  <div class="card-panel" id="card-trash">
+  <div class="merge-panel" id="trashPanel">
+    <h3>Kosz sesji</h3>
+    <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
+      Wszystko usunięte w tej sesji trafia tutaj — możesz <strong>przywrócić</strong> lub <strong>potwierdzić trwałe usunięcie</strong>.
+      Pliki muzyczne są przenoszone do <strong>kosza systemowego macOS</strong> (Finder) — aby usunąć je z dysku, opróżnij Kosz Findera.
+    </p>
+    <div class="merge-row" style="flex-wrap: wrap; gap: 8px; margin-bottom: 12px;">
+      <button type="button" id="trashRefreshBtn">Odśwież</button>
+      <button type="button" id="trashSelectAllBtn" title="Zaznacz wszystkie widoczne">Zaznacz wszystkie</button>
+      <button type="button" id="trashDeselectAllBtn" title="Odznacz wszystkie">Odznacz</button>
+      <button type="button" id="trashRestoreSelectedBtn" disabled>Przywróć zaznaczone</button>
+      <button type="button" id="trashDismissSelectedBtn" class="danger" disabled>Usuń z kosza na stałe</button>
+      <span id="trashSummary" class="muted" style="font-size: 12px;"></span>
+    </div>
+    <div style="display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+      <button type="button" class="trash-filter-btn active" data-trash-filter="all">Wszystko</button>
+      <button type="button" class="trash-filter-btn" data-trash-filter="files">Pliki muzyczne</button>
+      <button type="button" class="trash-filter-btn" data-trash-filter="tracks">Wpisy bazy</button>
+      <button type="button" class="trash-filter-btn" data-trash-filter="playlists">Playlisty</button>
+    </div>
+    <div id="trashResult" class="table-wrap" style="font-size: 13px; max-height: 500px; overflow-y: auto;"></div>
+  </div>
+  </div>
+
   <div id="unifiedPlayerBar">
     <button type="button" class="player-close" id="unifiedPlayerClose" title="Zamknij i zatrzymaj">× Zamknij</button>
     <span class="player-label" id="unifiedPlayerLabel">Odtwarzacz</span>
@@ -918,24 +1045,32 @@
 
   <div id="licenseModal" style="display: none; position: fixed; z-index: 1200; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--bg2); border: 2px solid var(--accent); border-radius: 8px; padding: 20px; min-width: 360px; max-width: 90vw; max-height: 85vh; overflow-y: auto;">
     <button type="button" class="modal-close" id="licenseModalClose" title="Zamknij" style="position: absolute; top: 8px; right: 8px; background: transparent; border: none; color: var(--muted); font-size: 18px; cursor: pointer;">×</button>
-    <h4 style="margin: 0 0 12px;">Eksport wymaga licencji</h4>
+    <h4 style="margin: 0 0 12px;">Open source</h4>
     <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
-      Wersja bezpłatna pozwala na pełną edycję bez limitu czasu. Eksport bazy (VDJ, Serato, Rekordbox, DJXML, Kopia zapasowa, ID3) wymaga licencji przypisanej do tego komputera.
-    </p>
-    <p style="font-size: 13px; margin: 0 0 12px;">
-      <strong>Zachowaj postęp</strong> – zapisze Twoją pracę w formacie .njr. Plik można otworzyć ponownie w aplikacji. Eksport do VDJ/Serato itd. będzie dostępny po opłaceniu licencji.
+      NJR Konwerter jest obecnie open source — eksport (VDJ, Serato, Rekordbox, DJXML, Engine, ID3) działa bez klucza licencji.
     </p>
     <div style="margin: 12px 0;">
       <button type="button" id="saveProgressBtn" class="primary" style="padding: 10px 16px;">Zachowaj postęp (.njr)</button>
     </div>
-    <hr style="border: none; border-top: 1px solid var(--accent); margin: 16px 0;">
-    <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px;">Masz klucz licencji? Wpisz poniżej:</p>
-    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
-      <input type="text" id="licenseKeyInput" placeholder="IMPREZJA-RSA-..." style="flex: 1; padding: 8px; font-size: 12px;">
-      <button type="button" id="licenseActivateBtn" class="primary">Aktywuj</button>
-    </div>
-    <p style="font-size: 11px; color: var(--muted); margin: 0 0 4px;">Machine ID (do zamówienia):</p>
+    <p style="font-size: 11px; color: var(--muted); margin: 12px 0 4px;">Machine ID (informacyjnie):</p>
     <code id="licenseMachineId" style="font-size: 11px; word-break: break-all;">—</code>
+    <input type="hidden" id="licenseKeyInput" value="">
+    <button type="button" id="licenseActivateBtn" style="display:none;">Aktywuj</button>
+  </div>
+
+  <div id="jobOverlay" aria-live="polite" aria-busy="true">
+    <div class="job-spinner" role="status" aria-label="Trwa przetwarzanie"></div>
+    <div class="job-overlay-title" id="jobOverlayTitle">Przetwarzanie…</div>
+    <div class="job-overlay-detail" id="jobOverlayDetail">To może potrwać kilka minut. Możesz zostawić to okno otwarte.</div>
+  </div>
+
+  <div id="jobDoneBackdrop" role="dialog" aria-modal="true" aria-labelledby="jobDoneTitle">
+    <div id="jobDoneModal">
+      <h4 class="job-done-title success" id="jobDoneTitle">Gotowe</h4>
+      <p class="job-done-message" id="jobDoneMessage"></p>
+      <p class="job-done-detail" id="jobDoneDetail" style="display: none;"></p>
+      <button type="button" class="job-done-ok" id="jobDoneOkBtn">OK</button>
+    </div>
   </div>
 
   <div id="filtersModal" style="display: none; position: fixed; z-index: 1100; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--bg2); border: 1px solid var(--accent); border-radius: 8px; padding: 20px; min-width: 320px; max-width: 90vw;">
@@ -1094,14 +1229,66 @@
         <button type="button" id="saveProgressBtnCard" class="primary" style="padding: 8px 12px; font-size: 12px;" title="Zapisz postęp bez licencji – plik .njr">Zachowaj postęp</button>
         <a id="exportVdjBtn" href="/api/download" download="database.xml" class="export-requires-license" style="padding: 10px 16px; background: #2d5a87; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">VDJ</a>
         <button type="button" id="backupBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; color: var(--muted); border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); cursor: pointer;" title="Pobierz plik ZIP z kopią zapasową bazy">Kopia zapasowa</button>
-        <span class="serato-export-group" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(225, 29, 72, 0.12); border: 1px solid rgba(225, 29, 72, 0.4); border-radius: 8px;">
-          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;">Root:</label>
-          <input type="text" id="seratoDriveRoot" placeholder="Mac główny: /  Zewnętrzny: /Volumes/Nazwa/" style="width: 260px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
-          <button type="button" id="seratoBrowseBtn" title="Wybierz folder (root dysku)">Przeglądaj</button>
-          <a id="exportSeratoBtn" href="/api/export-serato" download="serato-export.zip" class="export-requires-license" style="padding: 10px 16px; background: #e11d48; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Serato <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
+        <span class="serato-export-group" style="display: inline-flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; background: rgba(225, 29, 72, 0.12); border: 1px solid rgba(225, 29, 72, 0.4); border-radius: 8px; max-width: 720px;">
+          <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <label style="font-size: 12px; color: var(--muted); white-space: nowrap;">Root:</label>
+            <input type="text" id="seratoDriveRoot" placeholder="Mac: /   Dysk: /Volumes/Nazwa/" style="width: 220px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
+            <button type="button" id="seratoBrowseBtn" title="Wybierz folder (root dysku)">Przeglądaj</button>
+            <label style="font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Zapisuje hot cues do tagów plików (Markers2). Zamknij Serato przed zapisem.">
+              <input type="checkbox" id="seratoWriteCues" checked>
+              hot cues → pliki
+            </label>
+            <label style="font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Tylko Subcrates — nie nadpisuje database V2. Zalecane przy istniejącej bibliotece Serato.">
+              <input type="checkbox" id="seratoCratesOnly" checked>
+              tylko crates
+            </label>
+            <a id="exportSeratoBtn" href="/api/export-serato" download="serato-export.zip" class="export-requires-license" style="padding: 10px 16px; background: #e11d48; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Serato <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
+            <button type="button" id="installSeratoCratesBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #be123c; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zapisuje Subcrates do ~/Music/_Serato_/ i usuwa Smart Crates VDJ. Zamknij Serato.">Instaluj crates</button>
+            <button type="button" id="writeSeratoCuesBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #9f1239; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Tylko zapis hot cues do plików (bez ZIP). Zamknij Serato/VDJ.">Zapisz hot cues</button>
+            <button type="button" id="dedupeSeratoBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #7f1d1d; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Normalizuje ścieżki do Users/… (bez /) i usuwa klony. Zamknij Serato.">Napraw ścieżki Serato</button>
+          </span>
+          <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px;">
+            <label style="color: var(--muted);">ścieżki z:</label>
+            <input type="text" id="seratoPathFrom" placeholder="/Users/inmos" style="width: 140px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
+            <label style="color: var(--muted);">na:</label>
+            <input type="text" id="seratoPathTo" placeholder="/Users/test" style="width: 140px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
+          </span>
+          <p id="seratoExportHint" style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.4;">
+            Ścieżki: <code>Users/…</code>. Do crates trafiają <strong>tylko utwory z plikiem na dysku</strong> (bez żółtych trójkątów). <strong>Instaluj crates</strong> lub ZIP → <code>Subcrates/</code>.
+          </p>
         </span>
         <a id="exportRbBtn" href="/api/export-rb" download="rekordbox.xml" class="export-requires-license" style="padding: 10px 16px; background: #2d5a87; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Rekordbox XML <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
         <a id="exportDjxmlBtn" href="/api/export-djxml" download="vdj-export.djxml" class="export-requires-license" style="padding: 10px 16px; background: #5a4d8a; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">DJXML <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
+        <a id="exportEngineBtn" href="/api/export-engine" download="engine-library.zip" class="export-requires-license" style="padding: 10px 16px; background: #c45c26; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="ZIP z m.db — na pendrive lub nowy folder (nie do ~/Music/Engine Library).">Engine ZIP <span style="font-size: 10px; opacity: 0.9;">β</span></a>
+        <span class="engine-sync-group" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(196, 92, 38, 0.12); border: 1px solid rgba(196, 92, 38, 0.4); border-radius: 8px; flex-wrap: wrap;">
+          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Informacyjnie: główny folder z muzyką (ścieżki liczone względem ~/Music/Engine Library)">muzyka:</label>
+          <input type="text" id="engineLibraryRoot" placeholder="/Users/test/Desktop" style="width: 180px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;" readonly title="Uzupełniane automatycznie po załadowaniu bazy">
+          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Stary prefix ścieżki (opcjonalnie)">z:</label>
+          <input type="text" id="enginePathFrom" placeholder="/Users/inmos/Desktop" style="width: 160px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
+          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Nowy prefix (opcjonalnie)">na:</label>
+          <input type="text" id="enginePathTo" placeholder="/Users/test/Desktop" style="width: 160px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
+          <button type="button" id="syncEngineDesktopBtn" class="export-requires-license" style="padding: 10px 16px; background: #c45c26; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Merge VDJ → ~/Music/Engine Library. Zamknij Engine DJ Desktop (Cmd+Q) przed sync.">Sync VDJ → Engine <span style="font-size: 10px; opacity: 0.9;">β</span></button>
+          <button type="button" id="syncSeratoToEngineBtn" class="export-requires-license" style="padding: 10px 16px; background: #e11d48; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Serato → Engine Mac (+ Patriot: playlisty i czyszczenie duplikatów gdy dysk podłączony). Zamknij Engine/Serato.">Sync Serato → Engine <span style="font-size: 10px; opacity: 0.9;">β</span></button>
+          <button type="button" id="repairEnginePlaylistsBtn" class="export-requires-license" style="padding: 10px 16px; background: #3d4f5f; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Naprawa PlaylistEntity (Mac / Patriot). Zamknij Engine (Cmd+Q).">Napraw playlisty Engine</button>
+        </span>
+        <p style="font-size: 11px; color: #e8a87c; margin: 8px 0 0; line-height: 1.45; max-width: 920px;">
+          <strong>Workflow:</strong> Sync Serato → Engine (Mac). Gdy Patriot podłączony — NJR automatycznie czyści duplikaty i synchronizuje playlisty. <em>Nie używaj</em> Export to Drive w Sync Manager.
+        </p>
+        <div style="margin-top: 12px; padding: 10px 12px; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px solid rgba(196, 92, 38, 0.25);">
+          <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px;">
+            <strong>Stemy → Patriot</strong> — partiami: playlista na Mac → Create stems w Engine → przenieś na dysk Rane i zwolnij miejsce na MacBooku.
+          </p>
+          <p style="font-size: 11px; color: #e8a87c; margin: 0 0 8px; line-height: 1.4;">
+            <strong>Uwaga:</strong> W Sync Manager <em>nie zaznaczaj</em> „Export Stems” przy sync pojedynczej playlisty — Engine <strong>usuwa</strong> stemy na Patriot spoza eksportu (ostrzeżenie w aplikacji). Do przenoszenia użyj „Przenieś na Patriot” poniżej.
+          </p>
+          <span style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <label style="font-size: 12px; color: var(--muted);">partia</label>
+            <input type="number" id="engineStemsBatchSize" value="15" min="1" max="100" style="width: 56px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
+            <button type="button" id="engineStemsStatusBtn" style="padding: 8px 12px; font-size: 13px; background: #3d4f5f; color: var(--text); border: none; border-radius: 6px; cursor: pointer;">Status stemów</button>
+            <button type="button" id="engineStemsPrepareBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 13px; background: #5a4a8a; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zamknij Engine DJ. Tworzy playlistę NJR / NJR Stems Batch.">Przygotuj partię</button>
+            <button type="button" id="engineStemsMigrateBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 13px; background: #2d6a4f; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zamknij Engine DJ. Kopiuje .stems na Patriot i usuwa z Maca.">Przenieś na Patriot</button>
+          </span>
+        </div>
       </div>
       <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--accent);">
         <p style="font-size: 13px; color: var(--muted); margin: 0 0 8px;">
@@ -1187,7 +1374,7 @@
       if (!path || typeof path !== 'string') return null;
       let m = path.match(/td(\d+)/i);
       if (m) return m[1];
-      m = path.match(/tidal:tracks:(\d+)/i);
+      m = path.match(/tidal:tracks:(\d+)/i) || path.match(/streaming:\/\/tidal\/(\d+)/i);
       if (m) return m[1];
       m = path.match(/netsearch:\/\/td(\d+)/i);
       if (m) return m[1];
@@ -1350,6 +1537,119 @@
       el.className = 'status ' + type;
     }
 
+    let _jobOverlayDepth = 0;
+
+    function showJobOverlay(title, detail) {
+      _jobOverlayDepth += 1;
+      const overlay = document.getElementById('jobOverlay');
+      const titleEl = document.getElementById('jobOverlayTitle');
+      const detailEl = document.getElementById('jobOverlayDetail');
+      if (titleEl) titleEl.textContent = title || 'Przetwarzanie…';
+      if (detailEl) detailEl.textContent = detail || 'To może potrwać kilka minut. Możesz zostawić to okno otwarte.';
+      if (overlay) overlay.style.display = 'flex';
+    }
+
+    function hideJobOverlay() {
+      _jobOverlayDepth = Math.max(0, _jobOverlayDepth - 1);
+      if (_jobOverlayDepth === 0) {
+        const overlay = document.getElementById('jobOverlay');
+        if (overlay) overlay.style.display = 'none';
+      }
+    }
+
+    function updateJobOverlay(title, detail) {
+      const titleEl = document.getElementById('jobOverlayTitle');
+      const detailEl = document.getElementById('jobOverlayDetail');
+      if (title && titleEl) titleEl.textContent = title;
+      if (detail && detailEl) detailEl.textContent = detail;
+    }
+
+    function playJobDoneSound(isError) {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        const ctx = new Ctx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = isError ? 220 : 880;
+        gain.gain.value = 0.04;
+        osc.start();
+        osc.stop(ctx.currentTime + (isError ? 0.2 : 0.12));
+        setTimeout(() => ctx.close().catch(() => {}), 400);
+      } catch (_) {}
+    }
+
+    function notifyJobDoneSystem(title, message) {
+      try {
+        if (!('Notification' in window)) return;
+        const fire = () => {
+          try { new Notification(title || 'NJR Konwerter', { body: message || '' }); } catch (_) {}
+        };
+        if (Notification.permission === 'granted') fire();
+        else if (Notification.permission !== 'denied') {
+          Notification.requestPermission().then((p) => { if (p === 'granted') fire(); });
+        }
+      } catch (_) {}
+    }
+
+    function showJobDonePopup({ title, message, detail, type = 'success' }) {
+      const backdrop = document.getElementById('jobDoneBackdrop');
+      const titleEl = document.getElementById('jobDoneTitle');
+      const msgEl = document.getElementById('jobDoneMessage');
+      const detailEl = document.getElementById('jobDoneDetail');
+      const okBtn = document.getElementById('jobDoneOkBtn');
+      if (!backdrop || !titleEl || !msgEl) return;
+      const isError = type === 'error';
+      titleEl.textContent = title || (isError ? 'Błąd' : 'Gotowe');
+      titleEl.className = 'job-done-title ' + (isError ? 'error' : 'success');
+      msgEl.textContent = message || '';
+      if (detailEl) {
+        if (detail) {
+          detailEl.textContent = detail;
+          detailEl.style.display = 'block';
+        } else {
+          detailEl.textContent = '';
+          detailEl.style.display = 'none';
+        }
+      }
+      if (okBtn) {
+        okBtn.className = 'job-done-ok' + (isError ? ' error-btn' : '');
+        okBtn.textContent = isError ? 'Zamknij' : 'OK';
+      }
+      backdrop.style.display = 'flex';
+      playJobDoneSound(isError);
+      notifyJobDoneSystem(title || 'NJR Konwerter', message);
+    }
+
+    function hideJobDonePopup() {
+      const backdrop = document.getElementById('jobDoneBackdrop');
+      if (backdrop) backdrop.style.display = 'none';
+    }
+
+    document.getElementById('jobDoneOkBtn')?.addEventListener('click', hideJobDonePopup);
+    document.getElementById('jobDoneBackdrop')?.addEventListener('click', (e) => {
+      if (e.target?.id === 'jobDoneBackdrop') hideJobDonePopup();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.getElementById('jobDoneBackdrop')?.style.display === 'flex') {
+        hideJobDonePopup();
+      }
+    });
+
+    async function runLongJob({ title, detail, button, run }) {
+      if (button) button.disabled = true;
+      showJobOverlay(title, detail);
+      try {
+        return await run(updateJobOverlay);
+      } finally {
+        hideJobOverlay();
+        if (button) button.disabled = false;
+      }
+    }
+
     async function refreshTidalAuthStatus() {
       const el = document.getElementById('tidalAuthStatus');
       if (!el) return;
@@ -1366,6 +1666,7 @@
 
     function showCard(cardId) {
       if (cardId === 'online2offline') refreshTidalAuthStatus();
+      if (cardId === 'tidalCacheSerato' && typeof refreshTidalCacheSeratoPanel === 'function') refreshTidalCacheSeratoPanel();
       if (cardId === 'remixes' && typeof doRemixesSearch === 'function') doRemixesSearch(false);
       if (cardId === 'playCount') {
         if (typeof loadPlayCountList === 'function') loadPlayCountList();
@@ -1385,18 +1686,18 @@
       btn.onclick = () => showCard(btn.dataset.card);
     });
 
-    let licenseCanExport = false;
+    let licenseCanExport = true; // open source — bez blokady eksportu
     async function refreshLicenseStatus() {
       try {
         const d = await fetchJson(API + '/license/status');
-        licenseCanExport = d.canExport || false;
-        document.getElementById('licenseMachineId').textContent = d.machineId || '—';
+        licenseCanExport = true;
+        const mid = document.getElementById('licenseMachineId');
+        if (mid) mid.textContent = d.machineId || '—';
         document.querySelectorAll('.export-requires-license').forEach(el => {
-          el.style.opacity = licenseCanExport ? '1' : '0.7';
-          el.title = licenseCanExport ? '' : 'Wymaga licencji – kliknij aby zobaczyć informacje';
+          el.style.opacity = '1';
         });
-        return licenseCanExport;
-      } catch (_) { licenseCanExport = false; return false; }
+        return true;
+      } catch (_) { licenseCanExport = true; return true; }
     }
     function showLicenseModal() {
       document.getElementById('licenseModal').style.display = 'block';
@@ -1448,7 +1749,21 @@
       const m = cd.match(/filename="?([^";\n]+)"?/);
       const fn = m ? m[1].trim() : filename;
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fn; a.click(); URL.revokeObjectURL(a.href);
-      setStatus('Pobrano: ' + fn, 'loaded');
+      let msg = 'Pobrano: ' + fn;
+      const cw = r.headers.get('X-Serato-Cues-Written');
+      if (cw != null) {
+        const cs = r.headers.get('X-Serato-Cues-Skipped') || '0';
+        const cu = r.headers.get('X-Serato-Cues-Unchanged') || '0';
+        const cf = r.headers.get('X-Serato-Cues-Failed') || '0';
+        msg += ` · hot cues: ${cw} zapisano, ${cu} bez zmian, ${cs} pominięto, ${cf} błędów`;
+      }
+      const crates = r.headers.get('X-Serato-Crates');
+      if (crates != null) msg += ` · ${crates} crates`;
+      const only = r.headers.get('X-Serato-Crates-Only');
+      if (only === '1') msg += ' (bez database V2)';
+      const ps = r.headers.get('X-Serato-Path-Style');
+      if (ps) msg += ` · ścieżki ${ps}`;
+      setStatus(msg, 'loaded');
     }
     document.getElementById('saveProgressBtnCard').onclick = async () => {
       try {
@@ -1462,7 +1777,42 @@
       const mailto = 'mailto:biuro@imprezja.pl?subject=' + encodeURIComponent(subject) + (body ? '&body=' + encodeURIComponent(body) : '');
       window.location.href = mailto;
     };
-    ['exportVdjBtn','exportSeratoBtn','exportRbBtn','exportDjxmlBtn'].forEach(id => {
+    function engineExportQuery() {
+      const q = new URLSearchParams();
+      const root = (document.getElementById('engineLibraryRoot')?.value || '').trim();
+      const from = (document.getElementById('enginePathFrom')?.value || '').trim();
+      const to = (document.getElementById('enginePathTo')?.value || '').trim();
+      if (root) q.set('libraryRoot', root);
+      if (from) q.set('pathFrom', from);
+      if (to) q.set('pathTo', to);
+      const s = q.toString();
+      return s ? '?' + s : '';
+    }
+    async function applyEngineMappingSuggestion(force) {
+      try {
+        const d = await fetchJson(API + '/engine-library-root-suggestion');
+        const rootEl = document.getElementById('engineLibraryRoot');
+        if (d.libraryRoot && rootEl && (force || !rootEl.value)) rootEl.value = d.libraryRoot;
+        const fromEl = document.getElementById('enginePathFrom');
+        const toEl = document.getElementById('enginePathTo');
+        const stale = (d.stalePrefixes || [])[0];
+        if (stale && fromEl && toEl && (force || (!fromEl.value && !toEl.value))) {
+          fromEl.value = stale.pathFrom || '';
+          toEl.value = stale.pathTo || d.libraryRoot || '';
+          const sFrom = document.getElementById('seratoPathFrom');
+          const sTo = document.getElementById('seratoPathTo');
+          if (sFrom && sTo && (force || (!sFrom.value && !sTo.value))) {
+            sFrom.value = stale.pathFrom || '';
+            sTo.value = stale.pathTo || d.libraryRoot || '';
+          }
+        }
+        if (d.libraryRoot && d.total) {
+          const pct = Math.round((d.coverage || 0) * 100 / d.total);
+          rootEl.title = `Pokrywa ${d.coverage}/${d.total} lokalnych ścieżek (${pct}%)`;
+        }
+      } catch (_) {}
+    }
+    ['exportVdjBtn','exportSeratoBtn','exportRbBtn','exportDjxmlBtn','exportEngineBtn'].forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
       el.onclick = async (e) => {
@@ -1470,11 +1820,257 @@
         try {
           let u = el.href || API + '/download';
           let fn = el.download || 'download';
-          if (id === 'exportSeratoBtn') u = API + '/export-serato?driveRoot=' + encodeURIComponent((document.getElementById('seratoDriveRoot')?.value || '').trim());
+          if (id === 'exportSeratoBtn') {
+            const root = (document.getElementById('seratoDriveRoot')?.value || '').trim() || '/';
+            const writeCues = document.getElementById('seratoWriteCues')?.checked ? '1' : '0';
+            const cratesOnly = document.getElementById('seratoCratesOnly')?.checked ? '1' : '0';
+            if (cratesOnly !== '1') {
+              const ok = confirm(
+                'Uwaga: eksport z database V2.\n\n' +
+                'Przy istniejącej bibliotece Serato lepiej zostawić „tylko crates”.\n' +
+                'Nadpisanie database V2 może zepsuć plays/historię lub zrobić klony.\n\n' +
+                'Kontynuować pełny eksport?'
+              );
+              if (!ok) return;
+            }
+            const q = new URLSearchParams();
+            q.set('driveRoot', root);
+            q.set('pathStyle', 'relative');
+            q.set('writeCues', writeCues);
+            q.set('cratesOnly', cratesOnly);
+            u = API + '/export-serato?' + q.toString();
+          }
+          if (id === 'exportEngineBtn') u = API + '/export-engine' + engineExportQuery();
           await doExportDownload(u, fn);
         } catch (err) { setStatus('Błąd: ' + err.message, 'error'); }
       };
     });
+    function formatEngineSyncDetail(d) {
+      const parts = [];
+      parts.push(`${d.tracks_total || 0} utw. w eksporcie`);
+      if (d.tracks_with_key) parts.push(`Key: ${d.tracks_with_key}`);
+      if (d.tracks_with_cues) parts.push(`Cues: ${d.tracks_with_cues}`);
+      if (d.music_paths != null) parts.push(`Music/: ${d.music_paths}`);
+      if (d.dotdot_paths) parts.push(`../../: ${d.dotdot_paths}`);
+      if (d.tracks_added) parts.push(`+${d.tracks_added} nowych`);
+      if (d.tracks_updated) parts.push(`~${d.tracks_updated} zakt. metadanych`);
+      if (d.tracks_pruned) parts.push(`−${d.tracks_pruned} usuniętych z Engine`);
+      if (d.waveforms_restored) parts.push(`${d.waveforms_restored} waveformów zachowanych`);
+      const need = d.tracks_needing_analysis ?? d.stub_analyzed_reset;
+      if (need) parts.push(`${need} do analizy Engine`);
+      if (d.playlists_total) parts.push(`${d.playlists_total} playlist w drzewie VDJ`);
+      if (d.legacy_playlists_removed) parts.push(`usunięto ${d.legacy_playlists_removed} starych „VDJ / …"`);
+      if (d.paths_repaired) parts.push(`${d.paths_repaired} ścieżek naprawionych`);
+      if (d.orphan_performance_data_removed) parts.push(`${d.orphan_performance_data_removed} osieroc. waveformów`);
+      if (d.album_art_tracks_linked) parts.push(`${d.album_art_tracks_linked} okładek z tagów`);
+      if (d.album_art_unique_added) parts.push(`${d.album_art_unique_added} unikalnych okładek`);
+      if (d.album_art_no_embedded) parts.push(`${d.album_art_no_embedded} bez okładki w pliku`);
+      if (d.file_info_updated) parts.push(`${d.file_info_updated} utworów: bitrate/rozmiar pliku`);
+      return parts.join(' · ');
+    }
+    const syncEngineBtn = document.getElementById('syncEngineDesktopBtn');
+    if (syncEngineBtn) {
+      syncEngineBtn.onclick = async () => {
+        if (!confirm('Synchronizacja VDJ → Engine DJ Desktop (~/Music/Engine Library).\n\nChecklist przed sync:\n• Zamknij VirtualDJ\n• Zamknij Serato DJ (jeśli otwarty)\n• Zamknij Engine DJ (Cmd+Q)\n\nKliknij OK aby kontynuować.\n\nPlaylisty trafią do folderu „VDJ” z zachowaniem drzewa (MyLists / gatunki / …). Beatgrid, cue i loop zostaną zaktualizowane.')) return;
+        try {
+          setStatus('Synchronizacja Engine DJ Desktop…', '');
+          await runLongJob({
+            title: 'Sync VDJ → Engine',
+            detail: 'Merge biblioteki Engine DJ Desktop…',
+            button: syncEngineBtn,
+            run: async () => {
+              const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
+              const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
+              const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
+              const body = { playlistPrefix: '' };
+              if (libraryRoot) body.libraryRoot = libraryRoot;
+              if (pathFrom) body.pathFrom = pathFrom;
+              if (pathTo) body.pathTo = pathTo;
+              const r = await fetch(API + '/sync-engine-desktop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(d.error || r.statusText);
+              const msg = d.message || 'Zsynchronizowano.';
+              const detail = formatEngineSyncDetail(d);
+              setStatus(msg + (detail ? ' — ' + detail : ''), 'loaded');
+              showJobDonePopup({
+                title: 'Sync VDJ → Engine — gotowe',
+                message: msg,
+                detail: detail || undefined,
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd sync Engine: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Sync VDJ → Engine — błąd', message: err.message, type: 'error' });
+        }
+      };
+    }
+    const syncSeratoEngineBtn = document.getElementById('syncSeratoToEngineBtn');
+    if (syncSeratoEngineBtn) {
+      syncSeratoEngineBtn.onclick = async () => {
+        if (!confirm('Serato → Engine DJ Desktop\n\nPlaylisty i lokalne pliki z ~/Music/_Serato_.\nSymlinki Music/ na Macu (bez kopiowania plików).\n\nGdy Patriot podłączony:\n• NJR usuwa duplikaty po Export to Drive\n• synchronizuje playlisty na dysk Rane\n\nChecklist:\n• Zamknij Serato DJ, VirtualDJ, Engine DJ (Cmd+Q)\n\nNIE używaj Export to Drive w Sync Manager.\n\nOK aby kontynuować.')) return;
+        try {
+          setStatus('Serato → Engine… ładowanie crates i synchronizacja…', '');
+          await runLongJob({
+            title: 'Sync Serato → Engine',
+            detail: 'Import crates, symlinki Music/ i merge biblioteki…',
+            button: syncSeratoEngineBtn,
+            run: async () => {
+              const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
+              const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
+              const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
+              const body = {};
+              if (libraryRoot) body.libraryRoot = libraryRoot;
+              if (pathFrom) body.pathFrom = pathFrom;
+              if (pathTo) body.pathTo = pathTo;
+              const r = await fetch(API + '/sync-serato-to-engine', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(d.error || r.statusText);
+              const msg = d.message || 'Zsynchronizowano Serato → Engine.';
+              const detail = formatEngineSyncDetail(d);
+              setStatus(msg + (detail ? ' — ' + detail : ''), 'loaded');
+              showJobDonePopup({
+                title: 'Sync Serato → Engine — gotowe',
+                message: msg,
+                detail: detail || undefined,
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd Serato → Engine: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Sync Serato → Engine — błąd', message: err.message, type: 'error' });
+        }
+      };
+    }
+    const repairEnginePlaylistsBtn = document.getElementById('repairEnginePlaylistsBtn');
+    if (repairEnginePlaylistsBtn) {
+      repairEnginePlaylistsBtn.onclick = async () => {
+        const pat = '/Volumes/Patriot/Engine Library';
+        const choice = confirm(
+          'Napraw playlisty Engine (PlaylistEntity: ID/UUID Maca → lokalne).\n\n'
+          + 'OK = Patriot (' + pat + ')\n'
+          + 'Anuluj = najpierw zapytam o Mac Engine Library.\n\n'
+          + 'Zamknij Engine DJ (Cmd+Q) przed naprawą.'
+        );
+        let engineDir = pat;
+        if (!choice) {
+          if (!confirm('Naprawić Mac ~/Music/Engine Library?')) return;
+          engineDir = '';
+        }
+        try {
+          setStatus('Naprawiam powiązania playlist Engine…', '');
+          await runLongJob({
+            title: 'Naprawa playlist Engine',
+            detail: 'Remap PlaylistEntity (ID Maca → lokalne)…',
+            button: repairEnginePlaylistsBtn,
+            run: async () => {
+              const body = {};
+              if (engineDir) body.engineDir = engineDir;
+              const r = await fetch(API + '/repair-engine-playlists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(d.error || r.statusText);
+              setStatus(d.message || 'Playlisty naprawione.', 'loaded');
+              showJobDonePopup({
+                title: 'Playlisty Engine — gotowe',
+                message: d.message || 'Playlisty naprawione.',
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd naprawy playlist: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Naprawa playlist — błąd', message: err.message, type: 'error' });
+        }
+      };
+    }
+    const engineStemsBatchInput = document.getElementById('engineStemsBatchSize');
+    const engineStemsStatusBtn = document.getElementById('engineStemsStatusBtn');
+    const engineStemsPrepareBtn = document.getElementById('engineStemsPrepareBtn');
+    const engineStemsMigrateBtn = document.getElementById('engineStemsMigrateBtn');
+    function engineStemsBatchSize() {
+      const n = parseInt(engineStemsBatchInput?.value || '15', 10);
+      return Number.isFinite(n) && n > 0 ? n : 15;
+    }
+    if (engineStemsStatusBtn) {
+      engineStemsStatusBtn.onclick = async () => {
+        try {
+          setStatus('Sprawdzam stemy Mac vs Patriot…', '');
+          const r = await fetch(API + '/engine-stems-status');
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const msg = [
+            `Mac: ${d.mac_stems_count || 0} stemów (${d.mac_stems_gb || 0} GB), wolne ${d.mac_free_gb ?? '?'} GB`,
+            `Patriot: ${d.patriot_stems_count || 0}/${d.patriot_tracks_total || 0} stemów (${d.patriot_stems_gb || 0} GB)`,
+            `Do renderu: ~${d.mac_tracks_ready_for_stem_render || 0}, gotowe do przeniesienia: ${d.mac_stems_ready_to_migrate || 0}`,
+          ].join(' · ');
+          setStatus(msg, 'loaded');
+        } catch (err) { setStatus('Błąd statusu stemów: ' + err.message, 'error'); }
+      };
+    }
+    if (engineStemsPrepareBtn) {
+      engineStemsPrepareBtn.onclick = async () => {
+        if (!confirm('Przygotować playlistę „NJR / NJR Stems Batch”?\n\nZamknij Engine DJ (Cmd+Q). Potem w Engine: Create stems dla tej playlisty.')) return;
+        try {
+          setStatus('Tworzę playlistę partii stemów…', '');
+          const r = await fetch(API + '/engine-stems-prepare-batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ batchSize: engineStemsBatchSize() }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const msg = d.track_count
+            ? `Playlista: ${d.track_count} utworów (${d.need_render_in_engine || 0} do Create stems w Engine).`
+            : (d.message || 'Brak utworów w kolejce.');
+          setStatus(msg, 'loaded');
+        } catch (err) { setStatus('Błąd playlisty stemów: ' + err.message, 'error'); }
+      };
+    }
+    if (engineStemsMigrateBtn) {
+      engineStemsMigrateBtn.onclick = async () => {
+        const batch = engineStemsBatchSize();
+        if (!confirm(`Przenieść do ${batch ? batch + ' ' : ''}stemów na Patriot i usunąć z Maca?\n\nZamknij Engine DJ (Cmd+Q).`)) return;
+        try {
+          setStatus('Migracja stemów na Patriot…', '');
+          await runLongJob({
+            title: 'Migracja stemów → Patriot',
+            detail: 'Kopiowanie plików .stems i zwalnianie miejsca na Macu…',
+            button: engineStemsMigrateBtn,
+            run: async () => {
+              const r = await fetch(API + '/engine-stems-migrate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ batchSize: batch, deleteMac: true }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+              const msg = d.migrated
+                ? `Przeniesiono ${d.migrated} stemów (${d.bytes_moved_gb || 0} GB) na Patriot.`
+                : (d.message || 'Brak stemów do przeniesienia.');
+              setStatus(msg, 'loaded');
+              showJobDonePopup({
+                title: 'Stemy na Patriot — gotowe',
+                message: msg,
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd migracji stemów: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Migracja stemów — błąd', message: err.message, type: 'error' });
+        }
+      };
+    }
     (async () => { try { await refreshLicenseStatus(); } catch (_) {} })();
 
     document.getElementById('importUniversalBtn').onclick = () => document.getElementById('universalInput').click();
@@ -1494,7 +2090,23 @@
         const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
         setStatus(msg, 'loaded');
         updateSeratoExportHref();
-        (async () => { try { const d = await fetchJson(API + '/serato-drive-root-suggestion'); if (d.path && !document.getElementById('seratoDriveRoot').value) document.getElementById('seratoDriveRoot').value = d.path; updateSeratoExportHref(); } catch (_) {} })();
+        applyEngineMappingSuggestion(false);
+        (async () => {
+          try {
+            const d = await fetchJson(API + '/serato-drive-root-suggestion');
+            const rootEl = document.getElementById('seratoDriveRoot');
+            if (d.path && rootEl && !rootEl.value) rootEl.value = d.path;
+            const cratesEl = document.getElementById('seratoCratesOnly');
+            if (cratesEl && typeof d.recommendCratesOnly === 'boolean') {
+              cratesEl.checked = !!d.recommendCratesOnly;
+            }
+            const hint = document.getElementById('seratoExportHint');
+            if (hint && d.hasLibrary) {
+              hint.innerHTML = 'Wykryto lokalną bibliotekę Serato — domyślnie <strong>tylko crates</strong>. Skopiuj Subcrates do ~/Music/_Serato_/ (nie nadpisuj database V2). Ścieżki: <code>Users/…</code>.';
+            }
+            updateSeratoExportHref();
+          } catch (_) {}
+        })();
         const vdjBtn = document.getElementById('exportVdjBtn');
         vdjBtn.textContent = d.vdjfolders ? 'VDJ (ZIP)' : 'VDJ';
         vdjBtn.href = API + '/download';
@@ -1508,6 +2120,7 @@
         updateTagList();
         await doSearch();
         refreshUndoButton();
+        refreshTrashBadge();
       } catch (err) {
         setStatus('Błąd: ' + err.message, 'error');
       }
@@ -1537,6 +2150,7 @@
         document.getElementById('saveReminder').style.display = 'inline';
         await doSearch();
         refreshUndoButton();
+        refreshTrashBadge();
         updateTagList();
         if (playlistEditorState && playlistEditorState.playlistName) {
           document.getElementById('playlistEditorLoadBtn').click();
@@ -1571,6 +2185,7 @@
       btn.disabled = true;
       btn.textContent = 'Zapisywanie…';
       setStatus('Zapisywanie tagów ID3 do plików…', '');
+      showJobOverlay('Eksport tagów do ID3', 'Zapis metadanych w plikach audio…');
       try {
         const r = await fetch(API + '/write-tags', {
           method: 'POST',
@@ -1595,9 +2210,16 @@
         }
         setStatus(msg, d.failed ? 'error' : 'loaded');
         if (d.errors?.length) console.warn('Błędy zapisu tagów:', d.errors);
+        showJobDonePopup({
+          title: d.failed ? 'Eksport tagów — z błędami' : 'Eksport tagów — gotowe',
+          message: msg,
+          type: d.failed ? 'error' : 'success',
+        });
       } catch (e) {
         setStatus('Błąd: ' + e.message, 'error');
+        showJobDonePopup({ title: 'Eksport tagów — błąd', message: e.message, type: 'error' });
       } finally {
+        hideJobOverlay();
         btn.disabled = false;
         btn.textContent = 'Eksport tagów do ID3';
       }
@@ -3677,7 +4299,7 @@
         let html = `<p style="margin-bottom: 12px;">Znaleziono ${groups.length} ${kindLabel[mode] || 'grup'} (${d.count || 0} pozycji). Kolumna DJ Play Count pokazuje, który utwór jest używany, a który zajmuje miejsce.</p>`;
         groups.forEach((grp, gi) => {
           const kindNote = grp.kind === 'versions' ? ' <span class="muted" style="font-size:11px">(wersje)</span>' : (grp.kind === 'covers' ? ' <span class="muted" style="font-size:11px">(covery)</span>' : '');
-          html += `<div style="margin-bottom: 16px; padding: 10px; background: var(--bg); border-radius: 6px; border-left: 4px solid var(--warn);">`;
+          html += `<div class="remix-group" style="margin-bottom: 16px; padding: 10px; background: var(--bg); border-radius: 6px; border-left: 4px solid var(--warn);">`;
           html += `<div style="margin-bottom: 8px;"><strong>${escapeHtml(grp.title)}</strong>${kindNote} — wykonawcy: ${escapeHtml((grp.authors || []).join(', '))}</div>`;
           const fmtLen = (v) => { if (!v) return '—'; const n = parseFloat(v); if (isNaN(n)) return v; const m = Math.floor(n/60), s = Math.floor(n%60); return m ? `${m}:${String(s).padStart(2,'0')}` : `${s}s`; };
           const fmtBpm = (v) => { if (!v) return '—'; const n = parseFloat(v); if (isNaN(n)) return v; return (0.2 <= n && n <= 2) ? (60/n).toFixed(1) : n.toFixed(1); };
@@ -3693,7 +4315,7 @@
             const listsTitle = it.playlists?.length ? it.playlists.join(', ') : '';
             const canOpenFolder = it.FilePath && it.pathSource === 'dysk';
             const canDeleteFile = it.FilePath && it.pathSource === 'dysk';
-            html += `<tr><td>${playBtn}</td>`;
+            html += `<tr class="remix-row" data-remix-idx="${it.idx}"><td>${playBtn}</td>`;
             html += `<td><span title="${escapeHtml(it.FilePath || '')}">${escapeHtml(it.author || '—')} – ${escapeHtml(it.title || '—')}</span></td>`;
             html += `<td class="col-nowrap">${fmtLen(it.duration)}</td>`;
             html += `<td class="col-nowrap">${fmtBpm(it.bpm)}</td>`;
@@ -3710,6 +4332,37 @@
           html += `</tbody></table></div>`;
         });
         resultEl.innerHTML = html;
+
+        function removeRemixRowLocally(removedIdx) {
+          const row = resultEl.querySelector(`tr.remix-row[data-remix-idx="${removedIdx}"]`);
+          const groupBox = row?.closest('.remix-group');
+          row?.remove();
+          if (groupBox) {
+            const left = groupBox.querySelectorAll('tr.remix-row').length;
+            if (left < 2) groupBox.remove();
+          }
+          resultEl.querySelectorAll('[data-idx]').forEach(el => {
+            const n = parseInt(el.dataset.idx, 10);
+            if (!isNaN(n) && n > removedIdx) el.dataset.idx = String(n - 1);
+          });
+          resultEl.querySelectorAll('tr.remix-row[data-remix-idx]').forEach(el => {
+            const n = parseInt(el.dataset.remixIdx, 10);
+            if (!isNaN(n) && n > removedIdx) el.dataset.remixIdx = String(n - 1);
+          });
+          if (remixesData?.groups) {
+            remixesData.groups.forEach(g => {
+              g.items = (g.items || []).filter(it => it.idx !== removedIdx);
+              (g.items || []).forEach(it => { if (it.idx > removedIdx) it.idx -= 1; });
+            });
+            remixesData.groups = remixesData.groups.filter(g => (g.items || []).length >= 2);
+            remixesData.count = remixesData.groups.reduce((n, g) => n + (g.items || []).length, 0);
+          }
+          if (!resultEl.querySelector('tr.remix-row')) {
+            resultEl.innerHTML = '<p style="color: var(--success);">Brak grup remiksów (ten sam tytuł, różni wykonawcy).</p>';
+          }
+          if (typeof refreshTrashBadge === 'function') refreshTrashBadge();
+        }
+
         resultEl.querySelectorAll('.play-btn').forEach(btn => {
           btn.onclick = (e) => { e.preventDefault(); playTrack(parseInt(btn.dataset.idx), e); };
         });
@@ -3732,7 +4385,9 @@
               await fetchJson(API + '/remove-songs', { method: 'POST', body: JSON.stringify({ indices: [idx] }) });
               setStatus('Usunięto z bazy', 'loaded');
               updateTagList();
-              doRemixesSearch(remixesExcludeTidal);
+              const rem = document.getElementById('saveReminder');
+              if (rem) rem.style.display = 'inline';
+              removeRemixRowLocally(idx);
             } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
           };
         });
@@ -3746,7 +4401,9 @@
               await fetchJson(API + '/delete-files', { method: 'POST', body: JSON.stringify({ paths: [path] }) });
               setStatus('Usunięto rekord z bazy i plik z dysku', 'loaded');
               updateTagList();
-              doRemixesSearch(remixesExcludeTidal);
+              const rem = document.getElementById('saveReminder');
+              if (rem) rem.style.display = 'inline';
+              removeRemixRowLocally(idx);
             } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
           };
         });
@@ -4822,12 +5479,544 @@
     refreshSavedFiltersSelect();
 
     function updateSeratoExportHref() {
-      const root = (document.getElementById('seratoDriveRoot')?.value || '').trim();
+      const root = (document.getElementById('seratoDriveRoot')?.value || '').trim() || '/';
+      const writeCues = document.getElementById('seratoWriteCues')?.checked ? '1' : '0';
+      const cratesOnly = document.getElementById('seratoCratesOnly')?.checked ? '1' : '0';
+      const pathFrom = (document.getElementById('seratoPathFrom')?.value || '').trim();
+      const pathTo = (document.getElementById('seratoPathTo')?.value || '').trim();
       const btn = document.getElementById('exportSeratoBtn');
-      if (btn) btn.href = API + '/export-serato' + (root ? '?driveRoot=' + encodeURIComponent(root) : '');
+      if (!btn) return;
+      const q = new URLSearchParams();
+      q.set('driveRoot', root);
+      q.set('pathStyle', 'relative');
+      q.set('writeCues', writeCues);
+      q.set('cratesOnly', cratesOnly);
+      if (pathFrom) q.set('pathFrom', pathFrom);
+      if (pathTo) q.set('pathTo', pathTo);
+      btn.href = API + '/export-serato?' + q.toString();
     }
     document.getElementById('seratoDriveRoot')?.addEventListener('input', updateSeratoExportHref);
     document.getElementById('seratoDriveRoot')?.addEventListener('change', updateSeratoExportHref);
+    document.getElementById('seratoPathFrom')?.addEventListener('input', updateSeratoExportHref);
+    document.getElementById('seratoPathTo')?.addEventListener('input', updateSeratoExportHref);
+    document.getElementById('seratoWriteCues')?.addEventListener('change', updateSeratoExportHref);
+    document.getElementById('seratoCratesOnly')?.addEventListener('change', updateSeratoExportHref);
+    document.getElementById('dedupeSeratoBtn')?.addEventListener('click', async () => {
+      if (!confirm('ZAMKNIJ Serato DJ.\n\nNaprawi ścieżki (Users/…),\nzmapuje stare lokalizacje na Desktop,\nusunie martwe duble i brakujące pliki.\nKopia database V2 → .bak\n\nKontynuować?')) return;
+      const btn = document.getElementById('dedupeSeratoBtn');
+      btn.disabled = true;
+      try {
+        const r = await fetch(API + '/dedupe-serato-library', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 403 && d.error === 'license_required') {
+          document.getElementById('licenseMachineId').textContent = d.machineId || '';
+          showLicenseModal();
+          return;
+        }
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        setStatus(
+          `Serato naprawa: remap ${d.remapped_stale || 0}, usunięto martwych ${d.removed_stale || 0}, klonów ${d.removed_clones || 0}, zostaje ${d.kept || '?'}.`,
+          'loaded'
+        );
+      } catch (e) {
+        setStatus('Błąd dedupe Serato: ' + (e.message || e), 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    let tidalCacheState = { entries: [], selected: new Set(), pollTimer: null, metaPollTimer: null, page: 0, pageSize: 100, tiddlOk: false };
+
+    function tidalCacheRowKey(e) {
+      const tid = (e.tidalId || '').trim();
+      if (tid) return tid;
+      const p = (e.vdjcachePath || '').trim();
+      return p ? ('disk:' + p) : '';
+    }
+
+    function tidalCacheCanDownload(e) {
+      return !!(e.tidalId && e.cached && e.downloadStatus !== 'downloaded');
+    }
+
+    function tidalCacheSetProgress(msg, type) {
+      const prog = document.getElementById('tidalCacheProgress');
+      if (prog) {
+        prog.textContent = msg || '';
+        prog.classList.toggle('working', type === 'working');
+        prog.style.color = type === 'error' ? 'var(--err)' : type === 'loaded' ? 'var(--success)' : type === 'working' ? 'var(--accent)' : 'var(--muted)';
+      }
+      if (msg) setStatus(msg, type || '');
+    }
+
+    /** Odliczanie czasu podczas długich operacji (instalacja Serato itd.). */
+    function tidalCacheStartWorkingProgress(baseMsg, onTick) {
+      const t0 = Date.now();
+      const tick = () => {
+        const sec = Math.floor((Date.now() - t0) / 1000);
+        const msg = typeof onTick === 'function' ? onTick(sec) : `${baseMsg} (${sec}s)`;
+        tidalCacheSetProgress(msg, 'working');
+      };
+      tick();
+      return setInterval(tick, 1000);
+    }
+
+    function tidalCacheGetSelectedIds() {
+      const fromSet = [...tidalCacheState.selected].filter(id => id && !id.startsWith('disk:'));
+      if (fromSet.length) return fromSet;
+      return [...document.querySelectorAll('.tidal-cache-row-cb:checked')]
+        .map(cb => (cb.dataset.tid || '').trim())
+        .filter(Boolean);
+    }
+
+    async function refreshTidalCacheSeratoPanel() {
+      const toolEl = document.getElementById('tidalCacheToolStatus');
+      const statsEl = document.getElementById('tidalCacheStats');
+      const vdjInput = document.getElementById('tidalCacheVdjPath');
+      if (vdjInput && !vdjInput.value.trim()) {
+        try {
+          const cp = await fetchJson(API + '/vdj-cache-path');
+          if (cp.path) vdjInput.value = cp.path;
+        } catch (_) {}
+      }
+      try {
+        const cfg = await fetchJson(API + '/tidal-cache/config');
+        const outInput = document.getElementById('tidalCacheOutputDir');
+        if (outInput && cfg.output_dir) outInput.value = cfg.output_dir;
+      } catch (_) {}
+      try {
+        const tool = await fetchJson(API + '/tidal-cache/tool-status');
+        tidalCacheState.tiddlOk = !!(tool.installed && tool.logged_in);
+        if (toolEl) {
+          if (!tool.installed) {
+            toolEl.textContent = 'tiddl: brak — ' + (tool.hint || '');
+            toolEl.style.color = 'var(--warn)';
+          } else if (!tool.logged_in) {
+            toolEl.textContent = 'tiddl: NIEZALOGOWANY — uruchom w terminalu: ' + (tool.login_command || tool.executable + ' auth login');
+            toolEl.style.color = 'var(--err)';
+          } else {
+            toolEl.textContent = 'tiddl: zalogowany — gotowy do pobierania';
+            toolEl.style.color = 'var(--success)';
+          }
+        }
+      } catch (_) { tidalCacheState.tiddlOk = false; }
+      await loadTidalCacheScan();
+    }
+
+    function tidalCacheFilteredEntries() {
+      const f = document.getElementById('tidalCacheFilter')?.value || 'cached';
+      const all = tidalCacheState.entries || [];
+      if (f === 'all') return all;
+      if (f === 'disk') return all.filter(e => e.vdjcachePath || e.source === 'disk_orphan' || e.source === 'disk_only');
+      if (f === 'cached') return all.filter(e => e.cached);
+      if (f === 'pending') return all.filter(e => e.cached && (e.downloadStatus === 'pending' || e.downloadStatus === 'error'));
+      if (f === 'errors') return all.filter(e => e.downloadStatus === 'error');
+      if (f === 'tidal_removed') return all.filter(e => e.downloadErrorKind === 'tidal_removed' || /404|usunięty z tidal/i.test(e.downloadError || ''));
+      if (f === 'no_tidal_id') return all.filter(e => e.downloadErrorKind === 'no_tidal_id' || e.source === 'disk_orphan');
+      if (f === 'downloaded') return all.filter(e => e.downloadStatus === 'downloaded');
+      return all;
+    }
+
+    function renderTidalCacheTable() {
+      const el = document.getElementById('tidalCacheResult');
+      const statsEl = document.getElementById('tidalCacheStats');
+      const pagerEl = document.getElementById('tidalCachePager');
+      if (!el) return;
+      const rows = tidalCacheFilteredEntries();
+      const st = tidalCacheState.scanStats || {};
+      const total = (tidalCacheState.entries || []).length;
+      const filt = document.getElementById('tidalCacheFilter')?.selectedOptions?.[0]?.text || '';
+      const pageSize = tidalCacheState.pageSize;
+      const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
+      if (tidalCacheState.page >= pageCount) tidalCacheState.page = pageCount - 1;
+      if (tidalCacheState.page < 0) tidalCacheState.page = 0;
+      const pageStart = tidalCacheState.page * pageSize;
+      const pageRows = rows.slice(pageStart, pageStart + pageSize);
+      if (statsEl) {
+        statsEl.textContent = `Tidal w bazie: ${st.total_tidal || 0} | cache VDJ: ${st.cached_vdj || 0} | pobrane NJR: ${st.downloaded_njr || 0} | błąd 404: ${st.failed_tidal_removed || 0} | bez ID: ${st.orphans_no_tidal_id || 0} | Wyświetlono: ${rows.length}/${total} (${filt})`;
+      }
+      if (pagerEl) {
+        if (rows.length > pageSize) {
+          pagerEl.style.display = 'flex';
+          pagerEl.innerHTML = '';
+          const prev = document.createElement('button');
+          prev.type = 'button';
+          prev.textContent = '← Poprzednia';
+          prev.disabled = tidalCacheState.page <= 0;
+          prev.onclick = () => { tidalCacheState.page--; renderTidalCacheTable(); };
+          const next = document.createElement('button');
+          next.type = 'button';
+          next.textContent = 'Następna →';
+          next.disabled = tidalCacheState.page >= pageCount - 1;
+          next.onclick = () => { tidalCacheState.page++; renderTidalCacheTable(); };
+          const info = document.createElement('span');
+          info.textContent = `Strona ${tidalCacheState.page + 1}/${pageCount} (${pageStart + 1}–${Math.min(pageStart + pageSize, rows.length)} z ${rows.length})`;
+          pagerEl.append(prev, info, next);
+        } else {
+          pagerEl.style.display = 'none';
+          pagerEl.innerHTML = '';
+        }
+      }
+      if (!rows.length) {
+        el.innerHTML = '<p style="color:var(--muted);padding:12px;">Brak utworów dla wybranego filtra.</p>';
+        return;
+      }
+      let html = '<table class="dj-table"><thead><tr>';
+      html += '<th style="width:36px;"><input type="checkbox" id="tidalCacheSelectAll" title="Zaznacz widoczną stronę"></th>';
+      html += '<th>Artysta</th><th>Tytuł</th><th>Cache</th><th>Pobranie</th><th>Ścieżka NJR</th></tr></thead><tbody>';
+      for (const e of pageRows) {
+        const key = tidalCacheRowKey(e);
+        const checked = key && tidalCacheState.selected.has(key) ? ' checked' : '';
+        const cacheBadge = e.cached ? '<span style="color:var(--success)">cache</span>' : '<span style="color:var(--muted)">online</span>';
+        let dl = e.downloadStatus || '—';
+        if (dl === 'downloaded') dl = '<span style="color:var(--success)">pobrany</span>';
+        else if (dl === 'pending') dl = '<span style="color:var(--warn)">oczekuje</span>';
+        else if (dl === 'error') {
+          const errHint = (e.downloadError || 'błąd pobierania').replace(/You must login first/i, 'Brak logowania tiddl — uruchom auth login w terminalu');
+          dl = `<span style="color:var(--err)" title="${escapeHtml(errHint)}">błąd</span>`;
+        }
+        const lp = e.localPath ? escapeHtml(e.localPath.split('/').slice(-2).join('/')) : '—';
+        const canDl = tidalCacheCanDownload(e);
+        const cbDisabled = !e.tidalId ? ' disabled title="Brak Tidal ID — nie da się pobrać"' : (!canDl && e.downloadStatus === 'downloaded' ? ' disabled title="Już pobrany"' : '');
+        html += `<tr data-key="${escapeHtml(key)}">`;
+        html += `<td><input type="checkbox" class="tidal-cache-row-cb" data-tid="${escapeHtml(e.tidalId || '')}" data-key="${escapeHtml(key)}"${checked}${cbDisabled}></td>`;
+        html += `<td>${escapeHtml(e.author || '—')}</td><td>${escapeHtml(e.title || '—')}</td>`;
+        html += `<td>${cacheBadge}${e.source === 'disk_orphan' ? ' <span style="color:var(--warn)" title="Brak Tidal ID">?</span>' : ''}</td><td>${dl}</td><td title="${escapeHtml(e.localPath || '')}">${lp}</td></tr>`;
+      }
+      html += '</tbody></table>';
+      el.innerHTML = html;
+      const selectAll = document.getElementById('tidalCacheSelectAll');
+      const selectable = pageRows.filter(e => tidalCacheRowKey(e));
+      const allOnPage = selectable.length > 0 && selectable.every(e => tidalCacheState.selected.has(tidalCacheRowKey(e)));
+      if (selectAll) selectAll.checked = allOnPage;
+      selectAll?.addEventListener('change', (ev) => {
+        const on = ev.target.checked;
+        pageRows.forEach(e => {
+          const k = tidalCacheRowKey(e);
+          if (!k) return;
+          if (on) tidalCacheState.selected.add(k); else tidalCacheState.selected.delete(k);
+        });
+        el.querySelectorAll('.tidal-cache-row-cb').forEach(cb => { if (!cb.disabled) cb.checked = on; });
+      });
+      el.querySelectorAll('.tidal-cache-row-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const k = cb.dataset.key || cb.dataset.tid;
+          if (!k) return;
+          if (cb.checked) tidalCacheState.selected.add(k); else tidalCacheState.selected.delete(k);
+          if (selectAll) {
+            const sel = selectable.filter(e => tidalCacheState.selected.has(tidalCacheRowKey(e)));
+            selectAll.checked = selectable.length > 0 && sel.length === selectable.length;
+          }
+        });
+      });
+    }
+
+    async function loadTidalCacheScan() {
+      const vdj = (document.getElementById('tidalCacheVdjPath')?.value || '').trim();
+      const q = vdj ? ('?vdjCachePath=' + encodeURIComponent(vdj)) : '';
+      const data = await fetchJson(API + '/tidal-cache/scan' + q);
+      tidalCacheState.entries = data.entries || [];
+      tidalCacheState.scanStats = data.stats || {};
+      renderTidalCacheTable();
+    }
+
+    function stopTidalCachePoll() {
+      if (tidalCacheState.pollTimer) { clearInterval(tidalCacheState.pollTimer); tidalCacheState.pollTimer = null; }
+    }
+
+    function stopTidalMetadataPoll() {
+      if (tidalCacheState.metaPollTimer) { clearInterval(tidalCacheState.metaPollTimer); tidalCacheState.metaPollTimer = null; }
+    }
+
+    function startTidalMetadataPoll() {
+      stopTidalMetadataPoll();
+      showJobOverlay('Metadane Tidal → VDJ', 'Zapis tagów w plikach cache…');
+      tidalCacheState.metaPollTimer = setInterval(async () => {
+        try {
+          const st = await fetchJson(API + '/tidal-cache/apply-metadata-status');
+          if (st.running) {
+            tidalCacheSetProgress(`Metadane VDJ: ${st.done || 0}/${st.total || '?'} (zapisano: ${st.applied || 0})`, '');
+            updateJobOverlay('Metadane Tidal → VDJ', `${st.done || 0} / ${st.total || '?'} · zapisano ${st.applied || 0}`);
+          } else {
+            hideJobOverlay();
+            stopTidalMetadataPoll();
+            const errN = (st.errors || []).length;
+            const msg =
+              `Metadane VDJ: ${st.applied || 0} zapisano, ${st.skipped || 0} pominięto, ${st.failed || 0} błędów` +
+              (st.no_vdj_match ? ` (${st.no_vdj_match} bez wpisu VDJ w bazie)` : '');
+            tidalCacheSetProgress(msg, (st.failed || errN) ? 'error' : 'loaded');
+            showJobDonePopup({
+              title: (st.failed || errN) ? 'Metadane Tidal — błędy' : 'Metadane Tidal — gotowe',
+              message: msg,
+              type: (st.failed || errN) ? 'error' : 'success',
+            });
+            await loadTidalCacheScan();
+          }
+        } catch (_) {}
+      }, 1500);
+    }
+
+    function startTidalCachePoll() {
+      stopTidalCachePoll();
+      const prog = document.getElementById('tidalCacheProgress');
+      showJobOverlay('Pobieranie Tidal offline', 'Pliki trafiają do folderu NJR-Tidal-Serato…');
+      tidalCacheState.pollTimer = setInterval(async () => {
+        try {
+          const st = await fetchJson(API + '/tidal-cache/download-status');
+          if (prog) {
+            if (st.running) {
+              tidalCacheSetProgress(`Pobieranie: ${st.done || 0}/${st.total || 0}` + (st.current ? (' — ' + st.current) : ''), '');
+              updateJobOverlay('Pobieranie Tidal offline', `${st.done || 0} / ${st.total || 0}` + (st.current ? (' — ' + st.current) : ''));
+            } else {
+              hideJobOverlay();
+              const errN = (st.errors || []).length;
+              const msg = st.finished_at
+                ? `Pobieranie Tidal zakończone. Pobrano: ${st.done || 0}/${st.total || 0}. Błędy: ${errN}`
+                : 'Pobieranie Tidal zakończone.';
+              tidalCacheSetProgress(msg, errN ? 'error' : 'loaded');
+              stopTidalCachePoll();
+              showJobDonePopup({
+                title: errN ? 'Pobieranie Tidal — z błędami' : 'Pobieranie Tidal — gotowe',
+                message: msg,
+                type: errN ? 'error' : 'success',
+              });
+              await loadTidalCacheScan();
+            }
+          }
+        } catch (_) {}
+      }, 2000);
+    }
+
+    document.getElementById('tidalCacheScanBtn')?.addEventListener('click', () => loadTidalCacheScan().catch(e => tidalCacheSetProgress('Skan Tidal cache: ' + e.message, 'error')));
+    document.getElementById('tidalCacheFilter')?.addEventListener('change', () => { tidalCacheState.page = 0; renderTidalCacheTable(); });
+    document.getElementById('tidalCachePickOutputBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('tidalCachePickOutputBtn');
+      btn.disabled = true;
+      try {
+        const r = await fetchJson(API + '/tidal-cache/pick-output');
+        if (r.path) document.getElementById('tidalCacheOutputDir').value = r.path;
+        tidalCacheSetProgress('Zapisano folder: ' + (r.path || r.output_dir || ''), 'loaded');
+      } catch (e) { tidalCacheSetProgress(e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheSaveOutputBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('tidalCacheSaveOutputBtn');
+      const out = (document.getElementById('tidalCacheOutputDir')?.value || '').trim();
+      if (!out) return tidalCacheSetProgress('Podaj folder pobierania', 'error');
+      btn.disabled = true;
+      try {
+        await fetchJson(API + '/tidal-cache/config', { method: 'POST', body: JSON.stringify({ outputDir: out }) });
+        tidalCacheSetProgress('Zapisano folder pobierania: ' + out, 'loaded');
+      } catch (e) { tidalCacheSetProgress(e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheDownloadSelectedBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('tidalCacheDownloadSelectedBtn');
+      const ids = tidalCacheGetSelectedIds();
+      if (!ids.length) return tidalCacheSetProgress('Zaznacz utwory z Tidal ID (checkbox w tabeli)', 'error');
+      if (!tidalCacheState.tiddlOk) return tidalCacheSetProgress('Najpierw zaloguj tiddl w terminalu (patrz status u góry panelu)', 'error');
+      const vdj = (document.getElementById('tidalCacheVdjPath')?.value || '').trim();
+      btn.disabled = true;
+      try {
+        const r = await fetchJson(API + '/tidal-cache/download', { method: 'POST', body: JSON.stringify({ tidalIds: ids, vdjCachePath: vdj }) });
+        if (!r.queued) {
+          tidalCacheSetProgress(r.message || 'Brak utworów do pobrania (tylko cached bez pliku NJR)', 'error');
+          return;
+        }
+        tidalCacheSetProgress('Kolejka pobierania: ' + r.queued + ' utworów', 'loaded');
+        startTidalCachePoll();
+      } catch (e) { tidalCacheSetProgress('Pobieranie: ' + e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheDownloadAllBtn')?.addEventListener('click', async () => {
+      if (!confirm('Pobierz wszystkie utwory z cache VDJ, które nie mają jeszcze pliku NJR?')) return;
+      if (!tidalCacheState.tiddlOk) return tidalCacheSetProgress('Najpierw zaloguj tiddl w terminalu (patrz status u góry panelu)', 'error');
+      const btn = document.getElementById('tidalCacheDownloadAllBtn');
+      const vdj = (document.getElementById('tidalCacheVdjPath')?.value || '').trim();
+      btn.disabled = true;
+      try {
+        const r = await fetchJson(API + '/tidal-cache/download', { method: 'POST', body: JSON.stringify({ allCached: true, vdjCachePath: vdj }) });
+        if (!r.queued) {
+          tidalCacheSetProgress(r.message || 'Brak utworów do pobrania', 'error');
+          return;
+        }
+        tidalCacheSetProgress('Kolejka pobierania: ' + r.queued + ' utworów', 'loaded');
+        startTidalCachePoll();
+      } catch (e) { tidalCacheSetProgress('Pobieranie: ' + e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheDeleteBtn')?.addEventListener('click', async () => {
+      const ids = tidalCacheGetSelectedIds();
+      if (!ids.length) return tidalCacheSetProgress('Zaznacz pobrane utwory do usunięcia', 'error');
+      if (!confirm('Usunąć pobrane pliki NJR dla ' + ids.length + ' utworów?')) return;
+      const btn = document.getElementById('tidalCacheDeleteBtn');
+      btn.disabled = true;
+      try {
+        await fetchJson(API + '/tidal-cache/delete', { method: 'POST', body: JSON.stringify({ tidalIds: ids }) });
+        tidalCacheState.selected.clear();
+        await loadTidalCacheScan();
+        tidalCacheSetProgress('Usunięto pobrane pliki', 'loaded');
+      } catch (e) { tidalCacheSetProgress(e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheApplyMetaBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('tidalCacheApplyMetaBtn');
+      btn.disabled = true;
+      try {
+        const r = await fetchJson(API + '/tidal-cache/apply-metadata', {
+          method: 'POST',
+          body: JSON.stringify({ all: true, onlyMissing: false, async: true }),
+        });
+        if (r.started) {
+          tidalCacheSetProgress('Metadane VDJ: start… (wszystkie pobrane pliki)', '');
+          startTidalMetadataPoll();
+        } else {
+          tidalCacheSetProgress(`Metadane VDJ: ${r.applied || 0} zapisano, ${r.skipped || 0} pominięto, ${r.failed || 0} błędów`, r.failed ? 'error' : 'loaded');
+          await loadTidalCacheScan();
+        }
+      } catch (e) { tidalCacheSetProgress('Metadane: ' + e.message, 'error'); }
+      finally { btn.disabled = false; }
+    });
+    document.getElementById('tidalCacheInstallSeratoBtn')?.addEventListener('click', async () => {
+      if (!confirm('ZAMKNIJ Serato DJ (Cmd+Q).\n\nZainstaluje crates z playlist VDJ.\n• Pobrane pliki NJR → lokalne w crates\n• Tidal online → Library SQLite (streaming://tidal/ID)\n\nKontynuować?')) return;
+      const btn = document.getElementById('tidalCacheInstallSeratoBtn');
+      const prevText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Instaluję…';
+      const tick = tidalCacheStartWorkingProgress('', (sec) =>
+        `Instalacja crates Serato: trwa… ${sec}s (zapis list + merge bazy — zwykle 30–120 s). Nie zamykaj karty.`
+      );
+      try {
+        const r = await fetch(API + '/install-serato-crates', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 403 && d.error === 'license_required') {
+          document.getElementById('licenseMachineId').textContent = d.machineId || '';
+          showLicenseModal();
+          tidalCacheSetProgress('Instalacja Serato: wymagana licencja', 'error');
+          return;
+        }
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        tidalCacheSetProgress(d.message || ('Serato: zapisano ' + (d.subcrates_count || 0) + ' crates. Otwórz Serato.'), 'loaded');
+      } catch (e) {
+        tidalCacheSetProgress('Błąd Serato: ' + (e.message || e), 'error');
+      } finally {
+        clearInterval(tick);
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
+    });
+
+    document.getElementById('installSeratoCratesBtn')?.addEventListener('click', async () => {
+      if (!confirm('ZAMKNIJ Serato DJ (Cmd+Q).\n\nZapisze Subcrates z VDJ do ~/Music/_Serato_/Subcrates/\nORAZ usunie Smart Crates VDJ (*.scrate).\n\nFilter listy = zwykłe playlisty (snapshot).\n\nKontynuować?')) return;
+      const btn = document.getElementById('installSeratoCratesBtn');
+      const prevText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Instaluję…';
+      const tick = tidalCacheStartWorkingProgress('', (sec) =>
+        `Instalacja crates Serato: trwa… ${sec}s. Nie zamykaj karty.`
+      );
+      try {
+        const root = (document.getElementById('seratoDriveRoot')?.value || '').trim() || '/';
+        const pathFrom = (document.getElementById('seratoPathFrom')?.value || '').trim();
+        const pathTo = (document.getElementById('seratoPathTo')?.value || '').trim();
+        const body = { driveRoot: root };
+        if (pathFrom) body.pathFrom = pathFrom;
+        if (pathTo) body.pathTo = pathTo;
+        const r = await fetch(API + '/install-serato-crates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 403 && d.error === 'license_required') {
+          document.getElementById('licenseMachineId').textContent = d.machineId || '';
+          showLicenseModal();
+          tidalCacheSetProgress('Instalacja Serato: wymagana licencja', 'error');
+          return;
+        }
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        const n = d.subcrates_count || (d.subcrates_written || []).length;
+        const rm = (d.smart_crates_removed || []).length;
+        const old = (d.subcrates_removed || []).length;
+        const msg = d.message || `Serato: zapisano ${n} Subcrates (usunięto ${old} starych, ${rm} Smart Crates). Otwórz Serato.`;
+        tidalCacheSetProgress(msg, 'loaded');
+        setStatus(msg, 'loaded');
+      } catch (e) {
+        const err = 'Błąd instalacji Serato: ' + (e.message || e);
+        tidalCacheSetProgress(err, 'error');
+        setStatus(err, 'error');
+      } finally {
+        clearInterval(tick);
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
+    });
+    document.getElementById('writeSeratoCuesBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('writeSeratoCuesBtn');
+      if (!confirm('ZAMKNIJ Serato DJ i VirtualDJ przed zapisem.\n\nHot cues zostaną wpisane do tagów plików audio (Serato Markers2).\nJuż zapisane bez zmian zostaną pominięte.\n\nKontynuować?')) return;
+      try {
+        const st = await fetchJson(API + '/status');
+        if (!st.loaded || !st.count) {
+          setStatus('Błąd: Najpierw załaduj bazę.', 'error');
+          return;
+        }
+      } catch (_) {
+        setStatus('Błąd: Nie można sprawdzić statusu.', 'error');
+        return;
+      }
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Zapisywanie…';
+      setStatus('Start zapisu hot cues w tle…', '');
+      showJobOverlay('Zapis hot cues Serato', 'Markers2 w plikach audio — może potrwać długo…');
+      try {
+        const r = await fetch(API + '/write-serato-cues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ async: true })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 403 && d.error === 'license_required') {
+          document.getElementById('licenseMachineId').textContent = d.machineId || '';
+          showLicenseModal();
+          return;
+        }
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        // poll status
+        for (;;) {
+          await new Promise(res => setTimeout(res, 1500));
+          const s = await fetchJson(API + '/write-serato-cues-status');
+          if (s.running) {
+            setStatus(`Hot cues: ${s.done || 0}/${s.total || '?'} · zapisano ${s.written || 0} · bez zmian ${s.unchanged || 0}`, '');
+            btn.textContent = `Zapis… ${s.done || 0}/${s.total || '?'}`;
+            updateJobOverlay('Zapis hot cues Serato', `${s.done || 0} / ${s.total || '?'} plików · zapisano ${s.written || 0}`);
+            continue;
+          }
+          if (s.error) throw new Error(s.error);
+          let msg = `Hot cues: ${s.written || 0} zapisano`;
+          if (s.unchanged) msg += `, ${s.unchanged} bez zmian`;
+          if (s.skipped) msg += `, ${s.skipped} pominięto`;
+          if (s.failed) msg += `, ${s.failed} błędów`;
+          setStatus(msg, s.failed ? 'error' : 'loaded');
+          if (s.errors?.length) console.warn('Błędy Markers2:', s.errors);
+          showJobDonePopup({
+            title: s.failed ? 'Hot cues — z błędami' : 'Hot cues — gotowe',
+            message: msg,
+            type: s.failed ? 'error' : 'success',
+          });
+          break;
+        }
+      } catch (e) {
+        setStatus('Błąd: ' + e.message, 'error');
+        showJobDonePopup({ title: 'Hot cues — błąd', message: e.message, type: 'error' });
+      } finally {
+        hideJobOverlay();
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    });
     document.getElementById('seratoBrowseBtn')?.addEventListener('click', async () => {
       try {
         setStatus('Otwieranie okna wyboru folderu…', 'loading');
@@ -4846,6 +6035,165 @@
     document.getElementById('saveTagsBtn').onclick = doSaveTags;
     document.getElementById('mergeBtn').onclick = doMerge;
     document.getElementById('removeBtn').onclick = doRemove;
+
+    let trashItems = [];
+    let trashFilter = 'all';
+    const trashSelected = new Set();
+
+    function trashKindLabel(kind) {
+      return ({ file: 'Plik', db_track: 'Wpis bazy', playlist_entry: 'Playlista', combined: 'Plik + baza' })[kind] || kind;
+    }
+
+    async function refreshTrashBadge() {
+      try {
+        const d = await fetchJson(API + '/trash');
+        const n = d.summary?.count || 0;
+        const badge = document.getElementById('trashNavBadge');
+        if (badge) {
+          badge.textContent = String(n);
+          badge.style.display = n > 0 ? 'inline' : 'none';
+        }
+      } catch (_) {}
+    }
+
+    function updateTrashActionButtons() {
+      const n = trashSelected.size;
+      const rBtn = document.getElementById('trashRestoreSelectedBtn');
+      const dBtn = document.getElementById('trashDismissSelectedBtn');
+      if (rBtn) rBtn.disabled = n === 0;
+      if (dBtn) dBtn.disabled = n === 0;
+    }
+
+    function renderTrashList() {
+      const el = document.getElementById('trashResult');
+      const sumEl = document.getElementById('trashSummary');
+      if (!el) return;
+      trashSelected.clear();
+      updateTrashActionButtons();
+      const filtered = trashFilter === 'all' ? trashItems : trashItems.filter(i => i.category === trashFilter);
+      if (sumEl) {
+        const s = trashItems.length ? `Łącznie: ${trashItems.length} (pliki: ${trashItems.filter(x => x.category === 'files' || x.kind === 'combined').length}, baza: ${trashItems.filter(x => x.category === 'tracks').length}, playlisty: ${trashItems.filter(x => x.category === 'playlists').length})` : 'Kosz jest pusty.';
+        sumEl.textContent = s;
+      }
+      if (!filtered.length) {
+        el.innerHTML = '<p style="color: var(--muted); padding: 12px;">Brak elementów w tym widoku.</p>';
+        return;
+      }
+      let html = '<table style="width:100%; border-collapse: collapse;"><thead><tr>';
+      html += '<th style="width:28px"><input type="checkbox" id="trashSelectAllCb" title="Zaznacz wszystkie"></th>';
+      html += '<th>Typ</th><th>Nazwa</th><th>Ścieżka / info</th><th>Kiedy</th></tr></thead><tbody>';
+      filtered.forEach(item => {
+        const pathInfo = item.in_system_trash ? (item.path || '') + ' <span style="color:var(--muted);">(kosz systemowy)</span>' : (item.path || item.playlist_name || '');
+        const when = item.deleted_at ? new Date(item.deleted_at).toLocaleString('pl-PL') : '';
+        html += `<tr style="border-top:1px solid var(--accent);"><td><input type="checkbox" class="trash-item-cb" data-id="${item.id}"></td>`;
+        html += `<td>${escape(trashKindLabel(item.kind))}</td><td>${escape(item.label)}</td>`;
+        html += `<td style="font-size:11px; word-break:break-all;">${pathInfo}</td><td style="font-size:11px;">${when}</td></tr>`;
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+
+      function syncTrashSelectAllCb() {
+        const cbs = [...el.querySelectorAll('.trash-item-cb')];
+        const master = el.querySelector('#trashSelectAllCb');
+        if (!master || !cbs.length) return;
+        const n = cbs.filter(c => c.checked).length;
+        master.checked = n === cbs.length;
+        master.indeterminate = n > 0 && n < cbs.length;
+      }
+
+      function setTrashSelection(all) {
+        el.querySelectorAll('.trash-item-cb').forEach(cb => {
+          cb.checked = !!all;
+          const id = cb.dataset.id;
+          if (all) trashSelected.add(id); else trashSelected.delete(id);
+        });
+        syncTrashSelectAllCb();
+        updateTrashActionButtons();
+      }
+
+      el.querySelector('#trashSelectAllCb')?.addEventListener('change', (e) => {
+        setTrashSelection(e.target.checked);
+      });
+      el.querySelectorAll('.trash-item-cb').forEach(cb => {
+        cb.onchange = () => {
+          const id = cb.dataset.id;
+          if (cb.checked) trashSelected.add(id); else trashSelected.delete(id);
+          syncTrashSelectAllCb();
+          updateTrashActionButtons();
+        };
+      });
+      // Udostępnij helperom przycisków nad listą
+      el._setTrashSelection = setTrashSelection;
+    }
+
+    async function loadTrashPanel() {
+      try {
+        const d = await fetchJson(API + '/trash');
+        trashItems = d.items || [];
+        renderTrashList();
+        await refreshTrashBadge();
+      } catch (e) {
+        setStatus('Błąd kosza: ' + e.message, 'error');
+      }
+    }
+
+    document.querySelectorAll('.trash-filter-btn').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('.trash-filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        trashFilter = btn.dataset.trashFilter || 'all';
+        renderTrashList();
+      };
+    });
+    document.getElementById('trashRefreshBtn').onclick = loadTrashPanel;
+    document.getElementById('trashSelectAllBtn').onclick = () => {
+      const el = document.getElementById('trashResult');
+      if (el?._setTrashSelection) el._setTrashSelection(true);
+      else {
+        el?.querySelectorAll('.trash-item-cb').forEach(cb => {
+          cb.checked = true;
+          trashSelected.add(cb.dataset.id);
+        });
+        updateTrashActionButtons();
+      }
+    };
+    document.getElementById('trashDeselectAllBtn').onclick = () => {
+      const el = document.getElementById('trashResult');
+      if (el?._setTrashSelection) el._setTrashSelection(false);
+      else {
+        trashSelected.clear();
+        el?.querySelectorAll('.trash-item-cb').forEach(cb => { cb.checked = false; });
+        updateTrashActionButtons();
+      }
+    };
+    document.getElementById('trashRestoreSelectedBtn').onclick = async () => {
+      const ids = Array.from(trashSelected);
+      if (!ids.length) return;
+      try {
+        const r = await fetch(API + '/trash/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        setStatus(`Przywrócono ${d.restored || 0} elementów` + (d.errors?.length ? ` (błędy: ${d.errors.length})` : ''), d.errors?.length ? 'error' : 'loaded');
+        await loadTrashPanel();
+        await doSearch();
+        refreshUndoButton();
+        refreshTrashBadge();
+      } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
+    };
+    document.getElementById('trashDismissSelectedBtn').onclick = async () => {
+      const ids = Array.from(trashSelected);
+      if (!ids.length) return;
+      if (!confirm('Usunąć zaznaczone elementy z kosza sesji na stałe?\n\nPliki muzyczne nadal są w koszu systemowym macOS — aby usunąć je z dysku, opróżnij Kosz Findera.')) return;
+      try {
+        const r = await fetch(API + '/trash/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, confirmed: true }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || d.message || r.statusText);
+        setStatus(`Usunięto z kosza sesji: ${d.dismissed || 0}`, 'loaded');
+        await loadTrashPanel();
+      } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
+    };
+    document.querySelector('[data-card="trash"]')?.addEventListener('click', () => { loadTrashPanel(); });
+    refreshTrashBadge();
     document.getElementById('tagMergePanel').addEventListener('click', (e) => {
       if (e.target.closest('.tag-chip')) setTimeout(refreshMergeTracksList, 0);
     });
@@ -4855,6 +6203,23 @@
 
     document.getElementById('searchInput').onkeydown = (e) => { if (e.key === 'Enter') { currentOffset = 0; doSearch(); } };
 
+    async function autoRepairEnginePlaylistsIfNeeded() {
+      try {
+        const r = await fetch(API + '/auto-repair-engine-playlists', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        const d = await r.json().catch(() => ({}));
+        if (d.repaired && d.message) {
+          setStatus(d.message, 'loaded');
+          showJobDonePopup({
+            title: 'Engine — playlisty naprawione',
+            message: d.message,
+          });
+        }
+      } catch (_) {}
+    }
     initColumnResize();
     initSortHandlers();
   </script>
