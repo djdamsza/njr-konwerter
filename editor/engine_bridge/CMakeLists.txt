@@ -8,8 +8,14 @@ include(FetchContent)
 
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-# Windows runners nie mają systemowego SQLite — używamy amalgamation z libdjinterop.
-set(SYSTEM_SQLITE OFF CACHE BOOL "" FORCE)
+# macOS/Linux: bundled SQLite z libdjinterop. Windows CI: systemowe pakiety vcpkg (patrz workflow).
+if(WIN32)
+  set(SYSTEM_SQLITE ON CACHE BOOL "" FORCE)
+  set(SYSTEM_DATE_H ON CACHE BOOL "" FORCE)
+  set(SYSTEM_SQLITE_MODERN_CPP ON CACHE BOOL "" FORCE)
+else()
+  set(SYSTEM_SQLITE OFF CACHE BOOL "" FORCE)
+endif()
 
 FetchContent_Declare(
   libdjinterop
