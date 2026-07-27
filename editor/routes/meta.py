@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Blueprint, Response, jsonify, send_from_directory
+from flask import Blueprint, Response, jsonify, request, send_from_directory
 
 from version_info import read_app_version
+import updater
 
 bp = Blueprint('meta', __name__)
 
@@ -29,11 +30,24 @@ def api_version():
 
 @bp.route('/api/check-updates', methods=['POST'])
 def api_check_updates():
-    return jsonify({
-        'available': False,
-        'message': 'Masz najnowszą wersję.',
-        'manualUrl': '',
-    })
+    result = updater.check_for_updates(APP_VERSION)
+    return jsonify(result)
+
+
+@bp.route('/api/update-status')
+def api_update_status():
+    return jsonify(updater.get_status())
+
+
+@bp.route('/api/install-update', methods=['POST'])
+def api_install_update():
+    body = request.get_json(silent=True) or {}
+    result = updater.install_update(
+        package_path=body.get('path') or None,
+        target_path=body.get('target') or None,
+        relaunch=bool(body.get('relaunch', True)),
+    )
+    return jsonify(result)
 
 
 @bp.route('/favicon.ico')

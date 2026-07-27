@@ -45,6 +45,7 @@ hidden_imports = [
     'vdj_streaming',
     'license_njr',
     'version_info',
+    'updater',
     'app_state',
     'constants',
     'native_dialogs',

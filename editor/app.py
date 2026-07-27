@@ -625,10 +625,37 @@ def api_save():
         return jsonify({'error': str(e)}), 500
 
 
+VDJ_EXPORT_INSTALL_TXT = """NJR Konwerter — eksport VirtualDJ
+=================================
+
+Zawartość archiwum:
+- database.xml  — baza utworów
+- MyLists/…     — listy / foldery (jeśli były w źródle)
+- NJR-INSTALUJ.txt — ta instrukcja
+
+Jak wgrać (zalecane):
+1. Zamknij VirtualDJ.
+2. Rozpakuj ZIP.
+3. Skopiuj database.xml do folderu VirtualDJ:
+   • macOS: ~/Library/Application Support/VirtualDJ/
+   • Windows: Documents\\VirtualDJ\\
+   (zrób wcześniej kopię istniejącego database.xml).
+4. Jeśli w ZIP są foldery MyLists (lub inne .vdjfolder) —
+   skopiuj je do tego samego katalogu VirtualDJ, zachowując strukturę.
+5. Uruchom VirtualDJ — utwory i listy powinny być widoczne.
+
+Alternatywa: w VirtualDJ użyj File → Restore / Restore database
+i wskaż ten ZIP (zależnie od wersji VDJ).
+
+Muzyka (pliki audio) NIE jest w tym ZIP — ścieżki wskazują na pliki
+już leżące na dysku. Przenieś bibliotekę audio osobno, jeśli zmieniasz komputer.
+"""
+
+
 @app.route('/api/download')
 def api_download():
-    """Pobiera database.xml lub ZIP (z vdjfolder) gdy są listy."""
-    return _do_download(filename=None)
+    """Pobiera paczkę VDJ (ZIP: database.xml + listy + instrukcja)."""
+    return _do_download(filename='vdj-export.zip', force_zip=True)
 
 
 @app.route('/api/backup')
@@ -636,7 +663,7 @@ def api_backup():
     """Pobiera kopię zapasową (ZIP) z timestampem – do bezpiecznego przechowania przed edycją."""
     from datetime import datetime
     ts = datetime.now().strftime('%Y-%m-%d_%H%M')
-    return _do_download(filename=f'vdj-backup-{ts}.zip')
+    return _do_download(filename=f'vdj-backup-{ts}.zip', force_zip=True)
 
 
 @app.route('/api/save-progress', methods=['POST'])
@@ -668,8 +695,8 @@ def api_save_progress():
     )
 
 
-def _do_download(filename=None):
-    """Wspólna logika pobierania database.xml lub ZIP."""
+def _do_download(filename=None, force_zip=False):
+    """Wspólna logika pobierania database.xml lub ZIP (paczka VDJ)."""
     r = _require_export_license()
     if r:
         return r
@@ -678,7 +705,8 @@ def _do_download(filename=None):
     from flask import Response
     import zipfile
 
-    if not st.vdjfolders and not st.extra_files and not filename:
+    want_zip = force_zip or bool(filename) or bool(st.vdjfolders) or bool(st.extra_files)
+    if not want_zip:
         buf = BytesIO()
         save_database(buf, st.songs, st.version)
         data = buf.getvalue()
@@ -692,12 +720,13 @@ def _do_download(filename=None):
         buf = BytesIO()
         save_database(buf, st.songs, st.version)
         zf.writestr('database.xml', buf.getvalue())
+        zf.writestr('NJR-INSTALUJ.txt', VDJ_EXPORT_INSTALL_TXT)
         for rel_path, content in st.vdjfolders.items():
             zf.writestr(rel_path, content.encode('utf-8'))
         for rel_path, raw in st.extra_files.items():
             zf.writestr(rel_path, raw)
     data = z.getvalue()
-    fn = filename or 'vdj-backup.zip'
+    fn = filename or 'vdj-export.zip'
     return Response(
         data,
         mimetype='application/zip',
@@ -1545,6 +1574,8 @@ def api_serato_drive_root_suggestion():
         'hasLibrary': has_library,
         'recommendCratesOnly': has_library,
         'libraryPathStyle': detect_serato_library_path_style() if has_library else 'unknown',
+        'seratoDir': str(Path.home() / 'Music' / '_Serato_'),
+        'source': st.source,
     }
     for fp in paths:
         if not fp:

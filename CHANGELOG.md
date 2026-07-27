@@ -1,6 +1,21 @@
 # Changelog — NJR Konwerter
 
-## 1.0.3 (w przygotowaniu)
+## 1.0.4 (2026-07-27)
+
+### Aktualizacje z GitHub
+- Automatyczne sprawdzanie, pobieranie i instalacja nowszej wersji z GitHub Releases.
+- macOS (arm64/Intel): DMG → podmiana aplikacji + restart.
+- Windows: `.exe` → podmiana przez skrypt `.bat` + restart.
+
+## 1.0.3 (2026-07-27)
+
+### Aktualizacje z GitHub (dev)
+- Sprawdzanie / pobieranie / instalacja nowszej wersji z GitHub Releases (jak w Imprezja Quiz).
+- API: `POST /api/check-updates`, `GET /api/update-status`, `POST /api/install-update`.
+- **macOS:** pobiera DMG (arm64 / Intel), montuje, kopiuje binary; podmiana działającej aplikacji przez skrypt + restart.
+- **Windows:** pobiera `.exe`, podmiana uruchomionego pliku przez `.bat` + restart.
+- UI w stopce: postęp pobierania + przycisk „Zainstaluj i uruchom ponownie”.
+- Test: `editor/test_updater.py`.
 
 ### Open source / licencjonowanie
 - Eksport odblokowany: brak wymogu aktywacji klucza.

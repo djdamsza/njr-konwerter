@@ -144,6 +144,128 @@
     button:hover { background: #52525b; }
     button.primary { background: #3f3f46; }
     button.primary:hover { background: #52525b; }
+    .export-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-width: 720px;
+    }
+    .export-card {
+      background: rgba(0, 0, 0, 0.18);
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .export-card h4 {
+      margin: 0 0 6px;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .export-card p {
+      margin: 0 0 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .export-card p:last-child { margin-bottom: 0; }
+    .export-card .export-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .export-card button,
+    .export-card a.export-btn {
+      display: inline-block;
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .export-card a.export-btn:hover { filter: brightness(1.06); }
+    .export-btn-njr { background: #3f3f46; }
+    .export-btn-vdj { background: #2d5a87; }
+    .export-btn-serato { background: #e11d48; }
+    .export-btn-engine { background: #c45c26; }
+    .export-btn-muted {
+      background: transparent;
+      border: 1px solid var(--accent) !important;
+      color: var(--muted) !important;
+      cursor: default !important;
+      opacity: 0.85;
+    }
+    .export-card.coming-soon { opacity: 0.75; }
+    .export-card .badge-soon {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--warn);
+      border: 1px solid rgba(234, 179, 8, 0.45);
+      border-radius: 999px;
+      padding: 2px 8px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .export-hint {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .export-hint code {
+      background: rgba(255,255,255,0.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .export-advanced {
+      margin-top: 8px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .export-advanced summary {
+      cursor: pointer;
+      color: var(--muted);
+      user-select: none;
+    }
+    .export-advanced summary:hover { color: var(--text); }
+    .export-advanced .export-actions { margin-top: 10px; }
+    #exportHelpModal {
+      display: none;
+      position: fixed;
+      z-index: 1300;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--bg2);
+      border: 2px solid var(--accent);
+      border-radius: 10px;
+      padding: 22px 24px;
+      min-width: 340px;
+      max-width: min(520px, 92vw);
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.45);
+    }
+    #exportHelpModal h4 { margin: 0 0 12px; }
+    #exportHelpModal ol { margin: 0 0 16px; padding-left: 1.25em; color: var(--muted); line-height: 1.55; font-size: 0.92rem; }
+    #exportHelpModal li { margin-bottom: 8px; }
+    #exportHelpModal code {
+      background: rgba(255,255,255,0.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 0.88em;
+    }
+    #exportHelpBackdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1290;
+      background: rgba(0,0,0,0.55);
+    }
     button.danger { background: #7f1d1d; }
     .pl-filter-btn.active { background: var(--accent); color: #18181b; }
     button.danger:hover { background: #991b1b; }
@@ -1216,86 +1338,120 @@
     </div>
   </div>
 
+  <div id="exportHelpBackdrop"></div>
+  <div id="exportHelpModal" role="dialog" aria-modal="true" aria-labelledby="exportHelpTitle">
+    <h4 id="exportHelpTitle">Jak wgrać eksport do VirtualDJ</h4>
+    <ol id="exportHelpBody"></ol>
+    <button type="button" class="primary" id="exportHelpOkBtn" style="padding: 10px 18px;">Rozumiem</button>
+  </div>
+
   <div class="card-panel" id="card-export">
     <div class="merge-panel" id="exportSection" style="border: 2px solid var(--accent);">
-      <h3 style="margin: 0 0 12px;">Zapisz / Eksport</h3>
-      <p style="font-size: 13px; color: var(--muted); margin: 0 0 12px;">
-        Wybierz format – pobierz bazę w wersji dla wybranego systemu. <strong>Wymaga licencji.</strong> Bez licencji użyj „Zachowaj postęp” – zapisze pracę w formacie .njr.
+      <h3 style="margin: 0 0 8px;">Zapisz / Eksport</h3>
+      <p style="font-size: 13px; color: var(--muted); margin: 0 0 16px;">
+        Najpierw zapisz postęp pracy. Potem wybierz system, do którego chcesz przenieść bibliotekę.
       </p>
-      <p style="font-size: 13px; color: var(--warn); margin: 0 0 12px; padding: 10px 12px; background: rgba(200, 150, 0, 0.1); border: 1px solid rgba(200, 150, 0, 0.4); border-radius: 6px;">
-        <strong>Eksport do innych formatów niż zaimportowany</strong> (Serato, Rekordbox XML, DJXML) jest oznaczony jako <strong>wersja beta</strong>. Trwają prace nad konwertowaniem; jestem wdzięczny za wszelkie wskazówki i sugestie.
-      </p>
-      <div class="merge-row" style="flex-wrap: wrap; gap: 12px; align-items: center;">
-        <button type="button" id="saveProgressBtnCard" class="primary" style="padding: 8px 12px; font-size: 12px;" title="Zapisz postęp bez licencji – plik .njr">Zachowaj postęp</button>
-        <a id="exportVdjBtn" href="/api/download" download="database.xml" class="export-requires-license" style="padding: 10px 16px; background: #2d5a87; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">VDJ</a>
-        <button type="button" id="backupBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; color: var(--muted); border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); cursor: pointer;" title="Pobierz plik ZIP z kopią zapasową bazy">Kopia zapasowa</button>
-        <span class="serato-export-group" style="display: inline-flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; background: rgba(225, 29, 72, 0.12); border: 1px solid rgba(225, 29, 72, 0.4); border-radius: 8px; max-width: 720px;">
-          <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <label style="font-size: 12px; color: var(--muted); white-space: nowrap;">Root:</label>
-            <input type="text" id="seratoDriveRoot" placeholder="Mac: /   Dysk: /Volumes/Nazwa/" style="width: 220px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
-            <button type="button" id="seratoBrowseBtn" title="Wybierz folder (root dysku)">Przeglądaj</button>
-            <label style="font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Zapisuje hot cues do tagów plików (Markers2). Zamknij Serato przed zapisem.">
-              <input type="checkbox" id="seratoWriteCues" checked>
-              hot cues → pliki
-            </label>
-            <label style="font-size: 12px; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;" title="Tylko Subcrates — nie nadpisuje database V2. Zalecane przy istniejącej bibliotece Serato.">
-              <input type="checkbox" id="seratoCratesOnly" checked>
-              tylko crates
-            </label>
-            <a id="exportSeratoBtn" href="/api/export-serato" download="serato-export.zip" class="export-requires-license" style="padding: 10px 16px; background: #e11d48; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Serato <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
-            <button type="button" id="installSeratoCratesBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #be123c; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zapisuje Subcrates do ~/Music/_Serato_/ i usuwa Smart Crates VDJ. Zamknij Serato.">Instaluj crates</button>
-            <button type="button" id="writeSeratoCuesBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #9f1239; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Tylko zapis hot cues do plików (bez ZIP). Zamknij Serato/VDJ.">Zapisz hot cues</button>
-            <button type="button" id="dedupeSeratoBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 12px; background: #7f1d1d; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Normalizuje ścieżki do Users/… (bez /) i usuwa klony. Zamknij Serato.">Napraw ścieżki Serato</button>
-          </span>
-          <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px;">
-            <label style="color: var(--muted);">ścieżki z:</label>
-            <input type="text" id="seratoPathFrom" placeholder="/Users/inmos" style="width: 140px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
-            <label style="color: var(--muted);">na:</label>
-            <input type="text" id="seratoPathTo" placeholder="/Users/test" style="width: 140px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(225, 29, 72, 0.3); border-radius: 4px;">
-          </span>
-          <p id="seratoExportHint" style="margin: 0; font-size: 11px; color: var(--muted); line-height: 1.4;">
-            Ścieżki: <code>Users/…</code>. Do crates trafiają <strong>tylko utwory z plikiem na dysku</strong> (bez żółtych trójkątów). <strong>Instaluj crates</strong> lub ZIP → <code>Subcrates/</code>.
+      <div class="export-grid">
+
+        <div class="export-card">
+          <h4>Zapisz postęp</h4>
+          <p>
+            Tworzy plik <strong>.njr</strong> ze stanem zaimportowanej i edytowanej biblioteki
+            (utwory, listy, tagi) <strong>bez zmiany formatu</strong>. Możesz wrócić do pracy później —
+            otwórz ten plik ponownie w NJR. To nie jest eksport do VDJ / Serato.
           </p>
-        </span>
-        <a id="exportRbBtn" href="/api/export-rb" download="rekordbox.xml" class="export-requires-license" style="padding: 10px 16px; background: #2d5a87; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">Rekordbox XML <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
-        <a id="exportDjxmlBtn" href="/api/export-djxml" download="vdj-export.djxml" class="export-requires-license" style="padding: 10px 16px; background: #5a4d8a; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;">DJXML <span style="font-size: 10px; opacity: 0.9;">beta</span></a>
-        <a id="exportEngineBtn" href="/api/export-engine" download="engine-library.zip" class="export-requires-license" style="padding: 10px 16px; background: #c45c26; color: var(--text); text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="ZIP z m.db — na pendrive lub nowy folder (nie do ~/Music/Engine Library).">Engine ZIP <span style="font-size: 10px; opacity: 0.9;">β</span></a>
-        <span class="engine-sync-group" style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; background: rgba(196, 92, 38, 0.12); border: 1px solid rgba(196, 92, 38, 0.4); border-radius: 8px; flex-wrap: wrap;">
-          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Informacyjnie: główny folder z muzyką (ścieżki liczone względem ~/Music/Engine Library)">muzyka:</label>
-          <input type="text" id="engineLibraryRoot" placeholder="/Users/test/Desktop" style="width: 180px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;" readonly title="Uzupełniane automatycznie po załadowaniu bazy">
-          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Stary prefix ścieżki (opcjonalnie)">z:</label>
-          <input type="text" id="enginePathFrom" placeholder="/Users/inmos/Desktop" style="width: 160px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
-          <label style="font-size: 12px; color: var(--muted); white-space: nowrap;" title="Nowy prefix (opcjonalnie)">na:</label>
-          <input type="text" id="enginePathTo" placeholder="/Users/test/Desktop" style="width: 160px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
-          <button type="button" id="syncEngineDesktopBtn" class="export-requires-license" style="padding: 10px 16px; background: #c45c26; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Merge VDJ → ~/Music/Engine Library. Zamknij Engine DJ Desktop (Cmd+Q) przed sync.">Sync VDJ → Engine <span style="font-size: 10px; opacity: 0.9;">β</span></button>
-          <button type="button" id="syncSeratoToEngineBtn" class="export-requires-license" style="padding: 10px 16px; background: #e11d48; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Serato → Engine Mac (+ Patriot: playlisty i czyszczenie duplikatów gdy dysk podłączony). Zamknij Engine/Serato.">Sync Serato → Engine <span style="font-size: 10px; opacity: 0.9;">β</span></button>
-          <button type="button" id="repairEnginePlaylistsBtn" class="export-requires-license" style="padding: 10px 16px; background: #3d4f5f; color: var(--text); border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer;" title="Naprawa PlaylistEntity (Mac / Patriot). Zamknij Engine (Cmd+Q).">Napraw playlisty Engine</button>
-        </span>
-        <p style="font-size: 11px; color: #e8a87c; margin: 8px 0 0; line-height: 1.45; max-width: 920px;">
-          <strong>Workflow:</strong> Sync Serato → Engine (Mac). Gdy Patriot podłączony — NJR automatycznie czyści duplikaty i synchronizuje playlisty. <em>Nie używaj</em> Export to Drive w Sync Manager.
-        </p>
-        <div style="margin-top: 12px; padding: 10px 12px; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px solid rgba(196, 92, 38, 0.25);">
-          <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px;">
-            <strong>Stemy → Patriot</strong> — partiami: playlista na Mac → Create stems w Engine → przenieś na dysk Rane i zwolnij miejsce na MacBooku.
-          </p>
-          <p style="font-size: 11px; color: #e8a87c; margin: 0 0 8px; line-height: 1.4;">
-            <strong>Uwaga:</strong> W Sync Manager <em>nie zaznaczaj</em> „Export Stems” przy sync pojedynczej playlisty — Engine <strong>usuwa</strong> stemy na Patriot spoza eksportu (ostrzeżenie w aplikacji). Do przenoszenia użyj „Przenieś na Patriot” poniżej.
-          </p>
-          <span style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
-            <label style="font-size: 12px; color: var(--muted);">partia</label>
-            <input type="number" id="engineStemsBatchSize" value="15" min="1" max="100" style="width: 56px; font-size: 12px; padding: 6px 8px; background: var(--bg); border: 1px solid rgba(196, 92, 38, 0.3); border-radius: 4px;">
-            <button type="button" id="engineStemsStatusBtn" style="padding: 8px 12px; font-size: 13px; background: #3d4f5f; color: var(--text); border: none; border-radius: 6px; cursor: pointer;">Status stemów</button>
-            <button type="button" id="engineStemsPrepareBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 13px; background: #5a4a8a; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zamknij Engine DJ. Tworzy playlistę NJR / NJR Stems Batch.">Przygotuj partię</button>
-            <button type="button" id="engineStemsMigrateBtn" class="export-requires-license" style="padding: 8px 12px; font-size: 13px; background: #2d6a4f; color: var(--text); border: none; border-radius: 6px; cursor: pointer;" title="Zamknij Engine DJ. Kopiuje .stems na Patriot i usuwa z Maca.">Przenieś na Patriot</button>
-          </span>
+          <div class="export-actions">
+            <button type="button" id="saveProgressBtnCard" class="export-btn-njr">Zapisz postęp (.njr)</button>
+          </div>
         </div>
+
+        <div class="export-card">
+          <h4>VirtualDJ</h4>
+          <p>
+            Pełna paczka gotowa do VirtualDJ: <code>database.xml</code> oraz listy (foldery).
+            Po pobraniu zobaczysz krótką instrukcję, gdzie skopiować pliki.
+          </p>
+          <div class="export-actions">
+            <a id="exportVdjBtn" href="/api/download?package=1" download="vdj-export.zip" class="export-btn export-btn-vdj export-requires-license">Pobierz paczkę VDJ (.zip)</a>
+          </div>
+        </div>
+
+        <div class="export-card">
+          <h4>Serato DJ</h4>
+          <p>
+            Eksport crates (i opcjonalnie cue) do archiwum <code>_Serato_</code>.
+            Folder Serato wykrywany jest automatycznie (<code>~/Music/_Serato_/</code>).
+          </p>
+          <div class="export-actions">
+            <button type="button" id="exportSeratoBtn" class="export-btn-serato export-requires-license">Pobierz eksport Serato (.zip)</button>
+          </div>
+          <p class="export-hint" id="seratoExportHint">Szukam biblioteki Serato…</p>
+        </div>
+
+        <div class="export-card">
+          <h4>Engine DJ</h4>
+          <p>
+            <strong>Zalecane:</strong> najpierw pobierz eksport <strong>Serato</strong> powyżej,
+            potem w <strong>Engine DJ Desktop</strong> zaimportuj bibliotekę Serato
+            (File → Import Library / Import from Serato — zależnie od wersji).
+            Engine najlepiej czyta przygotowaną bibliotekę Serato.
+          </p>
+          <div class="export-actions">
+            <button type="button" id="exportEngineViaSeratoBtn" class="export-btn-engine export-requires-license">Pobierz Serato → import w Engine</button>
+          </div>
+          <details class="export-advanced">
+            <summary>Dla ambitnych — bezpośredni ZIP Engine (beta)</summary>
+            <p style="margin-top: 8px;">
+              Surowy eksport bazy Engine (<code>m.db</code>). Wymaga ręcznego wgrania —
+              nie do codziennego użytku. Oznaczony jako beta.
+            </p>
+            <div class="export-actions">
+              <a id="exportEngineBtn" href="/api/export-engine" download="engine-library.zip" class="export-btn export-btn-engine export-requires-license" style="opacity: 0.9;">Engine ZIP <span style="font-size: 10px; opacity: 0.85;">beta</span></a>
+            </div>
+          </details>
+        </div>
+
+        <div class="export-card coming-soon">
+          <h4>Rekordbox <span class="badge-soon">w opracowaniu</span></h4>
+          <p>Eksport do Rekordbox jest wciąż w opracowaniu. Na razie skorzystaj z Zapisz postęp (.njr) albo eksportu do Serato / VDJ.</p>
+          <div class="export-actions">
+            <button type="button" class="export-btn-muted" disabled>Rekordbox — wkrótce</button>
+          </div>
+        </div>
+
+        <div class="export-card coming-soon">
+          <h4>Traktor <span class="badge-soon">w opracowaniu</span></h4>
+          <p>Eksport do Traktora jest w opracowaniu. Zapisz postęp (.njr), aby nie stracić pracy.</p>
+          <div class="export-actions">
+            <button type="button" class="export-btn-muted" disabled>Traktor — wkrótce</button>
+          </div>
+        </div>
+
       </div>
-      <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--accent);">
-        <p style="font-size: 13px; color: var(--muted); margin: 0 0 8px;">
-          <strong>Eksport tagów do ID3</strong> – zapisuje tagi (Genre, User1, User2) do plików MP3. ZAMKNIJ VirtualDJ przed zapisem.
-        </p>
-        <button id="writeTagsBtn" class="export-requires-license" style="padding: 10px 16px; background: #4a5568; color: var(--text); border: 1px solid var(--accent); border-radius: 6px; font-size: 14px; cursor: pointer;" title="Zapisuje tagi do plików – Genre, User1, User2 trafiają do ID3. ZAMKNIJ VirtualDJ przed zapisem.">Eksport tagów do ID3</button>
-      </div>
+      <!-- Ukryte pola / stare API — zachowane dla kompatybilności JS, niewidoczne w UI -->
+      <input type="hidden" id="seratoDriveRoot" value="/">
+      <input type="checkbox" id="seratoWriteCues" checked style="display:none">
+      <input type="checkbox" id="seratoCratesOnly" checked style="display:none">
+      <input type="hidden" id="seratoPathFrom" value="">
+      <input type="hidden" id="seratoPathTo" value="">
+      <input type="hidden" id="engineLibraryRoot" value="">
+      <input type="hidden" id="enginePathFrom" value="">
+      <input type="hidden" id="enginePathTo" value="">
+      <a id="exportRbBtn" href="/api/export-rb" download="rekordbox.xml" style="display:none"></a>
+      <a id="exportDjxmlBtn" href="/api/export-djxml" download="vdj-export.djxml" style="display:none"></a>
+      <button type="button" id="backupBtn" style="display:none"></button>
+      <button type="button" id="installSeratoCratesBtn" style="display:none"></button>
+      <button type="button" id="writeSeratoCuesBtn" style="display:none"></button>
+      <button type="button" id="dedupeSeratoBtn" style="display:none"></button>
+      <button type="button" id="syncEngineDesktopBtn" style="display:none"></button>
+      <button type="button" id="syncSeratoToEngineBtn" style="display:none"></button>
+      <button type="button" id="repairEnginePlaylistsBtn" style="display:none"></button>
+      <button type="button" id="engineStemsStatusBtn" style="display:none"></button>
+      <button type="button" id="engineStemsPrepareBtn" style="display:none"></button>
+      <button type="button" id="engineStemsMigrateBtn" style="display:none"></button>
+      <button type="button" id="writeTagsBtn" style="display:none"></button>
+      <input type="number" id="engineStemsBatchSize" value="15" style="display:none">
+      <button type="button" id="seratoBrowseBtn" style="display:none"></button>
     </div>
   </div>
 
@@ -1343,14 +1499,49 @@
           resultEl.innerHTML = 'ℹ️ ' + msg + (safeUrl ? ' <a href="' + safeUrl.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:var(--warn);">Pobierz ręcznie →</a>' : '');
           resultEl.style.background = 'rgba(255,255,255,0.08)';
         } else if (d.available) {
-          resultEl.innerHTML = '✅ ' + msg + (safeUrl ? ' <a href="' + safeUrl.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:var(--success);">Pobierz →</a>' : '');
+          resultEl.textContent = 'Pobieranie aktualizacji…';
           resultEl.style.background = 'rgba(34, 197, 94, 0.15)';
+          const pollStatus = setInterval(async () => {
+            try {
+              const st = await fetch('/api/update-status').then(x => x.json());
+              if (st.status === 'ready') {
+                clearInterval(pollStatus);
+                const ver = st.version ? (' v' + st.version) : '';
+                resultEl.innerHTML = 'Aktualizacja' + ver + ' pobrana. <button type="button" id="btn-install-update" style="margin-left:8px;padding:4px 10px;background:var(--success,#22c55e);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600;">Zainstaluj i uruchom ponownie</button>';
+                resultEl.style.background = 'rgba(34, 197, 94, 0.2)';
+                const btn = document.getElementById('btn-install-update');
+                if (btn) btn.onclick = async () => {
+                  resultEl.textContent = 'Instalowanie…';
+                  try {
+                    const ir = await fetch('/api/install-update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                    const id = await ir.json();
+                    if (!id.ok) {
+                      resultEl.textContent = '❌ ' + (id.error || 'Błąd instalacji');
+                      resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
+                    } else {
+                      resultEl.textContent = id.message || 'Zainstalowano. Aplikacja uruchomi się ponownie.';
+                    }
+                  } catch (_) {
+                    resultEl.textContent = '❌ Błąd instalacji.';
+                    resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
+                  }
+                };
+              } else if (st.status === 'downloading') {
+                const pct = (typeof st.progress === 'number' && st.progress > 0) ? (' ' + st.progress + '%') : '';
+                resultEl.textContent = 'Pobieranie' + (st.version ? (' v' + st.version) : '') + '…' + pct;
+              } else if (st.status === 'error') {
+                clearInterval(pollStatus);
+                resultEl.innerHTML = '❌ ' + (st.message || st.error || 'Błąd pobierania') + (safeUrl ? ' <a href="' + safeUrl.replace(/"/g, '&quot;') + '" target="_blank" rel="noopener" style="color:var(--warn);">Pobierz ręcznie →</a>' : '');
+                resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
+              }
+            } catch (_) {}
+          }, 1000);
         } else {
           resultEl.textContent = '✅ ' + (d.message || 'Masz najnowszą wersję.');
           resultEl.style.background = 'rgba(34, 197, 94, 0.15)';
         }
       } catch (e) {
-        resultEl.innerHTML = '❌ Błąd połączenia.';
+        resultEl.innerHTML = '❌ Błąd połączenia.' + ' <a href="https://github.com/djdamsza/njr-konwerter/releases" target="_blank" rel="noopener" style="color:var(--warn);">Pobierz ręcznie →</a>';
         resultEl.style.background = 'rgba(239, 68, 68, 0.15)';
       }
     }
@@ -1764,10 +1955,79 @@
       const ps = r.headers.get('X-Serato-Path-Style');
       if (ps) msg += ` · ścieżki ${ps}`;
       setStatus(msg, 'loaded');
+      return { filename: fn, headers: r.headers };
     }
+
+    window.njrLibrarySource = window.njrLibrarySource || '';
+
+    function showExportHelp(title, steps) {
+      const modal = document.getElementById('exportHelpModal');
+      const backdrop = document.getElementById('exportHelpBackdrop');
+      const titleEl = document.getElementById('exportHelpTitle');
+      const body = document.getElementById('exportHelpBody');
+      if (!modal || !body) return;
+      if (titleEl) titleEl.textContent = title;
+      body.innerHTML = '';
+      (steps || []).forEach(t => {
+        const li = document.createElement('li');
+        li.innerHTML = t;
+        body.appendChild(li);
+      });
+      modal.style.display = 'block';
+      if (backdrop) backdrop.style.display = 'block';
+    }
+    function hideExportHelp() {
+      const modal = document.getElementById('exportHelpModal');
+      const backdrop = document.getElementById('exportHelpBackdrop');
+      if (modal) modal.style.display = 'none';
+      if (backdrop) backdrop.style.display = 'none';
+    }
+    document.getElementById('exportHelpOkBtn')?.addEventListener('click', hideExportHelp);
+    document.getElementById('exportHelpBackdrop')?.addEventListener('click', hideExportHelp);
+
+    async function runSeratoExport(opts = {}) {
+      const root = (document.getElementById('seratoDriveRoot')?.value || '').trim() || '/';
+      const cratesOnlyEl = document.getElementById('seratoCratesOnly');
+      const cratesOnly = cratesOnlyEl ? (cratesOnlyEl.checked ? '1' : '0') : '1';
+      let writeCues = '0';
+      const src = (window.njrLibrarySource || '').toLowerCase();
+      if (src && src !== 'serato') {
+        const ok = confirm(
+          'Biblioteka pochodzi z innego systemu (' + (src || '?') + ').\n\n' +
+          'Czy zapisać hot cues do plików audio (tagi Serato Markers2)?\n\n' +
+          'OK = tak, zapisz cue\nAnuluj = tylko crates / baza, bez zapisu cue do plików'
+        );
+        writeCues = ok ? '1' : '0';
+        const cueEl = document.getElementById('seratoWriteCues');
+        if (cueEl) cueEl.checked = writeCues === '1';
+      } else {
+        writeCues = document.getElementById('seratoWriteCues')?.checked ? '1' : '0';
+      }
+      const q = new URLSearchParams();
+      q.set('driveRoot', root);
+      q.set('pathStyle', 'relative');
+      q.set('writeCues', writeCues);
+      q.set('cratesOnly', cratesOnly);
+      await doExportDownload(API + '/export-serato?' + q.toString(), 'serato-export.zip');
+      if (!opts.skipHelp) {
+        showExportHelp('Jak wgrać eksport do Serato', [
+          'Zamknij <strong>Serato DJ</strong> (Cmd+Q / Quit).',
+          'Rozpakuj pobrany ZIP.',
+          'Skopiuj zawartość <code>Subcrates/</code> do <code>~/Music/_Serato_/Subcrates/</code> (nadpisz crates o tych samych nazwach — OK).',
+          'Jeśli masz już bibliotekę Serato — <strong>nie nadpisuj</strong> pliku <code>database V2</code>.',
+          'Uruchom Serato — crates powinny pojawić się w bibliotece.',
+        ]);
+      }
+    }
+
     document.getElementById('saveProgressBtnCard').onclick = async () => {
       try {
         await doExportDownload(API + '/save-progress', 'njr-postep.njr', { method: 'POST' });
+        showExportHelp('Postęp zapisany', [
+          'Plik <code>.njr</code> trzyma aktualny stan biblioteki w NJR (bez zmiany formatu DJ).',
+          'Aby wrócić do pracy: w karcie Import użyj <strong>Otwórz bazę</strong> i wskaż ten plik <code>.njr</code>.',
+          'Eksport do VDJ / Serato / Engine robisz osobnymi przyciskami poniżej.',
+        ]);
       } catch (e) { setStatus('Błąd: ' + e.message, 'error'); }
     };
     document.getElementById('wishlistSendBtn').onclick = () => {
@@ -1812,7 +2072,7 @@
         }
       } catch (_) {}
     }
-    ['exportVdjBtn','exportSeratoBtn','exportRbBtn','exportDjxmlBtn','exportEngineBtn'].forEach(id => {
+    ['exportVdjBtn','exportRbBtn','exportDjxmlBtn','exportEngineBtn'].forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
       el.onclick = async (e) => {
@@ -1820,30 +2080,39 @@
         try {
           let u = el.href || API + '/download';
           let fn = el.download || 'download';
-          if (id === 'exportSeratoBtn') {
-            const root = (document.getElementById('seratoDriveRoot')?.value || '').trim() || '/';
-            const writeCues = document.getElementById('seratoWriteCues')?.checked ? '1' : '0';
-            const cratesOnly = document.getElementById('seratoCratesOnly')?.checked ? '1' : '0';
-            if (cratesOnly !== '1') {
-              const ok = confirm(
-                'Uwaga: eksport z database V2.\n\n' +
-                'Przy istniejącej bibliotece Serato lepiej zostawić „tylko crates”.\n' +
-                'Nadpisanie database V2 może zepsuć plays/historię lub zrobić klony.\n\n' +
-                'Kontynuować pełny eksport?'
-              );
-              if (!ok) return;
-            }
-            const q = new URLSearchParams();
-            q.set('driveRoot', root);
-            q.set('pathStyle', 'relative');
-            q.set('writeCues', writeCues);
-            q.set('cratesOnly', cratesOnly);
-            u = API + '/export-serato?' + q.toString();
-          }
           if (id === 'exportEngineBtn') u = API + '/export-engine' + engineExportQuery();
+          if (id === 'exportVdjBtn') {
+            u = API + '/download';
+            fn = 'vdj-export.zip';
+          }
           await doExportDownload(u, fn);
+          if (id === 'exportVdjBtn') {
+            showExportHelp('Jak wgrać eksport do VirtualDJ', [
+              'Zamknij <strong>VirtualDJ</strong>.',
+              'Rozpakuj pobrany ZIP (<code>database.xml</code> + listy + <code>NJR-INSTALUJ.txt</code>).',
+              'Skopiuj <code>database.xml</code> do folderu VirtualDJ:<br>macOS: <code>~/Library/Application Support/VirtualDJ/</code><br>Windows: <code>Documents\\VirtualDJ\\</code><br>(najpierw zrób kopię starego pliku).',
+              'Jeśli w ZIP są foldery list (np. <code>MyLists/</code>) — skopiuj je do tego samego katalogu VirtualDJ.',
+              'Uruchom VirtualDJ. Alternatywnie: File → Restore i wskaż ZIP (zależnie od wersji).',
+            ]);
+          }
         } catch (err) { setStatus('Błąd: ' + err.message, 'error'); }
       };
+    });
+    document.getElementById('exportSeratoBtn')?.addEventListener('click', async () => {
+      try {
+        await runSeratoExport();
+      } catch (err) { setStatus('Błąd: ' + err.message, 'error'); }
+    });
+    document.getElementById('exportEngineViaSeratoBtn')?.addEventListener('click', async () => {
+      try {
+        await runSeratoExport({ skipHelp: true });
+        showExportHelp('Serato → Engine DJ Desktop', [
+          'Pobrano eksport Serato.',
+          'Zamknij Serato. Rozpakuj ZIP i skopiuj <code>Subcrates/</code> do <code>~/Music/_Serato_/Subcrates/</code> (nie nadpisuj <code>database V2</code>, jeśli już masz bibliotekę).',
+          'Otwórz <strong>Engine DJ Desktop</strong> i zaimportuj bibliotekę Serato (Import Library / Import from Serato — zależnie od wersji).',
+          'To zalecana ścieżka. Bezpośredni Engine ZIP zostaw dla ambitnych (sekcja beta poniżej).',
+        ]);
+      } catch (err) { setStatus('Błąd: ' + err.message, 'error'); }
     });
     function formatEngineSyncDetail(d) {
       const parts = [];
@@ -2089,6 +2358,7 @@
         document.getElementById('rbBetaTools').style.display = 'none';
         const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
         setStatus(msg, 'loaded');
+        window.njrLibrarySource = d.source || '';
         updateSeratoExportHref();
         applyEngineMappingSuggestion(false);
         (async () => {
@@ -2101,16 +2371,25 @@
               cratesEl.checked = !!d.recommendCratesOnly;
             }
             const hint = document.getElementById('seratoExportHint');
-            if (hint && d.hasLibrary) {
-              hint.innerHTML = 'Wykryto lokalną bibliotekę Serato — domyślnie <strong>tylko crates</strong>. Skopiuj Subcrates do ~/Music/_Serato_/ (nie nadpisuj database V2). Ścieżki: <code>Users/…</code>.';
+            if (hint) {
+              if (d.hasLibrary) {
+                hint.innerHTML = 'Wykryto <code>' + (d.seratoDir || '~/Music/_Serato_') + '</code> — eksport crates bez nadpisywania database V2.';
+              } else {
+                hint.innerHTML = 'Nie znaleziono lokalnej biblioteki Serato. Po eksporcie utwórz <code>~/Music/_Serato_/</code> i skopiuj Subcrates z ZIP.';
+              }
             }
             updateSeratoExportHref();
-          } catch (_) {}
+          } catch (_) {
+            const hint = document.getElementById('seratoExportHint');
+            if (hint) hint.textContent = 'Folder Serato: ~/Music/_Serato_/ (wykrywanie automatyczne).';
+          }
         })();
         const vdjBtn = document.getElementById('exportVdjBtn');
-        vdjBtn.textContent = d.vdjfolders ? 'VDJ (ZIP)' : 'VDJ';
-        vdjBtn.href = API + '/download';
-        vdjBtn.download = d.vdjfolders ? 'vdj-backup.zip' : 'database.xml';
+        if (vdjBtn) {
+          vdjBtn.textContent = 'Pobierz paczkę VDJ (.zip)';
+          vdjBtn.href = API + '/download';
+          vdjBtn.download = 'vdj-export.zip';
+        }
         const plCount = d.playlists ?? d.vdjfolders ?? 0;
         document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
         document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');

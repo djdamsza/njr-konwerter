@@ -18,6 +18,7 @@ editor/.venv-*/
 editor/.pytest_cache/
 editor/logs/
 editor/engine_bridge/build/
+editor/engine_bridge/build-test/
 
 # Lokalne raporty / artefakty diagnostyczne
 editor/linki_rebuild_report.json
