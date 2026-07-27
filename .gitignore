@@ -18,3 +18,10 @@ editor/.venv-*/
 editor/.pytest_cache/
 editor/logs/
 editor/engine_bridge/build/
+
+# Lokalne raporty / artefakty diagnostyczne
+editor/linki_rebuild_report.json
+editor/vdj_serato_mapping_discrepancies.json
+editor/stems_problem_tracks.txt
+editor/*_report.json
+editor/*_discrepancies.json
