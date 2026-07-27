@@ -127,12 +127,12 @@ jobs:
             if [ ! -x "$VCPKG_BIN" ] && [ -f "$VCPKG_BIN" ]; then :; fi
             test -f "$VCPKG_BIN" || VCPKG_BIN="$(command -v vcpkg || true)"
             test -n "$VCPKG_BIN" || { echo "Brak vcpkg na runnerze Windows" >&2; exit 1; }
-            "$VCPKG_BIN" install zlib sqlite3 date sqlite-modern-cpp --triplet x64-windows
+            "$VCPKG_BIN" install zlib sqlite3 date sqlite-modern-cpp --triplet x64-windows-static
             CMAKE_ARGS+=(
               -G "Visual Studio 17 2022"
               -A x64
               -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-              -DVCPKG_TARGET_TRIPLET=x64-windows
+              -DVCPKG_TARGET_TRIPLET=x64-windows-static
               -DSYSTEM_SQLITE=ON
               -DSYSTEM_DATE_H=ON
               -DSYSTEM_SQLITE_MODERN_CPP=ON
@@ -142,7 +142,7 @@ jobs:
           fi
           cmake -B build "${CMAKE_ARGS[@]}"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cmake --build build --config Release -j 4 --verbose
+            cmake --build build --config Release -j 4 --verbose 2>&1 | tee ../engine-build-windows.log
           else
             cmake --build build --config Release -j 4
           fi
@@ -162,6 +162,14 @@ jobs:
             exit 1
           fi
           echo "OK: $ENGINE_BIN"
+
+      - name: Upload Windows engine build log (on failure)
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-engine-build-log
+          path: ${{ env.NJR_DIR }}/engine-build-windows.log
+          if-no-files-found: ignore
 
       - name: PyInstaller (onefile)
         run: |

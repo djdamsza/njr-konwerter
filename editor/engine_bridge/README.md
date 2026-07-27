@@ -13,10 +13,10 @@ cmake --build build --config Release
 Na **Windows** (CI / lokalnie) — jak upstream libdjinterop, przez vcpkg + Visual Studio:
 
 ```bat
-vcpkg install zlib sqlite3 date sqlite-modern-cpp --triplet x64-windows
+vcpkg install zlib sqlite3 date sqlite-modern-cpp --triplet x64-windows-static
 cmake -B build -G "Visual Studio 17 2022" -A x64 ^
   -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake ^
-  -DVCPKG_TARGET_TRIPLET=x64-windows ^
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
   -DSYSTEM_SQLITE=ON -DSYSTEM_DATE_H=ON -DSYSTEM_SQLITE_MODERN_CPP=ON
 cmake --build build --config Release
 ```
