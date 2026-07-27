@@ -30,9 +30,6 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(libdjinterop json)
 
-add_executable(njr-engine-export njr_engine_export.cpp)
-target_link_libraries(njr-engine-export PRIVATE DjInterop nlohmann_json::nlohmann_json)
-
-if(WIN32)
-  set_target_properties(njr-engine-export PROPERTIES OUTPUT_NAME "njr-engine-export")
-endif()
+add_executable(njr_engine_export njr_engine_export.cpp)
+target_link_libraries(njr_engine_export PRIVATE DjInterop nlohmann_json::nlohmann_json)
+set_target_properties(njr_engine_export PROPERTIES OUTPUT_NAME "njr-engine-export")

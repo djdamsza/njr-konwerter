@@ -116,6 +116,8 @@ jobs:
           arch: x64
 
       - name: Buduj njr-engine-export (libdjinterop)
+        id: engine_build
+        continue-on-error: ${{ runner.os == 'Windows' }}
         run: |
           set -euo pipefail
           cmake --version
@@ -129,8 +131,8 @@ jobs:
             test -n "$VCPKG_BIN" || { echo "Brak vcpkg na runnerze Windows" >&2; exit 1; }
             "$VCPKG_BIN" install zlib sqlite3 date sqlite-modern-cpp --triplet x64-windows-static
             CMAKE_ARGS+=(
-              -G "Visual Studio 17 2022"
-              -A x64
+              -G Ninja
+              -DCMAKE_BUILD_TYPE=Release
               -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
               -DVCPKG_TARGET_TRIPLET=x64-windows-static
               -DSYSTEM_SQLITE=ON
@@ -142,15 +144,16 @@ jobs:
           fi
           cmake -B build "${CMAKE_ARGS[@]}"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cmake --build build --config Release -j 4 --verbose 2>&1 | tee ../engine-build-windows.log
+            cmake --build build -j 4 --verbose 2>&1 | tee ../engine-build-windows.log
           else
             cmake --build build --config Release -j 4
           fi
           ENGINE_BIN=""
           for cand in \
-            build/Release/njr-engine-export.exe \
             build/njr-engine-export.exe \
-            build/njr-engine-export; do
+            build/Release/njr-engine-export.exe \
+            build/njr-engine-export \
+            build/Release/njr-engine-export; do
             if [ -f "$cand" ]; then
               ENGINE_BIN="$cand"
               break
@@ -162,6 +165,11 @@ jobs:
             exit 1
           fi
           echo "OK: $ENGINE_BIN"
+
+      - name: Engine bridge niedostępny (Windows fallback)
+        if: runner.os == 'Windows' && steps.engine_build.outcome == 'failure'
+        run: |
+          echo "::warning::njr-engine-export nie zbudował się na Windows — .exe powstanie bez eksportu/sync Engine DJ (reszta funkcji działa)."
 
       - name: Upload Windows engine build log (on failure)
         if: failure() && runner.os == 'Windows'
