@@ -6,11 +6,19 @@ Most C++ bridge between NJR Konwerter and [libdjinterop](https://github.com/xsco
 
 ```bash
 cd editor/engine_bridge
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DSYSTEM_SQLITE=OFF
 cmake --build build --config Release
 ```
 
-Binary: `build/njr-engine-export` (or `.exe` on Windows).
+Na **Windows** (CI / lokalnie) potrzebny jest **zlib** przez vcpkg:
+
+```bat
+vcpkg install zlib:x64-windows
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=%VCPKG_INSTALLATION_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DSYSTEM_SQLITE=OFF
+cmake --build build --config Release
+```
+
+Binary: `build/njr-engine-export` (lub `build/Release/njr-engine-export.exe` na Windows).
 
 ## Runtime
 

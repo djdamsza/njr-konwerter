@@ -8,6 +8,8 @@ include(FetchContent)
 
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Windows runners nie mają systemowego SQLite — używamy amalgamation z libdjinterop.
+set(SYSTEM_SQLITE OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   libdjinterop

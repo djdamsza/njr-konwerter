@@ -111,11 +111,25 @@ jobs:
 
       - name: Buduj njr-engine-export (libdjinterop)
         run: |
+          set -euo pipefail
           cmake --version
           cd "$NJR_DIR/engine_bridge"
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release -DSYSTEM_SQLITE=OFF -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # libdjinterop wymaga zlib; na Windows bierzemy je z vcpkg (jak upstream CI).
+            VCPKG_ROOT="${VCPKG_INSTALLATION_ROOT:-C:/vcpkg}"
+            vcpkg install zlib:x64-windows
+            CMAKE_ARGS+=(
+              -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+              -DVCPKG_TARGET_TRIPLET=x64-windows
+            )
+          fi
+          cmake -B build "${CMAKE_ARGS[@]}"
           cmake --build build --config Release -j 4
-          ls -la build/
+          echo "Artefakty njr-engine-export:"
+          find build -name 'njr-engine-export*' -type f -print || true
+          ls -la build/ || true
+          ls -la build/Release/ 2>/dev/null || true
 
       - name: PyInstaller (onefile)
         run: |
