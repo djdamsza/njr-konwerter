@@ -1,5 +1,12 @@
 # Changelog — NJR Konwerter
 
+## 1.0.5 (2026-07-28)
+
+### Windows — naprawa uruchomienia .exe
+- PyInstaller ≥6.14 (hook numpy 2.3+) + `collect_all('numpy')` w `njr.spec`.
+- Jawne hiddenimports: `numpy._core._exceptions` itd. (błąd przy starcie 1.0.2–1.0.4).
+- CI: smoke test `NJR-konwerter.exe --smoke-test` na Windows po buildzie.
+
 ## 1.0.4 (2026-07-27)
 
 ### Aktualizacje z GitHub

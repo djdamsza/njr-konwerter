@@ -184,6 +184,12 @@ jobs:
           cd "$NJR_DIR"
           python -m PyInstaller njr.spec --clean --noconfirm
 
+      - name: Smoke test .exe (Windows — numpy / importy)
+        if: runner.os == 'Windows'
+        run: |
+          cd "$NJR_DIR"
+          ./dist/NJR-konwerter.exe --smoke-test
+
       - name: Wersja z pliku VERSION
         id: ver
         run: |

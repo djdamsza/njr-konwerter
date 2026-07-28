@@ -6,6 +6,8 @@ import os
 import platform
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
 
 _engine_bin = []
@@ -66,17 +68,33 @@ hidden_imports = [
     'online_playlist_parser',
     'tkinter',
     'tkinter.filedialog',
+    # numpy 2.x (pyrekordbox) — PyInstaller <6.14 pomija numpy._core._exceptions
+    'numpy._core._exceptions',
+    'numpy._core._multiarray_umath',
+    'numpy._core.multiarray',
+    'numpy._core._dtype_ctypes',
 ]
+
+_datas = [
+    ('static', 'static'),
+    ('../VERSION', '.'),
+    ('scripts', 'scripts'),
+]
+_binaries = list(_engine_bin)
+
+try:
+    _numpy_datas, _numpy_binaries, _numpy_hidden = collect_all('numpy')
+    _datas += _numpy_datas
+    _binaries += _numpy_binaries
+    hidden_imports += _numpy_hidden
+except Exception:
+    pass
 
 a = Analysis(
     ['launcher.py'],
     pathex=[],
-    binaries=_engine_bin,
-    datas=[
-        ('static', 'static'),
-        ('../VERSION', '.'),
-        ('scripts', 'scripts'),
-    ],
+    binaries=_binaries,
+    datas=_datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},

@@ -5,9 +5,13 @@ Użycie: python launcher.py
 
 Zmienne środowiska:
   NJR_NO_BROWSER=1  – nie otwieraj karty (restart z terminala / agenta)
+
+Argumenty:
+  --smoke-test      – szybki test importów (numpy, app) dla CI / PyInstaller
 """
 import os
 import socket
+import sys
 import webbrowser
 import threading
 import time
@@ -53,4 +57,11 @@ def main():
 
 
 if __name__ == '__main__':
+    if '--smoke-test' in sys.argv:
+        import numpy  # noqa: F401 — pyrekordbox; musi działać w .exe na Windows
+
+        from app import app  # noqa: F401
+
+        print('NJR smoke-test OK')
+        raise SystemExit(0)
     main()
