@@ -1,0 +1,228 @@
+<!--
+  Fragment do wklejenia w WordPress (blok „Własny HTML” / Custom HTML).
+  Linki wskazują najnowsze buildy z release tag 1.0 (obecnie 1.0.5).
+-->
+<style>
+  :root {
+    --ink: #1a1a2e;
+    --muted: #555;
+    --light: #888;
+    --win: #0078d4;
+    --mac: #0073aa;
+    --accent: #fcb424;
+    --warn-bg: #fdecea;
+    --warn-border: #f5c6cb;
+    --info-bg: #f8f9fa;
+    --note-bg: #fff8e1;
+    --contact-bg: #e8f4fd;
+    --intro-bg: #f0f7f4;
+    --intro-border: #b7e0d0;
+    --radius: 8px;
+    --max: 680px;
+  }
+  .njr-dl * { box-sizing: border-box; }
+  .njr-dl {
+    margin: 0 auto;
+    padding: 8px 0 24px;
+    max-width: var(--max);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: #333;
+  }
+  .njr-dl header {
+    text-align: center;
+    margin-bottom: 22px;
+  }
+  .njr-dl .badge {
+    display: inline-block;
+    background: #e67e22;
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 10px;
+  }
+  .njr-dl h1 {
+    margin: 0 0 8px;
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--ink);
+  }
+  .njr-dl .lead {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+  .njr-dl .lead strong { color: var(--ink); }
+  .njr-dl .btn-wrap {
+    text-align: center;
+    margin-bottom: 12px;
+  }
+  .njr-dl .btn {
+    display: inline-block;
+    padding: 16px 28px;
+    color: #fff !important;
+    text-decoration: none !important;
+    border-radius: var(--radius);
+    font-size: 1rem;
+    font-weight: 700;
+    min-width: 300px;
+    max-width: 100%;
+    line-height: 1.45;
+    transition: filter 0.15s ease, transform 0.1s ease;
+  }
+  .njr-dl .btn:hover { filter: brightness(1.06); }
+  .njr-dl .btn:active { transform: scale(0.99); }
+  .njr-dl .btn-win { background: var(--win); }
+  .njr-dl .btn-mac { background: var(--mac); }
+  .njr-dl .btn-sub {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 400;
+    color: rgba(255,255,255,0.78) !important;
+    margin-top: 4px;
+  }
+  .njr-dl .panel {
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 18px;
+    font-size: 0.9rem;
+    line-height: 1.65;
+  }
+  .njr-dl .panel h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+    color: var(--ink);
+  }
+  .njr-dl .panel p { margin: 0 0 10px; }
+  .njr-dl .panel p:last-child { margin-bottom: 0; }
+  .njr-dl .intro {
+    background: var(--intro-bg);
+    border: 1px solid var(--intro-border);
+  }
+  .njr-dl .warn {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+  }
+  .njr-dl .warn h2 { color: #721c24; }
+  .njr-dl .install {
+    background: var(--info-bg);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+  .njr-dl .note {
+    background: var(--note-bg);
+    border: 1px solid #ffe082;
+  }
+  .njr-dl .contact {
+    background: var(--contact-bg);
+    border: 1px solid #b8daff;
+  }
+  .njr-dl code {
+    background: #eee;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+  }
+  .njr-dl footer {
+    text-align: center;
+    margin-top: 28px;
+    font-size: 0.82rem;
+    color: var(--light);
+  }
+  .njr-dl footer a {
+    display: block;
+    margin: 6px 0;
+    color: var(--mac);
+    text-decoration: none;
+  }
+  .njr-dl footer a:hover { text-decoration: underline; }
+  .njr-dl ul { margin: 8px 0 0; padding-left: 1.2em; }
+  .njr-dl li { margin-bottom: 6px; }
+  .njr-dl ol { margin: 8px 0 0; padding-left: 1.2em; }
+</style>
+
+<div class="njr-dl">
+  <header>
+    <span class="badge">Open source — za darmo</span>
+    <h1>NJR Konwerter 1.0.5</h1>
+    <p class="lead">Czyszczenie i organizacja zbiorów muzycznych oraz migracja bibliotek DJ pomiędzy systemami. <strong>Pełny eksport bez klucza licencji.</strong> Wersja 1.0.5 naprawia uruchamianie na Windows (starsze 1.0.2–1.0.4 mogły kończyć się błędem NumPy).</p>
+  </header>
+
+  <div class="panel intro">
+    <h2>Do czego służy NJR Konwerter?</h2>
+    <p>NJR Konwerter pomaga utrzymać bibliotekę DJ w porządku <strong>oraz</strong> przenieść ją między programami — bez ręcznego odtwarzania playlist, cue i tagów.</p>
+    <ul>
+      <li><strong>Czyszczenie i organizacja</strong> — martwe ścieżki, duble, orphaned tracks, porządkowanie folderów i playlist, naprawa ścieżek (m.in. Serato / VirtualDJ).</li>
+      <li><strong>Migracja między systemami</strong> — VirtualDJ ↔ Serato ↔ Engine DJ ↔ Rekordbox (oraz eksporty DJXML i pokrewne), z zachowaniem struktury list i możliwie największej ilości metadanych.</li>
+      <li><strong>Edycja bazy VirtualDJ</strong> — praca na lokalnej bazie: przeglądanie, poprawki, eksporty pod inne oprogramowanie.</li>
+    </ul>
+    <p>Pracujesz głównie w jednym systemie? Użyj go do porządkowania. Zmieniasz setup albo grasz na kilku platformach? Użyj go jako mostu migracyjnego.</p>
+  </div>
+
+  <div class="btn-wrap">
+    <a class="btn btn-win" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.5-windows-x64.exe">
+      Pobierz dla Windows (.exe)
+      <span class="btn-sub">1.0.5 · Windows 10 / 11, 64-bit · naprawa startu .exe</span>
+    </a>
+  </div>
+  <div class="btn-wrap">
+    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.5-macos-arm64.dmg">
+      Pobierz dla macOS — Apple Silicon (.dmg)
+      <span class="btn-sub">1.0.5 · Mac z chipem M1 / M2 / M3 / M4</span>
+    </a>
+  </div>
+  <div class="btn-wrap">
+    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.5-macos-intel-x64.dmg">
+      Pobierz dla macOS — Intel (.dmg)
+      <span class="btn-sub">1.0.5 · Mac z procesorem Intel</span>
+    </a>
+  </div>
+
+  <div class="panel note">
+    <h2>Mac — instalacja i pierwsze uruchomienie</h2>
+    <p>Program <strong>nie jest z App Store</strong> — nie potrzebujesz konta Apple Developer. Przy pierwszym uruchomieniu macOS może odmówić startu i pokazać ostrzeżenie — to standardowe zachowanie dla aplikacji pobranych z internetu.</p>
+
+    <p><strong>1. Wgraj program do Aplikacje</strong></p>
+    <p>Otwórz pobrany plik <code>.dmg</code>. W oknie obrazu często jest tylko plik <strong>NJR-konwerter</strong> (bez skrótu do Aplikacji) — to w porządku.</p>
+    <ul>
+      <li>Naciśnij <strong>Shift + Command + A</strong>, żeby otworzyć folder <strong>Aplikacje</strong>, i <strong>przeciągnij</strong> tam <strong>NJR-konwerter</strong> z okna DMG. Lub: zaznacz plik w DMG → <strong>Command + C</strong> → w Aplikacjach → <strong>Command + V</strong>.</li>
+    </ul>
+    <p style="font-size: 0.88rem; color: #555;">Potem <strong>wysuń</strong> DMG (ikona dysku na pulpicie lub w Finderze → wysuń).</p>
+
+    <p><strong>2. Zezwól na uruchomienie — Ustawienia systemowe</strong></p>
+    <p>To jest <strong>główny sposób</strong>, który działa, gdy macOS blokuje program (np. komunikat z przyciskami „Kosz” i „Gotowe”):</p>
+    <ol>
+      <li><strong>Raz spróbuj</strong> uruchomić <strong>NJR-konwerter</strong> z folderu <strong>Aplikacje</strong> (np. dwuklik). Gdy pojawi się blokada, zamknij okno (<strong>Gotowe</strong>).</li>
+      <li>Otwórz <strong>Ustawienia systemowe</strong> (ikona koła zębatego w Docku lub menu Apple).</li>
+      <li>Wejdź w <strong>Prywatność i bezpieczeństwo</strong> (lub sekcję <strong>Bezpieczeństwo</strong>, zależnie od wersji macOS).</li>
+      <li>Przewiń w dół. Powinna być informacja, że <strong>NJR-konwerter</strong> został zablokowany — obok znajdziesz przycisk w stylu <strong>Otwórz mimo to</strong> / <strong>Otwórz i tak</strong>. Kliknij go i potwierdź.</li>
+      <li>Uruchom ponownie <strong>NJR-konwerter</strong> z <strong>Aplikacje</strong>. Kolejne uruchomienia zwykle już nie wymagają tych kroków.</li>
+    </ol>
+    <p style="margin-top: 12px; font-size: 0.88rem; color: #555;">Jeśli przycisku nie widać, upewnij się, że najpierw była <strong>próba otwarcia</strong> programu — dopiero wtedy macOS dopisuje wpis w ustawieniach bezpieczeństwa.</p>
+  </div>
+
+  <div class="panel warn">
+    <h2>Kopia zapasowa bazy</h2>
+    <p>Zalecam pracę na <strong>kopii zapasowej</strong> bazy VirtualDJ (oraz powiązanych plików Serato / Engine / Rekordbox). Przed większymi zmianami lub eksportami zrób backup, żeby nie uszkodzić oryginalnych danych.</p>
+  </div>
+
+  <div class="panel install">
+    <h2>Windows — instalacja</h2>
+    <p><strong>Ważne:</strong> jeśli masz wersję <strong>1.0.2, 1.0.3 lub 1.0.4</strong> i program od razu się wyłącza z błędem <code>numpy</code> — pobierz <strong>1.0.5</strong> poniżej.</p>
+    <p>Uruchom pobrany plik <code>.exe</code> (nie wymaga instalatora — to portable onefile). Gdy pojawi się <strong>SmartScreen</strong>, wybierz <strong>Więcej informacji</strong> → <strong>Uruchom mimo to</strong>.</p>
+    <p>Jeśli <strong>Windows Defender</strong> lub inny antywirus zatrzyma plik, pozwól na uruchomienie albo dodaj wyjątek — pobieraj wyłącznie z tej strony lub z <a href="https://github.com/djdamsza/njr-konwerter/releases/tag/1.0">oficjalnego release na GitHubie</a>.</p>
+  </div>
+
+  <div class="panel contact">
+    <h2>Usterki i sugestie</h2>
+    <p>Projekt jest open source i nadal się rozwija. Jeśli coś nie działa, napisz (formularz kontaktowy w sklepie lub e-mail): podaj system (Windows / Mac), co robiłeś kroku po kroku i ewentualnie załącz zrzut ekranu.</p>
+  </div>
+
+  <footer>
+    <a href="https://github.com/djdamsza/njr-konwerter/releases/tag/1.0" target="_blank" rel="noopener">Strona release 1.0 na GitHub (lista plików) →</a>
+    <a href="https://github.com/djdamsza/njr-konwerter" target="_blank" rel="noopener">Repozytorium njr-konwerter →</a>
+  </footer>
+</div>

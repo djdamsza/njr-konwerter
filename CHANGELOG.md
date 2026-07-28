@@ -2,10 +2,14 @@
 
 ## 1.0.5 (2026-07-28)
 
-### Windows — naprawa uruchomienia .exe
-- PyInstaller ≥6.14 (hook numpy 2.3+) + `collect_all('numpy')` w `njr.spec`.
-- Jawne hiddenimports: `numpy._core._exceptions` itd. (błąd przy starcie 1.0.2–1.0.4).
-- CI: smoke test `NJR-konwerter.exe --smoke-test` na Windows po buildzie.
+### Windows — naprawa uruchomienia .exe (pilne)
+- **Problem:** wersje 1.0.2–1.0.4 na Windows mogły padać przy starcie z błędem `No module named 'numpy._core._exceptions'` (PyInstaller + NumPy 2.x).
+- **Naprawa:** PyInstaller ≥6.14, `collect_all('numpy')` w `njr.spec`, jawne hiddenimports modułów `numpy._core.*`.
+- **CI:** po buildzie Windows uruchamiany jest `NJR-konwerter.exe --smoke-test`.
+- **Strona pobierania:** `docs/strona-pobierania.html` — linki do buildów 1.0.5.
+
+### Aktualizacje (z 1.0.4)
+- Automatyczne pobieranie i instalacja nowszej wersji z GitHub Releases.
 
 ## 1.0.4 (2026-07-27)
 
