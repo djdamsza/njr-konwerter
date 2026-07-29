@@ -17,5 +17,5 @@ cp -R "$APP_SRC" "$APP_DEST"
 xattr -cr "$APP_DEST" 2>/dev/null || true
 chmod -R u+rwX "$APP_DEST"
 
-osascript -e 'display notification "Skopiowano do Aplikacji. Otwórz: Ctrl+klik → Otwórz (jedno potwierdzenie)." with title "NJR Konwerter"' || true
+osascript -e 'display notification "Skopiowano do Aplikacji. Uruchom NJR Konwerter z folderu Aplikacje." with title "NJR Konwerter"' || true
 open -R "$APP_DEST"

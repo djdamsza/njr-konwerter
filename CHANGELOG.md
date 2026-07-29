@@ -4,6 +4,12 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.0.10 (2026-07-29)
+
+### Mac — jedna instancja
+- Drugie uruchomienie (np. z DMG gdy app już działa) otwiera istniejącą kartę zamiast startować ponownie — mniej komunikatów „aplikacja nie jest już otwarta”.
+- Build `.app` bez widocznej konsoli Terminala.
+
 ## 1.0.9 (2026-07-29)
 
 ### Mac — mniej potwierdzeń Gatekeeper

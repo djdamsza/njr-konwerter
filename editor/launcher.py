@@ -15,6 +15,7 @@ import sys
 import webbrowser
 import threading
 import time
+from typing import Optional
 
 from ssl_utils import configure_ssl_env
 
@@ -43,6 +44,22 @@ def _strip_mac_quarantine() -> None:
 _strip_mac_quarantine()
 
 
+def _find_running_njr_url(start: int = 5050, max_tries: int = 10) -> Optional[str]:
+    """Jeśli NJR już działa (port 5050+), zwróć URL — unikamy drugiej instancji."""
+    import urllib.error
+    import urllib.request
+
+    for port in range(start, start + max_tries):
+        url = f'http://127.0.0.1:{port}'
+        try:
+            with urllib.request.urlopen(f'{url}/api/version', timeout=0.4) as resp:
+                if resp.status == 200:
+                    return url
+        except (urllib.error.URLError, OSError, TimeoutError):
+            continue
+    return None
+
+
 def _find_free_port(start: int = 5050, max_tries: int = 10) -> int:
     """Zwraca pierwszy wolny port z zakresu [start, start+max_tries)."""
     for port in range(start, start + max_tries):
@@ -56,12 +73,19 @@ def _find_free_port(start: int = 5050, max_tries: int = 10) -> int:
 
 
 def main():
-    from app import app
-    port = _find_free_port()
-    url = f'http://127.0.0.1:{port}'
     open_browser = os.environ.get('NJR_NO_BROWSER', '').strip().lower() not in (
         '1', 'true', 'yes', 'on',
     )
+    existing = _find_running_njr_url()
+    if existing:
+        if open_browser:
+            webbrowser.open(existing)
+        print(f'NJR konwerter już działa: {existing}')
+        return
+
+    from app import app
+    port = _find_free_port()
+    url = f'http://127.0.0.1:{port}'
     if open_browser:
         def _open():
             time.sleep(1.5)
