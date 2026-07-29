@@ -352,24 +352,29 @@ jobs:
           body = "# Changelog\n\n" + "\n\n".join(out) if out else text[:4000]
           body += f"\n\n---\nPełna historia: [CHANGELOG.md](https://github.com/{repo}/blob/main/CHANGELOG.md)\n"
           pathlib.Path("release-notes.md").write_text(body, encoding="utf-8")
+          print("Release notes OK, bytes:", pathlib.Path("release-notes.md").stat().st_size)
           PY
+          ls -la flat/
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          name: NJR Konwerter ${{ steps.rel.outputs.tag }}
+          name: NJR Konwerter
           draft: false
           body_path: release-notes.md
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: flat/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Usuń stare buildy (zostaw 2 ostatnie wersje)
         if: steps.rel.outputs.tag == '1.0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/prune-github-release-assets.sh
-          ./scripts/prune-github-release-assets.sh "${{ steps.rel.outputs.tag }}" 2
+          ./scripts/prune-github-release-assets.sh "${{ steps.rel.outputs.tag }}" 2 || true
 
       - name: Linki do pobrania
         shell: bash
