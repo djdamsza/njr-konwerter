@@ -105,6 +105,36 @@ class TestSeratoPathIdentity(unittest.TestCase):
         p = _path_to_serato_relative("/Users/test/Desktop/a.mp3", None, path_style="relative")
         self.assertEqual(p, "Users/test/Desktop/a.mp3")
 
+    def test_collapse_double_music_users_prefix(self):
+        from serato_parser import canonical_serato_relative_path, collapse_serato_broken_path_prefixes
+
+        user = Path.home().name
+        broken = f"Users/{user}/Music/Users/{user}/Desktop/muzyka dj/track.mp3"
+        fixed = f"Users/{user}/Desktop/muzyka dj/track.mp3"
+        self.assertEqual(collapse_serato_broken_path_prefixes(broken), fixed)
+        self.assertEqual(
+            canonical_serato_relative_path("/" + broken),
+            fixed,
+        )
+
+    def test_db_normalizes_double_prefix(self):
+        user = Path.home().name
+        broken = f"Users/{user}/Music/Users/{user}/Desktop/a.mp3"
+        raw = _db(_otrk(broken, plays=1))
+        from serato_parser import normalize_serato_blob_to_relative, _iter_top_level_raw, _parse_serato_records
+
+        norm, changes = normalize_serato_blob_to_relative(raw)
+        self.assertGreaterEqual(changes, 1)
+        paths = []
+        for name, data in _iter_top_level_raw(norm):
+            if name != "otrk":
+                continue
+            for n, v in _parse_serato_records(BytesIO(data)):
+                if n in ("ptrk", "pfil"):
+                    paths.append(v.strip())
+                    break
+        self.assertEqual(paths, [f"Users/{user}/Desktop/a.mp3"])
+
     def test_db_dedupes_abs_and_rel(self):
         songs = [
             {"FilePath": "/Users/test/Desktop/a.mp3", "Tags.Title": "A", "Infos.PlayCount": 1},

@@ -23,6 +23,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from ssl_utils import urlopen
+
 GITHUB_OWNER = "djdamsza"
 GITHUB_REPO = "njr-konwerter"
 MANUAL_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
@@ -95,7 +97,7 @@ def _http_json(url: str, timeout: float = 30.0) -> Any:
             "User-Agent": USER_AGENT,
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -103,7 +105,7 @@ def _download_file(url: str, dest: Path, progress_cb=None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".partial")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=120) as resp, tmp.open("wb") as out:
+    with urlopen(req, timeout=120) as resp, tmp.open("wb") as out:
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
         while True:

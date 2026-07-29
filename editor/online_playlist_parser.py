@@ -13,6 +13,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from ssl_utils import urlopen
 from typing import Optional
 
 TIDAL_HEADERS = {
@@ -101,7 +102,7 @@ def fetch_tidal_playlist(playlist_id: str, country: str = "PL") -> tuple[list[di
         try:
             url = f"https://api.tidal.com/v1/playlists/{playlist_id}/{endpoint}?countryCode={country}&limit=500"
             req = urllib.request.Request(url, headers=TIDAL_HEADERS)
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urlopen(req, timeout=15) as r:
                 data = json_mod.loads(r.read().decode())
             items = data.get("items") or data.get("tracks") or []
             for t in items:
@@ -165,7 +166,7 @@ def _spotify_get_token() -> Optional[str]:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
         return data.get("access_token")
     except Exception:
@@ -194,7 +195,7 @@ def fetch_spotify_playlist(playlist_id: str) -> tuple[list[dict], Optional[str]]
                 url,
                 headers={"Authorization": f"Bearer {token}"},
             )
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urlopen(req, timeout=15) as r:
                 data = json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 401:
@@ -276,7 +277,7 @@ def fetch_youtube_playlist(playlist_id: str) -> tuple[list[dict], Optional[str]]
             qs = urllib.parse.urlencode(params)
             req_url = f"https://www.googleapis.com/youtube/v3/playlistItems?{qs}"
             req = urllib.request.Request(req_url)
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urlopen(req, timeout=15) as r:
                 data = json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             if e.code == 403:

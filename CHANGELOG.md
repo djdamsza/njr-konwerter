@@ -1,5 +1,15 @@
 # Changelog — NJR Konwerter
 
+## 1.0.6 (2026-07-29)
+
+### Tidal — naprawa fałszywych „niedostępnych” (pilne)
+- **Problem:** w buildzie PyInstaller (`.app` / `.exe`) sprawdzanie utworów Tidal zgłaszało niemal całą bibliotekę jako niedostępną (`CERTIFICATE_VERIFY_FAILED`).
+- **Naprawa:** `certifi` + `ssl_utils.py` — HTTPS z bundlem certyfikatów CA we wszystkich modułach sieciowych (Tidal, OAuth, Spotify/YouTube, aktualizacje GitHub).
+- UI rozróżnia „niedostępny” (404) od błędu połączenia.
+
+### Serato — ścieżki po eksporcie
+- Naprawa podwójnego prefixu `Users/…/Music/Users/…` w ścieżkach Serato po imporcie z NJR.
+
 ## 1.0.5 (2026-07-28)
 
 ### Windows — naprawa uruchomienia .exe (pilne)

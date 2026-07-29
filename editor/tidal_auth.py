@@ -19,6 +19,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from ssl_utils import urlopen
+
 
 def _load_credentials() -> tuple[str, str]:
     """Zwraca (client_id, client_secret). Priorytet: env > plik. Brak domyślnych – wymagane developer.tidal.com."""
@@ -108,7 +110,7 @@ def _refresh_token(refresh: str) -> Optional[dict]:
         )
         b64 = base64.b64encode(f"{cid}:{csec}".encode()).decode()
         req.add_header("Authorization", f"Basic {b64}")
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urlopen(req, timeout=15) as r:
             out = json.loads(r.read().decode())
         if out.get("access_token"):
             _save_token(
@@ -179,7 +181,7 @@ def exchange_code_for_token(code: str, code_verifier: str, redirect_uri: str) ->
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urlopen(req, timeout=15) as r:
             out = json.loads(r.read().decode())
         if out.get("access_token"):
             user = out.get("user", {}) or {}
@@ -236,7 +238,7 @@ def fetch_playlist_openapi(playlist_id: str, token: str, country: str = "PL") ->
                 if cursor:
                     url += f"&page[cursor]={urllib.parse.quote(cursor)}"
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urlopen(req, timeout=15) as r:
                     data = json.loads(r.read().decode())
             except urllib.error.HTTPError as e:
                 body = e.read().decode() if e.fp else ""
@@ -313,7 +315,7 @@ def fetch_playlist_tidalhifi(playlist_id: str, token: str, country: str = "PL") 
                 url,
                 headers={"Authorization": f"Bearer {token}"},
             )
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urlopen(req, timeout=15) as r:
                 data = json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode() if e.fp else ""

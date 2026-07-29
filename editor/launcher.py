@@ -16,6 +16,10 @@ import webbrowser
 import threading
 import time
 
+from ssl_utils import configure_ssl_env
+
+configure_ssl_env()
+
 
 def _find_free_port(start: int = 5050, max_tries: int = 10) -> int:
     """Zwraca pierwszy wolny port z zakresu [start, start+max_tries)."""

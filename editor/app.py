@@ -20,6 +20,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from ssl_utils import configure_ssl_env
+
+configure_ssl_env()
+
 
 def _path_exists_timeout(path: str, timeout_sec: float = 0.5) -> bool:
     """Path.exists() z timeout – unika blokady przy ścieżkach sieciowych."""
@@ -4393,25 +4397,29 @@ TIDAL_HEADERS = {
 }
 
 
-def _check_tidal_track_available(track_id: str) -> bool:
+def _check_tidal_track_available(track_id: str) -> Optional[bool]:
     """
     Sprawdza, czy utwór o danym ID jest nadal dostępny na Tidal.
     Używa nieoficjalnego API – może wymagać dostępu/limitów.
-    Zwraca True jeśli dostępny (200), False jeśli niedostępny (404) lub błąd.
+    True = dostępny (200), False = niedostępny (404), None = nie udało się sprawdzić.
     """
     if not track_id or not track_id.isdigit():
-        return False
+        return None
     try:
         import urllib.request
         import urllib.error
+        from ssl_utils import urlopen
         url = f"https://api.tidal.com/v1/tracks/{track_id}?countryCode=PL"
         req = urllib.request.Request(url, headers=TIDAL_HEADERS)
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status == 200
+        with urlopen(req, timeout=5) as r:
+            return r.getcode() == 200
     except urllib.error.HTTPError as e:
-        return e.code != 404  # 404 = niedostępny; 401/500 = zakładamy dostępny (unika fałszywych alarmów)
+        if e.code == 404:
+            return False
+        # 401/429/500 itd. – nie oznaczaj jako usunięte (unika fałszywych alarmów)
+        return True
     except Exception:
-        return False
+        return None
 
 
 def _tidal_search_tracks(query: str, limit: int = 5) -> tuple[list, Optional[str]]:
@@ -4425,10 +4433,11 @@ def _tidal_search_tracks(query: str, limit: int = 5) -> tuple[list, Optional[str
         import urllib.request
         import urllib.error
         import urllib.parse
+        from ssl_utils import urlopen
         q = urllib.parse.quote(query.strip())
         url = f"https://api.tidal.com/v1/search/tracks?query={q}&limit={limit}&countryCode=PL"
         req = urllib.request.Request(url, headers=TIDAL_HEADERS)
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urlopen(req, timeout=8) as r:
             data = json.loads(r.read().decode())
         items = data.get("items") or []
         out = []
@@ -4566,13 +4575,16 @@ def api_tidal_track_list():
 def api_tidal_check_one():
     """
     Sprawdza dostępność jednego utworu Tidal.
-    GET ?tidalId=123 – zwraca { available: true|false }.
+    GET ?tidalId=123 – zwraca { available: true|false|null, error? }.
     """
     tidal_id = (request.args.get('tidalId') or '').strip()
     if not tidal_id or not tidal_id.isdigit():
         return jsonify({'error': 'Wymagany tidalId', 'available': None}), 400
     available = _check_tidal_track_available(tidal_id)
-    return jsonify({'tidalId': tidal_id, 'available': available})
+    out = {'tidalId': tidal_id, 'available': available}
+    if available is None:
+        out['error'] = 'Nie udało się połączyć z Tidal (sprawdź internet / certyfikaty SSL).'
+    return jsonify(out)
 
 
 @app.route('/api/tidal-unavailable', methods=['GET'])
@@ -4596,7 +4608,8 @@ def api_tidal_unavailable():
         tid = extract_tidal_id(path)
         if not tid:
             continue
-        if not _check_tidal_track_available(tid):
+        available = _check_tidal_track_available(tid)
+        if available is False:
             unavailable.append({
                 'idx': i,
                 'path': path,

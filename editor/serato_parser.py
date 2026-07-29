@@ -270,6 +270,26 @@ def to_serato_relative_path(path: str) -> str:
     return p
 
 
+def collapse_serato_broken_path_prefixes(path: str) -> str:
+    """
+    Usuwa zepsuty podwójny prefix po eksporcie NJR, np.:
+    Users/test/Music/Users/test/Desktop/… → Users/test/Desktop/…
+    """
+    p = to_serato_relative_path(path)
+    if not p:
+        return p
+    user = Path.home().name
+    dup = f"Users/{user}/Music/Users/{user}/"
+    while dup in p:
+        p = p.replace(dup, f"Users/{user}/", 1)
+    return p
+
+
+def canonical_serato_relative_path(path: str) -> str:
+    """Relatywna ścieżka Serato + naprawa znanego podwójnego prefixu Music/Users."""
+    return collapse_serato_broken_path_prefixes(to_serato_relative_path(path))
+
+
 def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
     """
     Prepisuje pfil/ptrk w kontenerze rekordów Serato (otrk lub top-level).
@@ -311,8 +331,8 @@ def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
 
 
 def normalize_serato_blob_to_relative(content: bytes) -> tuple[bytes, int]:
-    """Wszystkie ścieżki w blobie (database V2 / .crate) → bez wiodącego /."""
-    return _rewrite_paths_in_container(content, to_serato_relative_path)
+    """Wszystkie ścieżki w blobie (database V2 / .crate) → bez wiodącego / + fix podwójnego prefixu."""
+    return _rewrite_paths_in_container(content, canonical_serato_relative_path)
 
 
 def _rewrite_genres_in_otrk(
@@ -1044,6 +1064,13 @@ def purge_serato_stale_duplicates(content: bytes) -> tuple[bytes, dict]:
         path = (path or "").strip()
         if not path:
             continue
+        collapsed = collapse_serato_broken_path_prefixes(path)
+        if collapsed != path:
+            data = _rewrite_paths_in_container(data, lambda _old, c=collapsed: c)[0]
+            path = collapsed
+            remapped = True
+        else:
+            remapped = False
         mapped = map_stale_serato_path_to_desktop(path)
         effective = mapped or path
         if mapped and mapped != path:
@@ -1052,7 +1079,6 @@ def purge_serato_stale_duplicates(content: bytes) -> tuple[bytes, dict]:
             remapped = True
         else:
             path_for_key = path
-            remapped = False
         exists = serato_path_exists_on_disk(path_for_key)
         # score: istniejący >> Desktop >> plays
         bonus = 0

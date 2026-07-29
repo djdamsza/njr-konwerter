@@ -51,6 +51,7 @@ hidden_imports = [
     'app_state',
     'constants',
     'native_dialogs',
+    'ssl_utils',
     'routes',
     'routes.meta',
     'routes.session',
@@ -87,6 +88,14 @@ try:
     _datas += _numpy_datas
     _binaries += _numpy_binaries
     hidden_imports += _numpy_hidden
+except Exception:
+    pass
+
+try:
+    _certifi_datas, _certifi_binaries, _certifi_hidden = collect_all('certifi')
+    _datas += _certifi_datas
+    _binaries += _certifi_binaries
+    hidden_imports += _certifi_hidden
 except Exception:
     pass
 

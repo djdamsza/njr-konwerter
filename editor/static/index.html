@@ -3190,10 +3190,14 @@
               let html = '<p class="muted" style="font-size: 12px; margin-bottom: 10px;">Kliknij ▶ aby odtworzyć podgląd (odtwarzacz na dole ekranu). <a href="https://tidal.com" target="_blank" rel="noopener">Odsłuchaj w Tidal</a>. Jeśli pasuje – kliknij Zastąp.</p>';
               for (const t of tracks) {
                 let available = false;
+                let checkFailed = false;
                 try {
                   const check = await fetchJson(API + '/tidal-check-one?tidalId=' + encodeURIComponent(t.id));
-                  available = !!check.available;
-                } catch (_) {}
+                  available = check.available === true;
+                  checkFailed = check.available == null;
+                } catch (_) {
+                  checkFailed = true;
+                }
                 const tidalUrl = 'https://tidal.com/browse/track/' + t.id;
                 const embedUrl = 'https://embed.tidal.com/tracks/' + t.id;
                 html += `<div class="tidal-result">`;
@@ -3203,6 +3207,8 @@
                 html += `<a href="${tidalUrl}" target="_blank" rel="noopener" title="Otwiera Tidal w nowej karcie">Odsłuchaj w Tidal</a>`;
                 if (available) {
                   html += `<button type="button" class="tidal-replace-btn" data-idx="${idx}" data-tidal-id="${(t.id || '').replace(/"/g, '&quot;')}" style="padding: 2px 8px; font-size: 0.8em;">Zastąp</button>`;
+                } else if (checkFailed) {
+                  html += `<span class="muted" style="font-size: 11px;">nie sprawdzono</span>`;
                 } else {
                   html += `<span class="muted" style="font-size: 11px;">niedostępny</span>`;
                 }
@@ -3724,6 +3730,7 @@
         resultEl.innerHTML = `<p>Sprawdzanie ${total} utworów… (odświeżanie co 3 s)</p>`;
         resultEl.appendChild(pauseBtn);
         const unavailable = [];
+        let unknownCount = 0;
         const REFRESH_INTERVAL_MS = 3000;
         let lastRefresh = 0;
         let checkedCount = 0;
@@ -3732,17 +3739,22 @@
           checkedCount = i + 1;
           try {
             const check = await fetchJson(API + '/tidal-check-one?tidalId=' + encodeURIComponent(t.tidalId));
-            if (!check.available) {
+            if (check.available === false) {
               unavailable.push({ idx: t.idx, author: t.author, title: t.title, tidalId: t.tidalId });
+            } else if (check.available == null) {
+              unknownCount += 1;
             }
           } catch (_) {
-            unavailable.push({ idx: t.idx, author: t.author, title: t.title, tidalId: t.tidalId });
+            unknownCount += 1;
           }
           const now = Date.now();
           if (now - lastRefresh >= REFRESH_INTERVAL_MS || i === tracks.length - 1 || paused) {
             lastRefresh = now;
             const progress = `Sprawdzono ${i + 1}/${total}…`;
             let html = `<p style="margin-bottom: 8px;">${progress}</p>`;
+            if (unknownCount) {
+              html += `<p class="muted" style="margin-bottom: 8px;">Nie udało się sprawdzić: ${unknownCount} (błąd połączenia z Tidal – zaktualizuj NJR Konwerter lub uruchom ponownie).</p>`;
+            }
             if (unavailable.length) {
               html += `<p style="color: var(--warn); margin-bottom: 8px;"><strong>Niedostępne (${unavailable.length}):</strong></p>`;
               unavailable.forEach(u => {
