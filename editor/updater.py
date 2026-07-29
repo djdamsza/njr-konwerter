@@ -23,7 +23,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
-from ssl_utils import urlopen
+from ssl_utils import configure_ssl_env, urlopen
+
+configure_ssl_env()
 
 GITHUB_OWNER = "djdamsza"
 GITHUB_REPO = "njr-konwerter"
@@ -201,10 +203,18 @@ def check_for_updates(current_version: str) -> dict[str, Any]:
             "currentVersion": current_version,
         }
     except Exception as e:
+        err = str(e)
+        if "CERTIFICATE_VERIFY_FAILED" in err:
+            msg = (
+                "Błąd certyfikatów SSL w tej wersji aplikacji. "
+                "Automatyczna aktualizacja nie zadziała — pobierz najnowszą wersję ręcznie (link poniżej)."
+            )
+        else:
+            msg = f"Nie udało się sprawdzić aktualizacji: {e}"
         return {
             "available": False,
             "error": "github_error",
-            "message": f"Nie udało się sprawdzić aktualizacji: {e}",
+            "message": msg,
             "manualUrl": MANUAL_URL,
             "currentVersion": current_version,
         }

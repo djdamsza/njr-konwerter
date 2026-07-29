@@ -1,14 +1,29 @@
 # Changelog — NJR Konwerter
 
+## 1.0.7 (2026-07-29)
+
+### Aktualizacje — wzmocnienie SSL
+- Runtime hook PyInstaller (`pyi_rth_certifi.py`) — certyfikaty CA ładowane przed startem aplikacji.
+- `ssl_utils` szuka `cacert.pem` także w `_MEIPASS` (onefile).
+- Czytelniejszy komunikat przy błędzie SSL w „Sprawdź aktualizacje” (z linkiem do ręcznego pobrania).
+
 ## 1.0.6 (2026-07-29)
 
 ### Tidal — naprawa fałszywych „niedostępnych” (pilne)
 - **Problem:** w buildzie PyInstaller (`.app` / `.exe`) sprawdzanie utworów Tidal zgłaszało niemal całą bibliotekę jako niedostępną (`CERTIFICATE_VERIFY_FAILED`).
-- **Naprawa:** `certifi` + `ssl_utils.py` — HTTPS z bundlem certyfikatów CA we wszystkich modułach sieciowych (Tidal, OAuth, Spotify/YouTube, aktualizacje GitHub).
+- **Naprawa:** `certifi` + `ssl_utils.py` — HTTPS z bundlem certyfikatów CA we wszystkich modułach sieciowych.
+- **Dotyczy zakładek / funkcji:** Tidal (sprawdź dostępność, wyszukiwarka zamienników), Online na Offline (OAuth Tidal, playlisty Spotify/YouTube), **Sprawdź aktualizacje** (GitHub Releases).
 - UI rozróżnia „niedostępny” (404) od błędu połączenia.
+- **Uwaga:** wersje **1.0.5 i starsze** nie mogą same się zaktualizować przez ten błąd — pobierz **1.0.6+** ręcznie z GitHub.
+- **Tidal → Serato** (pobieranie przez `tiddl`) — bez zmian; logowanie i SSL obsługuje zewnętrzne CLI.
+- **Test:** `editor/test_tidal_availability.py`.
 
 ### Serato — ścieżki po eksporcie
 - Naprawa podwójnego prefixu `Users/…/Music/Users/…` w ścieżkach Serato po imporcie z NJR.
+
+### Release
+- Buildy 1.0.6 na GitHub Releases (tag `1.0`): Windows `.exe`, macOS arm64 / Intel `.dmg`.
+- **Strona pobierania:** `docs/strona-pobierania.html` — linki do buildów 1.0.6.
 
 ## 1.0.5 (2026-07-28)
 
