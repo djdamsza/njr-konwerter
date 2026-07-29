@@ -1,6 +1,6 @@
 <!--
   Fragment do wklejenia w WordPress (blok „Własny HTML” / Custom HTML).
-  Linki wskazują najnowsze buildy z release tag 1.0 (obecnie 1.0.8).
+  Linki wskazują najnowsze buildy z release tag 1.0 (obecnie 1.0.9).
 -->
 <style>
   :root {
@@ -147,8 +147,8 @@
 <div class="njr-dl">
   <header>
     <span class="badge">Open source — za darmo</span>
-    <h1>NJR Konwerter 1.0.8</h1>
-    <p class="lead">Czyszczenie i organizacja zbiorów muzycznych oraz migracja bibliotek DJ pomiędzy systemami. <strong>Pełny eksport bez klucza licencji.</strong> Wersja 1.0.8 — prostsza instalacja na Mac (Ctrl + klik → Otwórz).</p>
+    <h1>NJR Konwerter 1.0.9</h1>
+    <p class="lead">Czyszczenie i organizacja zbiorów muzycznych oraz migracja bibliotek DJ pomiędzy systemami. <strong>Pełny eksport bez klucza licencji.</strong> Wersja 1.0.9 — pakiet .app + skrypt instalacyjny (mniej pytań Gatekeeper na Mac).</p>
   </header>
 
   <div class="panel intro">
@@ -163,45 +163,45 @@
   </div>
 
   <div class="btn-wrap">
-    <a class="btn btn-win" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.8-windows-x64.exe">
+    <a class="btn btn-win" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.9-windows-x64.exe">
       Pobierz dla Windows (.exe)
-      <span class="btn-sub">1.0.8 · Windows 10 / 11, 64-bit</span>
+      <span class="btn-sub">1.0.9 · Windows 10 / 11, 64-bit</span>
     </a>
   </div>
   <div class="btn-wrap">
-    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.8-macos-arm64.dmg">
+    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.9-macos-arm64.dmg">
       Pobierz dla macOS — Apple Silicon (.dmg)
-      <span class="btn-sub">1.0.8 · Mac z chipem M1 / M2 / M3 / M4</span>
+      <span class="btn-sub">1.0.9 · Mac z chipem M1 / M2 / M3 / M4</span>
     </a>
   </div>
   <div class="btn-wrap">
-    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.8-macos-intel-x64.dmg">
+    <a class="btn btn-mac" href="https://github.com/djdamsza/njr-konwerter/releases/download/1.0/NJR-konwerter-1.0.9-macos-intel-x64.dmg">
       Pobierz dla macOS — Intel (.dmg)
-      <span class="btn-sub">1.0.8 · Mac z procesorem Intel</span>
+      <span class="btn-sub">1.0.9 · Mac z procesorem Intel</span>
     </a>
   </div>
 
   <div class="panel note">
     <h2>Mac — instalacja (jedno potwierdzenie)</h2>
-    <p>Program <strong>nie jest z App Store</strong> — przy pierwszym uruchomieniu macOS poprosi o <strong>jedno</strong> potwierdzenie. <strong>Nie uruchamiaj programu z okna DMG</strong> — najpierw skopiuj go do Aplikacji.</p>
+    <p>Program <strong>nie jest z App Store</strong>. W DMG jest aplikacja <strong>NJR Konwerter.app</strong> — <strong>nie uruchamiaj jej z okna DMG</strong>.</p>
 
-    <p><strong>1. Skopiuj do Aplikacji</strong></p>
+    <p><strong>Sposób A — zalecany (skrypt instalacyjny)</strong></p>
     <ol>
       <li>Otwórz pobrany plik <code>.dmg</code>.</li>
-      <li>Naciśnij <strong>Shift + Command + A</strong> (folder <strong>Aplikacje</strong>).</li>
-      <li><strong>Przeciągnij</strong> <strong>NJR-konwerter</strong> z okna DMG do <strong>Aplikacje</strong>.</li>
-      <li><strong>Wysuń</strong> DMG (ikona dysku → wysuń).</li>
+      <li><strong>Ctrl + klik</strong> na <strong>Instaluj NJR Konwerter.command</strong> → <strong>Otwórz</strong> (jeśli macOS pyta).</li>
+      <li>Skrypt skopiuje aplikację do <strong>Aplikacje</strong> i usunie blokadę Gatekeeper.</li>
+      <li>W <strong>Aplikacjach</strong>: <strong>Ctrl + klik</strong> na <strong>NJR Konwerter</strong> → <strong>Otwórz</strong> → <strong>Otwórz</strong> w dialogu — to jedyne potwierdzenie aplikacji.</li>
     </ol>
 
-    <p><strong>2. Pierwsze uruchomienie — Ctrl + klik → Otwórz</strong></p>
+    <p><strong>Sposób B — ręcznie</strong></p>
     <ol>
-      <li>W folderze <strong>Aplikacje</strong> kliknij <strong>NJR-konwerter</strong> <strong>prawym przyciskiem</strong> (lub <strong>Ctrl + klik</strong>).</li>
-      <li>Wybierz <strong>Otwórz</strong> z menu.</li>
-      <li>W oknie dialogowym kliknij <strong>Otwórz</strong> — to jedyne potwierdzenie.</li>
+      <li>Otwórz <code>.dmg</code>.</li>
+      <li>Przeciągnij <strong>NJR Konwerter.app</strong> na ikonę <strong>Applications</strong> w oknie DMG.</li>
+      <li>W <strong>Aplikacjach</strong>: <strong>Ctrl + klik</strong> → <strong>Otwórz</strong> → <strong>Otwórz</strong>.</li>
     </ol>
-    <p style="font-size: 0.88rem; color: #555;">Kolejne uruchomienia zwykłym <strong>dwuklikiem</strong> — bez dodatkowych pytań. <strong>Nie używaj dwuklika przy pierwszym starcie</strong> (macOS wtedy wysyła do Ustawień i wymaga więcej kroków).</p>
 
-    <p style="margin-top: 12px; font-size: 0.88rem; color: #555;"><strong>Gdy Ctrl + klik nie działa:</strong> raz spróbuj dwuklikiem (zamknij okno „Gotowe”), potem <strong>Ustawienia systemowe</strong> → <strong>Prywatność i bezpieczeństwo</strong> → <strong>Otwórz mimo to</strong>.</p>
+    <p style="font-size: 0.88rem; color: #555;">Kolejne uruchomienia zwykłym <strong>dwuklikiem</strong>. <strong>Nie używaj dwuklika przy pierwszym starcie</strong> — macOS wtedy wymusza więcej kroków w Ustawieniach.</p>
+    <p style="font-size: 0.88rem; color: #555;">Pełne wyeliminowanie pytań wymaga notaryzacji Apple (konto Developer) — planowane na później.</p>
   </div>
 
   <div class="panel warn">
@@ -211,7 +211,7 @@
 
   <div class="panel install">
     <h2>Windows — instalacja</h2>
-    <p><strong>Ważne:</strong> jeśli masz wersję <strong>1.0.5 lub starszą</strong> i „Sprawdź aktualizacje” pokazuje błąd SSL — pobierz <strong>1.0.8</strong> ręcznie (auto-aktualizacja w tej wersji nie zadziała). Starsze 1.0.2–1.0.4 mogły też padać przy starcie z błędem <code>numpy</code>.</p>
+    <p><strong>Ważne:</strong> jeśli masz wersję <strong>1.0.5 lub starszą</strong> i „Sprawdź aktualizacje” pokazuje błąd SSL — pobierz <strong>1.0.9</strong> ręcznie (auto-aktualizacja w tej wersji nie zadziała). Starsze 1.0.2–1.0.4 mogły też padać przy starcie z błędem <code>numpy</code>.</p>
     <p>Uruchom pobrany plik <code>.exe</code> (nie wymaga instalatora — to portable onefile). Gdy pojawi się <strong>SmartScreen</strong>, wybierz <strong>Więcej informacji</strong> → <strong>Uruchom mimo to</strong>.</p>
     <p>Jeśli <strong>Windows Defender</strong> lub inny antywirus zatrzyma plik, pozwól na uruchomienie albo dodaj wyjątek — pobieraj wyłącznie z tej strony lub z <a href="https://github.com/djdamsza/njr-konwerter/releases/tag/1.0">oficjalnego release na GitHubie</a>.</p>
   </div>

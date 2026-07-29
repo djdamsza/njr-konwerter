@@ -190,6 +190,14 @@ jobs:
           cd "$NJR_DIR"
           ./dist/NJR-konwerter.exe --smoke-test
 
+      - name: Smoke test (macOS — numpy / importy)
+        if: runner.os == 'macOS'
+        run: |
+          cd "$NJR_DIR"
+          BIN="./dist/NJR Konwerter.app/Contents/MacOS/NJR-konwerter"
+          test -x "$BIN"
+          "$BIN" --smoke-test
+
       - name: Wersja z pliku VERSION
         id: ver
         run: |
@@ -230,18 +238,27 @@ jobs:
             test -f "$NJR_DIR/dist/NJR-konwerter.exe"
             cp "$NJR_DIR/dist/NJR-konwerter.exe" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.exe"
           else
-            test -f "$NJR_DIR/dist/NJR-konwerter"
+            APP="$NJR_DIR/dist/NJR Konwerter.app"
+            if [ ! -d "$APP" ]; then
+              echo "::error::Brak $APP — oczekiwano bundle .app z PyInstaller (macOS)."
+              exit 1
+            fi
             STAGING="_dmg_root"
             rm -rf "$STAGING"
             mkdir -p "$STAGING"
-            cp "$NJR_DIR/dist/NJR-konwerter" "$STAGING/NJR-konwerter"
-            chmod +x "$STAGING/NJR-konwerter"
+            cp -R "$APP" "$STAGING/NJR Konwerter.app"
+            INSTALLER="$GITHUB_WORKSPACE/scripts/macos/Instaluj-NJR-Konwerter.command"
+            if [ -f "$INSTALLER" ]; then
+              cp "$INSTALLER" "$STAGING/Instaluj NJR Konwerter.command"
+              chmod +x "$STAGING/Instaluj NJR Konwerter.command"
+            fi
+            ln -sf /Applications "$STAGING/Applications"
             ENT="$GITHUB_WORKSPACE/.github/macos-entitlements.plist"
             if [ "${{ steps.macsign.outputs.enabled }}" = "true" ] && [ -n "$SIGN_ID" ] && [ -f "$ENT" ]; then
               codesign --force --deep --timestamp --options runtime \
                 --entitlements "$ENT" \
                 --sign "$SIGN_ID" \
-                "$STAGING/NJR-konwerter"
+                "$STAGING/NJR Konwerter.app"
             fi
             DMG="_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.dmg"
             hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"

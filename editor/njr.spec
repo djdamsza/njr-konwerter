@@ -10,6 +10,12 @@ from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
+_version = '0.0.0'
+try:
+    _version = Path('../VERSION').read_text(encoding='utf-8').strip()
+except OSError:
+    pass
+
 _engine_bin = []
 for _cand in [
     Path('engine_bridge/build/njr-engine-export'),
@@ -139,3 +145,18 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+if platform.system() == 'Darwin':
+    app = BUNDLE(
+        exe,
+        name='NJR Konwerter.app',
+        icon=None,
+        bundle_identifier='pl.djdamsza.njr-konwerter',
+        info_plist={
+            'CFBundleShortVersionString': _version,
+            'CFBundleVersion': _version,
+            'CFBundleDisplayName': 'NJR Konwerter',
+            'NSHighResolutionCapable': True,
+            'LSMinimumSystemVersion': '10.13',
+        },
+    )

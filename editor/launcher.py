@@ -21,6 +21,28 @@ from ssl_utils import configure_ssl_env
 configure_ssl_env()
 
 
+def _strip_mac_quarantine() -> None:
+    """Usuń quarantine z .app po zatwierdzeniu przez użytkownika — mniej pytań Gatekeeper przy kolejnych startach."""
+    if sys.platform != 'darwin' or not getattr(sys, 'frozen', False):
+        return
+    import subprocess
+    from pathlib import Path
+
+    exe = Path(sys.executable).resolve()
+    target = exe
+    for parent in exe.parents:
+        if parent.suffix == '.app':
+            target = parent
+            break
+    subprocess.run(
+        ['xattr', '-dr', 'com.apple.quarantine', str(target)],
+        capture_output=True,
+    )
+
+
+_strip_mac_quarantine()
+
+
 def _find_free_port(start: int = 5050, max_tries: int = 10) -> int:
     """Zwraca pierwszy wolny port z zakresu [start, start+max_tries)."""
     for port in range(start, start + max_tries):

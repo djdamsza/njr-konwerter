@@ -11,48 +11,54 @@ elif [ -d "$REPO_ROOT/editor" ] && [ -f "$REPO_ROOT/editor/njr.spec" ]; then
   APP="$REPO_ROOT/editor"
 else
   echo "Brak źródeł konwertera." >&2
-  echo "  • Utwórz katalog editor/ z pełnym kodem (patrz editor/README.md), lub" >&2
-  echo "  • Ustaw NJR_APP_DIR na katalog zawierający njr.spec" >&2
   exit 1
 fi
 
 VERSION_FILE="$REPO_ROOT/VERSION"
 OUT_DIR="$REPO_ROOT/releases"
 
-if [ ! -f "$APP/njr.spec" ]; then
-  echo "Brak $APP/njr.spec" >&2
-  exit 1
-fi
-
 VERSION="$(tr -d ' \t\r\n' < "$VERSION_FILE" 2>/dev/null || echo "0.0.0")"
 echo "Repozytorium: $REPO_ROOT"
-echo "Aplikacja (PyInstaller): $APP"
-echo "Wersja (VERSION): $VERSION"
+echo "Wersja: $VERSION"
 
 cd "$APP"
 python3 -m pip install -q -r requirements-dev.txt
 python3 -m PyInstaller njr.spec --clean --noconfirm
 
 mkdir -p "$OUT_DIR"
-
 copied=0
-for src in "$APP/dist/NJR-konwerter" "$APP/dist/NJR-konwerter.exe"; do
+
+if [ -d "$APP/dist/NJR Konwerter.app" ]; then
+  APP_BUNDLE="$OUT_DIR/NJR Konwerter-${VERSION}.app"
+  rm -rf "$APP_BUNDLE"
+  cp -R "$APP/dist/NJR Konwerter.app" "$APP_BUNDLE"
+  echo "Skopiowano: $APP_BUNDLE"
+  copied=1
+
+  STAGING="_dmg_staging_$$"
+  rm -rf "$STAGING"
+  mkdir -p "$STAGING"
+  cp -R "$APP_BUNDLE" "$STAGING/NJR Konwerter.app"
+  cp "$REPO_ROOT/scripts/macos/Instaluj-NJR-Konwerter.command" "$STAGING/Instaluj NJR Konwerter.command"
+  chmod +x "$STAGING/Instaluj NJR Konwerter.command"
+  ln -sf /Applications "$STAGING/Applications"
+  DMG="$OUT_DIR/NJR-konwerter-${VERSION}-macos-arm64.dmg"
+  hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+  rm -rf "$STAGING"
+  echo "DMG: $DMG"
+fi
+
+for src in "$APP/dist/NJR-konwerter.exe"; do
   [ -f "$src" ] || continue
-  if [[ "$src" == *.exe ]]; then
-    dest_name="NJR-konwerter-${VERSION}.exe"
-  else
-    dest_name="NJR-konwerter-${VERSION}"
-  fi
-  dest="$OUT_DIR/$dest_name"
+  dest="$OUT_DIR/NJR-konwerter-${VERSION}.exe"
   cp -f "$src" "$dest"
   echo "Skopiowano: $dest"
-  ls -la "$dest"
   copied=$((copied + 1))
 done
 
 if [ "$copied" -eq 0 ]; then
-  echo "Brak pliku w $APP/dist (oczekiwano NJR-konwerter lub NJR-konwerter.exe)" >&2
+  echo "Brak artefaktów w $APP/dist" >&2
   exit 1
 fi
 
-echo "Gotowe. Następny krok: DEPLOY-SERVER.md lub GitHub Releases."
+echo "Gotowe."

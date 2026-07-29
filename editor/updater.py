@@ -291,16 +291,53 @@ def start_download(url: str, version: str, asset_name: str) -> None:
     t.start()
 
 
+def _mac_installed_app() -> Path:
+    return Path("/Applications/NJR Konwerter.app")
+
+
+def _mac_running_app_bundle() -> Optional[Path]:
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.suffix == ".app":
+            return parent
+    return None
+
+
 def default_install_target() -> Path:
-    """Gdzie ma trafić zainstalowany binary."""
+    """Gdzie ma trafić zainstalowany pakiet ( .app na Mac )."""
+    app = _mac_running_app_bundle()
+    if app is not None:
+        return app
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve()
     if sys.platform == "darwin":
-        return Path("/Applications/NJR-konwerter")
+        return _mac_installed_app()
     if sys.platform.startswith("win"):
         local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
         return local / "NJR-Konwerter" / "NJR-konwerter.exe"
     return updates_dir() / "NJR-konwerter"
+
+
+def _mac_find_payload_in_dmg(mount: Path) -> tuple[Path, str]:
+    apps = sorted(p for p in mount.glob("*.app") if p.is_dir())
+    if apps:
+        return apps[0], "app"
+    candidates = list(mount.rglob("NJR-konwerter"))
+    binary = None
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            binary = c
+            break
+    if binary is None:
+        for c in candidates:
+            if c.is_file():
+                binary = c
+                break
+    if binary is None:
+        raise RuntimeError("W DMG nie znaleziono NJR Konwerter.app ani pliku NJR-konwerter")
+    return binary, "binary"
 
 
 def _mac_extract_binary_from_dmg(dmg: Path, out_bin: Path) -> Path:
@@ -314,19 +351,15 @@ def _mac_extract_binary_from_dmg(dmg: Path, out_bin: Path) -> Path:
         )
         if attach.returncode != 0:
             raise RuntimeError(attach.stderr.strip() or attach.stdout.strip() or "hdiutil attach failed")
-        candidates = list(mount.rglob("NJR-konwerter"))
-        binary = None
-        for c in candidates:
-            if c.is_file() and os.access(c, os.X_OK):
-                binary = c
-                break
-        if binary is None:
-            for c in candidates:
-                if c.is_file():
-                    binary = c
-                    break
-        if binary is None:
-            raise RuntimeError("W DMG nie znaleziono pliku NJR-konwerter")
+        payload, kind = _mac_find_payload_in_dmg(mount)
+        if kind == "app":
+            out_app = out_bin if str(out_bin).endswith(".app") else out_bin.with_name("NJR Konwerter.app")
+            if out_app.exists():
+                shutil.rmtree(out_app, ignore_errors=True)
+            shutil.copytree(payload, out_app, symlinks=True)
+            subprocess.run(["xattr", "-cr", str(out_app)], capture_output=True)
+            return out_app
+        binary = payload
         out_bin.parent.mkdir(parents=True, exist_ok=True)
         if out_bin.exists():
             try:
@@ -347,8 +380,42 @@ def _mac_extract_binary_from_dmg(dmg: Path, out_bin: Path) -> Path:
         shutil.rmtree(mount, ignore_errors=True)
 
 
-def _mac_replace_and_relaunch(new_bin: Path, target: Path) -> None:
-    """Po zamknięciu procesu podmienia binary i uruchamia ponownie (macOS)."""
+def _mac_replace_and_relaunch(new_payload: Path, target: Path) -> None:
+    """Po zamknięciu procesu podmienia .app (lub binary) i uruchamia ponownie (macOS)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    is_app = target.suffix == ".app" or new_payload.suffix == ".app"
+    new_app = new_payload if new_payload.suffix == ".app" else new_payload.parent if new_payload.parent.suffix == ".app" else None
+    if is_app or new_app is not None:
+        dest = target if target.suffix == ".app" else _mac_installed_app()
+        src_app = new_app or new_payload
+        if src_app.suffix != ".app":
+            src_app = new_payload.with_suffix(".app")
+        script = updates_dir() / f"install-{int(time.time())}.sh"
+        script.write_text(
+            f"""#!/bin/bash
+set -e
+sleep 1
+DEST="{dest}"
+SRC="{src_app if src_app.suffix == '.app' else new_payload.parent}"
+if [ -d "$SRC" ] && [[ "$SRC" == *.app ]]; then
+  if [ -d "$DEST" ]; then mv -f "$DEST" "$DEST.old" || rm -rf "$DEST"; fi
+  cp -R "$SRC" "$DEST"
+  xattr -cr "$DEST" 2>/dev/null || true
+  open "$DEST"
+else
+  if [ -f "{target}" ]; then mv -f "{target}" "{target}.old" || rm -f "{target}"; fi
+  cp -f "{new_payload}" "{target}"
+  chmod +x "{target}"
+  xattr -dr com.apple.quarantine "{target}" 2>/dev/null || true
+  nohup "{target}" >/dev/null 2>&1 &
+fi
+rm -f "{script}"
+""",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        subprocess.Popen(["/bin/bash", str(script)], start_new_session=True)
+        return
     target.parent.mkdir(parents=True, exist_ok=True)
     script = updates_dir() / f"install-{int(time.time())}.sh"
     script.write_text(
@@ -358,7 +425,7 @@ sleep 1
 if [ -f "{target}" ]; then
   mv -f "{target}" "{target}.old" || rm -f "{target}"
 fi
-cp -f "{new_bin}" "{target}"
+cp -f "{new_payload}" "{target}"
 chmod +x "{target}"
 xattr -dr com.apple.quarantine "{target}" 2>/dev/null || true
 nohup "{target}" >/dev/null 2>&1 &
@@ -420,56 +487,80 @@ def install_update(
             # Staging w katalogu updates — unikamy kolizji z działającym plikiem
             staging = updates_dir() / f"NJR-konwerter-{st.get('version') or 'new'}"
             extracted = _mac_extract_binary_from_dmg(pkg, staging)
-            running = (
-                getattr(sys, "frozen", False)
-                and Path(sys.executable).resolve() == target.resolve()
+            install_dest = target if target.suffix == ".app" else (
+                extracted if extracted.suffix == ".app" else target
             )
+            if extracted.suffix == ".app":
+                install_dest = _mac_installed_app()
+            running = False
+            if getattr(sys, "frozen", False):
+                exe = Path(sys.executable).resolve()
+                if install_dest.suffix == ".app":
+                    running = exe.is_relative_to(install_dest.resolve())
+                else:
+                    running = exe == install_dest.resolve()
             if running and relaunch:
-                _mac_replace_and_relaunch(extracted, target)
+                _mac_replace_and_relaunch(extracted, install_dest)
                 _set_status(status="ready", path=str(pkg), message="Instalator uruchomiony — restart…")
                 threading.Timer(0.8, lambda: os._exit(0)).start()
                 return {
                     "ok": True,
-                    "installedPath": str(target),
+                    "installedPath": str(install_dest),
                     "version": st.get("version") or "",
                     "relaunch": True,
                     "message": "Aktualizacja zostanie zastosowana po restarcie.",
                 }
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists() and target.resolve() != extracted.resolve():
+            install_dest.parent.mkdir(parents=True, exist_ok=True)
+            if extracted.suffix == ".app":
+                if install_dest.exists():
+                    shutil.rmtree(install_dest, ignore_errors=True)
+                shutil.copytree(extracted, install_dest, symlinks=True)
+                subprocess.run(["xattr", "-cr", str(install_dest)], capture_output=True)
+                _set_status(status="ready", path=str(pkg), message=f"Zainstalowano: {install_dest}")
+                if relaunch:
+                    subprocess.Popen(["open", str(install_dest)], start_new_session=True)
+                    if getattr(sys, "frozen", False):
+                        threading.Timer(0.8, lambda: os._exit(0)).start()
+                return {
+                    "ok": True,
+                    "installedPath": str(install_dest),
+                    "version": st.get("version") or "",
+                    "relaunch": relaunch,
+                    "message": f"Zainstalowano NJR {st.get('version') or ''} → {install_dest}",
+                }
+            if install_dest.exists() and install_dest.resolve() != extracted.resolve():
                 try:
-                    target.unlink()
+                    install_dest.unlink()
                 except OSError:
-                    _mac_replace_and_relaunch(extracted, target)
-                    _set_status(status="ready", path=str(pkg), message=f"Instalacja w toku → {target}")
+                    _mac_replace_and_relaunch(extracted, install_dest)
+                    _set_status(status="ready", path=str(pkg), message=f"Instalacja w toku → {install_dest}")
                     if relaunch and getattr(sys, "frozen", False):
                         threading.Timer(0.8, lambda: os._exit(0)).start()
                     return {
                         "ok": True,
-                        "installedPath": str(target),
+                        "installedPath": str(install_dest),
                         "version": st.get("version") or "",
                         "relaunch": relaunch,
-                        "message": f"Instalacja w toku → {target}",
+                        "message": f"Instalacja w toku → {install_dest}",
                     }
-            if extracted.resolve() != target.resolve():
-                shutil.copy2(extracted, target)
-                target.chmod(target.stat().st_mode | 0o111)
-            # Usuń quarantine (Gatekeeper) jeśli możliwe
+            if extracted.resolve() != install_dest.resolve():
+                shutil.copy2(extracted, install_dest)
+                install_dest.chmod(install_dest.stat().st_mode | 0o111)
             subprocess.run(
-                ["xattr", "-dr", "com.apple.quarantine", str(target)],
+                ["xattr", "-dr", "com.apple.quarantine", str(install_dest)],
                 capture_output=True,
             )
-            _set_status(status="ready", path=str(pkg), message=f"Zainstalowano: {target}")
+            _set_status(status="ready", path=str(pkg), message=f"Zainstalowano: {install_dest}")
             if relaunch:
-                subprocess.Popen([str(target)], start_new_session=True)
+                subprocess.Popen([str(install_dest)], start_new_session=True)
                 if getattr(sys, "frozen", False):
                     threading.Timer(0.8, lambda: os._exit(0)).start()
             return {
                 "ok": True,
-                "installedPath": str(target),
+                "installedPath": str(install_dest),
                 "version": st.get("version") or "",
                 "relaunch": relaunch,
-                "message": f"Zainstalowano NJR {st.get('version') or ''} → {target}",
+                "message": f"Zainstalowano NJR {st.get('version') or ''} → {install_dest}",
             }
 
         if pkg.suffix.lower() == ".exe":

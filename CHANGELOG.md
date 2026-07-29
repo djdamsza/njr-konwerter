@@ -4,6 +4,15 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.0.9 (2026-07-29)
+
+### Mac — mniej potwierdzeń Gatekeeper
+- DMG zawiera **NJR Konwerter.app** (zamiast gołego pliku) + skrypt **Instaluj NJR Konwerter.command**.
+- Skrypt kopiuje aplikację do `/Applications` i usuwa atrybut quarantine.
+- Skrót **Applications** w oknie DMG (przeciągnij i upuść).
+- Przy starcie aplikacja czyści quarantine z własnego bundle.
+- **Bez konta Apple Developer** nadal wymagane jest **jedno** potwierdzenie (Ctrl+klik → Otwórz) — zero potwierdzeń wymaga notaryzacji.
+
 ## 1.0.8 (2026-07-29)
 
 ### Mac — prostsza instalacja
