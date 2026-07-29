@@ -1,5 +1,15 @@
 # Changelog — NJR Konwerter
 
+Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wersje** buildów do pobrania.
+
+---
+
+## 1.0.8 (2026-07-29)
+
+### Mac — prostsza instalacja
+- Instrukcja na stronie pobierania: **skopiuj do Aplikacji → Ctrl + klik → Otwórz** (jedno potwierdzenie zamiast wielu kroków w Ustawieniach).
+- Porządek na GitHub Releases: tylko buildy **1.0.8** i **1.0.7**; starsze assety usunięte.
+
 ## 1.0.7 (2026-07-29)
 
 ### Aktualizacje — wzmocnienie SSL
@@ -7,113 +17,16 @@
 - `ssl_utils` szuka `cacert.pem` także w `_MEIPASS` (onefile).
 - Czytelniejszy komunikat przy błędzie SSL w „Sprawdź aktualizacje” (z linkiem do ręcznego pobrania).
 
-## 1.0.6 (2026-07-29)
+---
 
-### Tidal — naprawa fałszywych „niedostępnych” (pilne)
-- **Problem:** w buildzie PyInstaller (`.app` / `.exe`) sprawdzanie utworów Tidal zgłaszało niemal całą bibliotekę jako niedostępną (`CERTIFICATE_VERIFY_FAILED`).
-- **Naprawa:** `certifi` + `ssl_utils.py` — HTTPS z bundlem certyfikatów CA we wszystkich modułach sieciowych.
-- **Dotyczy zakładek / funkcji:** Tidal (sprawdź dostępność, wyszukiwarka zamienników), Online na Offline (OAuth Tidal, playlisty Spotify/YouTube), **Sprawdź aktualizacje** (GitHub Releases).
-- UI rozróżnia „niedostępny” (404) od błędu połączenia.
-- **Uwaga:** wersje **1.0.5 i starsze** nie mogą same się zaktualizować przez ten błąd — pobierz **1.0.6+** ręcznie z GitHub.
-- **Tidal → Serato** (pobieranie przez `tiddl`) — bez zmian; logowanie i SSL obsługuje zewnętrzne CLI.
-- **Test:** `editor/test_tidal_availability.py`.
+## Wcześniejsze wersje (skrót)
 
-### Serato — ścieżki po eksporcie
-- Naprawa podwójnego prefixu `Users/…/Music/Users/…` w ścieżkach Serato po imporcie z NJR.
+| Wersja | Najważniejsze |
+|--------|----------------|
+| **1.0.6** | Naprawa SSL w buildzie (Tidal, aktualizacje, Online na Offline); naprawa ścieżek Serato po eksporcie. |
+| **1.0.5** | Naprawa startu Windows (.exe) z NumPy 2.x / PyInstaller. |
+| **1.0.4** | Auto-aktualizacja z GitHub (Mac DMG + Windows .exe). |
+| **1.0.3** | API aktualizacji, UI w stopce, eksport bez klucza licencji. |
+| **1.0.2–1.0.0** | Pierwsze buildy standalone, VDJ→Serato/Engine, hot cues, Smart Crates. |
 
-### Release
-- Buildy 1.0.6 na GitHub Releases (tag `1.0`): Windows `.exe`, macOS arm64 / Intel `.dmg`.
-- **Strona pobierania:** `docs/strona-pobierania.html` — linki do buildów 1.0.6.
-
-## 1.0.5 (2026-07-28)
-
-### Windows — naprawa uruchomienia .exe (pilne)
-- **Problem:** wersje 1.0.2–1.0.4 na Windows mogły padać przy starcie z błędem `No module named 'numpy._core._exceptions'` (PyInstaller + NumPy 2.x).
-- **Naprawa:** PyInstaller ≥6.14, `collect_all('numpy')` w `njr.spec`, jawne hiddenimports modułów `numpy._core.*`.
-- **CI:** po buildzie Windows uruchamiany jest `NJR-konwerter.exe --smoke-test`.
-- **Strona pobierania:** `docs/strona-pobierania.html` — linki do buildów 1.0.5.
-
-### Aktualizacje (z 1.0.4)
-- Automatyczne pobieranie i instalacja nowszej wersji z GitHub Releases.
-
-## 1.0.4 (2026-07-27)
-
-### Aktualizacje z GitHub
-- Automatyczne sprawdzanie, pobieranie i instalacja nowszej wersji z GitHub Releases.
-- macOS (arm64/Intel): DMG → podmiana aplikacji + restart.
-- Windows: `.exe` → podmiana przez skrypt `.bat` + restart.
-
-## 1.0.3 (2026-07-27)
-
-### Aktualizacje z GitHub (dev)
-- Sprawdzanie / pobieranie / instalacja nowszej wersji z GitHub Releases (jak w Imprezja Quiz).
-- API: `POST /api/check-updates`, `GET /api/update-status`, `POST /api/install-update`.
-- **macOS:** pobiera DMG (arm64 / Intel), montuje, kopiuje binary; podmiana działającej aplikacji przez skrypt + restart.
-- **Windows:** pobiera `.exe`, podmiana uruchomionego pliku przez `.bat` + restart.
-- UI w stopce: postęp pobierania + przycisk „Zainstaluj i uruchom ponownie”.
-- Test: `editor/test_updater.py`.
-
-### Open source / licencjonowanie
-- Eksport odblokowany: brak wymogu aktywacji klucza.
-- API licencji pozostawione dla kompatybilności, ale `canExport` jest zawsze `true`.
-- UI pokazuje informację „open source” zamiast blokady eksportu.
-
-### VDJ → Serato / Engine — drzewo 1:1 + smart listy
-- **Serato Smart Crates** (`.scrate`): mapowalne filter listy VDJ → `SmartCrates/` z **czytelnymi nazwami** (bez `%%` — Serato nie nestuje Smart Crates).
-- Przycisk **Napraw Smart Crates** + `/api/fix-serato-smart-crates` — rename zepsutych nazw, usuwanie duplikatów Subcrates.
-- Niemapowalne filtry (np. rating w Serato, BPM/Key difference) → snapshot w Subcrates jak wcześniej.
-- **Engine**: szersze reguły Smartlist (BPM, year, artist/title/comment) obok tagów/rating/play count.
-- Drzewo folderów w **Crates** (Subcrates `%%`); Smart Crates = płaska sekcja z nazwami typu `TECHNO _1`.
-- Query `includeAll=0` — bez playlisty „wszystkie pliki” (czystsze 1:1).
-
-### Serato — martwe duble / żółte trójkąty
-- Czyszczenie: remap `Inne komputery` / `G:` / `Volumes/osx` / `Mój dysk` → Desktop gdy plik istnieje.
-- Usuwanie martwych dubli (ta sama nazwa pliku) i wpisów bez pliku na dysku.
-- Crates aktualizowane pod zachowane ścieżki. Przycisk **Napraw ścieżki Serato**.
-
-### Serato — eksport (dopracowany)
-- Ścieżki zawsze `Users/…` (bez `/`) — bez klonów przy play.
-- Domyślnie **tylko crates** gdy jest lokalna baza; pełny database V2 z potwierdzeniem.
-- Dedupe utworów w DB i crate (`/Users` ≡ `Users`).
-- W ZIP: `NJR-INSTALUJ.txt` z instrukcją instalacji.
-- Przycisk **Napraw ścieżki Serato** (normalizacja + dedupe lokalnej biblioteki).
-
-### Serato — klony utworów (/Users vs Users)
-- Przyczyna: lokalna baza trzymała `/Users/…`, a Serato przy play dopisuje `Users/…` → klon.
-- **Naprawa:** normalizacja całej biblioteki + crates do `Users/…` (bez `/`) + dedupe.
-
-### Serato — hot cues (Markers2)
-- Zapis hot cues do plików audio (`Serato Markers2`) — MP3/FLAC/M4A/AIFF/WAV.
-- Eksport Serato: opcja **hot cues → pliki** (`writeCues=1`, domyślnie włączona w UI).
-- Endpoint `POST /api/write-serato-cues` — sam zapis cue bez ZIP.
-- Moduł `serato_markers.py` + testy `test_serato_markers.py`.
-- **Skip bez zmian:** ponowny zapis pomija pliki, gdy cue (slot/ms/nazwa) są już takie same; `force` / `forceCues=1` wymusza nadpisanie.
-- **Drzewo crates:** Subcrates z hierarchią `Parent%%Child.crate` (jak foldery Engine / VDJ).
-
-## 1.0.1 (w przygotowaniu)
-
-### Utrzymanie i bezpieczeństwo
-- Wersja aplikacji czytana z pliku `VERSION` (`editor/version_info.py`).
-- `.github/macos-entitlements.plist` — gotowe pod podpis i notaryzację macOS.
-- Walidacja ścieżek rozszerzona na: `/api/audio-file`, `/api/open-folder`, `/api/scan-orphan-files`, `/api/write-tags`.
-- Klucz testowy licencji działa tylko z `NJR_DEV=1`.
-- Usunięto `debug-error.txt` i zduplikowany `njr_license.py`.
-
-### Modularizacja (Faza C)
-- Wydzielono `app_state.py` (wspólny stan sesji), `constants.py`, `native_dialogs.py`.
-- Blueprinty Flask: `routes/meta`, `routes/session`, `routes/license`, `routes/files`.
-- `app.py` deleguje stan do `app_state`; trasy meta/pliki/licencja/undo w blueprintach.
-
-### RB Beta (porządek na dysku)
-- Nowa zakładka **RB Beta**: skan folderów z muzyką bez bazy Rekordbox.
-- Duplikaty: hash pliku, Author+Title (usunięto rozmiar+czas — złe wyniki).
-- Remiksy/wersje: tryb `versions` (ten sam artysta + tytuł, Radio/Remix/Edit) obok `covers`.
-- Usuwanie zaznaczonych plików fizycznie z dysku; RB posprząta puste wpisy sam.
-
-- `verify.yml` — testy `test_roundtrip_formats` + sprawdzenie spójności wersji.
-- Pin `pyinstaller==6.12.0` w `editor/requirements-dev.txt`.
-- Zaktualizowany `editor/README.md` (ścieżki standalone repo).
-
-## 1.0.0
-
-- Pierwsza publiczna wersja standalone (`editor/`).
+Pełna historia w commitach: [github.com/djdamsza/njr-konwerter/commits/main](https://github.com/djdamsza/njr-konwerter/commits/main).

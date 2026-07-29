@@ -282,6 +282,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -317,16 +319,40 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Przygotuj opis release z CHANGELOG
+        run: |
+          python3 <<'PY'
+          import pathlib, re
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          blocks = re.split(r"\n(?=## )", text)
+          out = []
+          for b in blocks:
+              if re.match(r"## \d+\.\d+\.\d+", b.strip()):
+                  out.append(b.strip())
+              if len(out) >= 2:
+                  break
+          repo = "${{ github.repository }}"
+          body = "# Changelog\n\n" + "\n\n".join(out) if out else text[:4000]
+          body += f"\n\n---\nPełna historia: [CHANGELOG.md](https://github.com/{repo}/blob/main/CHANGELOG.md)\n"
+          pathlib.Path("release-notes.md").write_text(body, encoding="utf-8")
+          PY
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           name: NJR Konwerter ${{ steps.rel.outputs.tag }}
           draft: false
-          generate_release_notes: true
+          body_path: release-notes.md
           fail_on_unmatched_files: true
           files: flat/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Usuń stare buildy (zostaw 2 ostatnie wersje)
+        if: steps.rel.outputs.tag == '1.0'
+        run: |
+          chmod +x scripts/prune-github-release-assets.sh
+          ./scripts/prune-github-release-assets.sh "${{ steps.rel.outputs.tag }}" 2
 
       - name: Linki do pobrania
         shell: bash
