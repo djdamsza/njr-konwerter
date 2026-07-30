@@ -4,6 +4,26 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.0.12 (2026-07-30)
+
+### Sync playlist po podmianie utworów
+- Automatyczna synchronizacja ścieżek we **wszystkich** `.vdjfolder` po: scaleniu duplikatów (Tidal→lokalne), zamianie na Tidal, przeniesieniu pliku, Tidal→lokalne w playliście.
+- Obsługa aliasów Tidal (`netsearch://td123` ↔ `td123`, `Link.NetSearch`).
+- Przed eksportem ZIP — naprawa martwych referencji w playlistach względem bazy.
+
+### CI — GitHub Release
+- Przed uploadem: usuwanie starych assetów **tej samej wersji** (re-run / ponowny build nie kończy się błędem 422).
+- Walidacja: release job wymaga 3 plików (Win + 2× Mac).
+- `prune-github-release-assets.sh` bez `gh` CLI — tylko API + `GITHUB_TOKEN`.
+
+## 1.0.11 (2026-07-30)
+
+### Tidal OAuth — Online na Offline
+- **Odśwież połączenie** najpierw odświeża token (bez logowania w przeglądarce); pełne logowanie tylko gdy refresh się nie uda.
+- Ujednolicony scope OAuth (`user.read playlists.read`) — mniej błędów przy wymianie kodu.
+- PKCE verifier zapisywany na dysk — callback działa po restarcie serwera.
+- Ostrzeżenie w UI i terminalu, gdy aplikacja działa na porcie ≠ 5050 (błąd Tidal **11102** = brak Redirect URI w developer.tidal.com).
+
 ## 1.0.10 (2026-07-29)
 
 ### Mac — jedna instancja

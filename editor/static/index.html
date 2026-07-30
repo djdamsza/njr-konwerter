@@ -4037,22 +4037,20 @@
     updateFormatHint();
 
     let tidalAuthPollId = null;
-    document.getElementById('tidalAuthBtn').onclick = async () => {
+
+    async function startTidalOAuthFlow() {
       const statusEl = document.getElementById('tidalAuthStatus');
       const modal = document.getElementById('tidalAuthModal');
       const linkEl = document.getElementById('tidalAuthLink');
       const codeEl = document.getElementById('tidalAuthUserCode');
       const msgEl = document.getElementById('tidalAuthMsg');
-      if (statusEl?.textContent?.includes('połączono')) {
-        if (!confirm('Połącz ponownie z Tidal? (odświeży token)')) return;
-      }
       const backdrop = document.getElementById('tidalAuthModalBackdrop');
       modal.style.display = 'block';
       if (backdrop) backdrop.style.display = 'block';
       linkEl.href = '#';
       linkEl.textContent = '—';
       codeEl.textContent = '—';
-      if (msgEl) msgEl.textContent = 'Łączę z Tidal…';
+      if (msgEl) { msgEl.textContent = 'Łączę z Tidal…'; msgEl.style.color = ''; }
       try {
         const res = await fetch(API + '/tidal-auth-url');
         const r = await res.json().catch(() => ({}));
@@ -4061,7 +4059,9 @@
           let msg = 'Błąd: ' + escapeHtml(err);
           try {
             const info = await fetchJson(API + '/tidal-credentials-info');
-            if (info.hint) msg += '<br><br>' + escapeHtml(info.hint) + '<br><br><a href="https://developer.tidal.com" target="_blank" rel="noopener" style="color: var(--accent);">developer.tidal.com</a> → Manage apps → dodaj Redirect URI: <code>' + (window.location.origin || 'http://127.0.0.1:5050') + '/tidal-callback</code>';
+            const redirectUri = r.redirect_uri || info.redirect_uri_hint || (window.location.origin || 'http://127.0.0.1:5050') + '/tidal-callback';
+            if (info.hint) msg += '<br><br>' + escapeHtml(info.hint);
+            msg += '<br><br><a href="https://developer.tidal.com" target="_blank" rel="noopener" style="color: var(--accent);">developer.tidal.com</a> → Manage apps → Redirect URI: <code>' + escapeHtml(redirectUri) + '</code>';
           } catch (_) {}
           if (msgEl) { msgEl.innerHTML = msg; msgEl.style.color = 'var(--err)'; }
           setStatus('Tidal: ' + err, 'error');
@@ -4071,7 +4071,14 @@
         linkEl.href = authUrl;
         linkEl.textContent = 'Otwórz stronę logowania Tidal';
         codeEl.style.display = 'none';
-        if (msgEl) { msgEl.textContent = 'Otworzy się nowa karta. Zaloguj się na Tidal i zatwierdź dostęp.'; msgEl.style.color = ''; }
+        let intro = 'Otworzy się nowa karta. Zaloguj się na Tidal i zatwierdź dostęp.';
+        if (r.redirect_uri) {
+          intro += '<br><br><span style="font-size:11px;">Redirect URI (musi być w developer.tidal.com): <code>' + escapeHtml(r.redirect_uri) + '</code></span>';
+        }
+        if (r.port_warning) {
+          intro += '<br><br><strong style="color:var(--err);">' + escapeHtml(r.port_warning) + '</strong>';
+        }
+        if (msgEl) { msgEl.innerHTML = intro; msgEl.style.color = ''; }
         window.open(authUrl, 'tidal-auth', 'width=600,height=700');
         if (tidalAuthPollId) clearInterval(tidalAuthPollId);
         tidalAuthPollId = setInterval(async () => {
@@ -4091,6 +4098,29 @@
         if (msgEl) { msgEl.textContent = 'Błąd: ' + e.message; msgEl.style.color = 'var(--err)'; }
         setStatus('Tidal: ' + e.message, 'error');
       }
+    }
+
+    document.getElementById('tidalAuthBtn').onclick = async () => {
+      const statusEl = document.getElementById('tidalAuthStatus');
+      const isConnected = statusEl?.textContent?.includes('połączono');
+      if (isConnected) {
+        setStatus('Odświeżam token Tidal…', 'loading');
+        try {
+          const ref = await fetch(API + '/tidal-refresh', { method: 'POST' });
+          const r = await ref.json().catch(() => ({}));
+          if (ref.ok && r.ok) {
+            await refreshTidalAuthStatus();
+            setStatus('Token Tidal odświeżony', 'loaded');
+            return;
+          }
+        } catch (_) {}
+        if (!confirm('Odświeżenie tokena nie powiodło się. Zalogować ponownie w przeglądarce?')) return;
+        try {
+          await fetch(API + '/tidal-disconnect', { method: 'POST' });
+          await refreshTidalAuthStatus();
+        } catch (_) {}
+      }
+      await startTidalOAuthFlow();
     };
     document.getElementById('tidalAuthModalClose').onclick = () => {
       const modal = document.getElementById('tidalAuthModal');

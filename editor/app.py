@@ -709,6 +709,8 @@ def _do_download(filename=None, force_zip=False):
     from flask import Response
     import zipfile
 
+    repair_stats = _repair_vdjfolders_before_export()
+
     want_zip = force_zip or bool(filename) or bool(st.vdjfolders) or bool(st.extra_files)
     if not want_zip:
         buf = BytesIO()
@@ -977,6 +979,54 @@ def _update_vdjfolders_merge(selections: list, new_tag: str, target_field: str):
             old_full = m.group(0)
             new_full = f'filter="{_escape_xml_attr(new_filt)}"'
             st.vdjfolders[path] = content.replace(old_full, new_full, 1)
+
+
+def _sync_vdjfolder_paths(replacements: list[dict]) -> dict:
+    """
+    Synchronizuje ścieżki we wszystkich .vdjfolder po podmianie w bazie.
+    replacements: [{oldPath, newPath, oldIdx?}]
+    """
+    from vdjfolder import (
+        build_path_replacement_lookup,
+        merge_path_replacement_lookups,
+        replace_paths_in_vdjfolders,
+    )
+
+    if not replacements or not st.vdjfolders:
+        return {'folders_changed': 0, 'refs_updated': 0}
+
+    lookups = []
+    for r in replacements:
+        old_path = (r.get('oldPath') or '').strip()
+        new_path = (r.get('newPath') or '').strip()
+        if not old_path or not new_path:
+            continue
+        old_song = None
+        oi = r.get('oldIdx')
+        if oi is not None and 0 <= int(oi) < len(st.songs):
+            old_song = st.songs[int(oi)]
+        lookups.append(build_path_replacement_lookup(old_path, new_path, old_song=old_song))
+
+    lookup_map = merge_path_replacement_lookups(*lookups)
+    if not lookup_map:
+        return {'folders_changed': 0, 'refs_updated': 0}
+
+    updated, folders_changed, refs_updated = replace_paths_in_vdjfolders(st.vdjfolders, lookup_map)
+    st.vdjfolders.clear()
+    st.vdjfolders.update(updated)
+    return {'folders_changed': folders_changed, 'refs_updated': refs_updated}
+
+
+def _repair_vdjfolders_before_export() -> dict:
+    """Naprawia martwe ścieżki w playlistach względem aktualnej bazy (np. po zmianie ID Tidal)."""
+    from vdjfolder import repair_vdjfolder_paths_from_database
+
+    if not st.vdjfolders or not st.songs:
+        return {'folders_changed': 0, 'refs_updated': 0}
+    updated, folders_changed, refs_updated = repair_vdjfolder_paths_from_database(st.songs, st.vdjfolders)
+    st.vdjfolders.clear()
+    st.vdjfolders.update(updated)
+    return {'folders_changed': folders_changed, 'refs_updated': refs_updated}
 
 
 def _update_vdjfolders_remove(field: str, tags: list):
@@ -3763,31 +3813,20 @@ def api_relocate_apply():
             st.songs[idx]['FilePath'] = np_new
 
     if st.vdjfolders and path_map:
-        import xml.etree.ElementTree as ET
-        new_vdjfolders = {}
-        for rel_path, content in st.vdjfolders.items():
-            try:
-                root = ET.fromstring(content)
-                if root.tag != "VirtualFolder":
-                    new_vdjfolders[rel_path] = content
-                    continue
-                changed = False
-                for song in root.findall("song"):
-                    p = song.get("path", "")
-                    np = normalize_path(p)
-                    if np in path_map:
-                        song.set("path", path_map[np])
-                        changed = True
-                if changed:
-                    out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
-                    new_vdjfolders[rel_path] = out
-                else:
-                    new_vdjfolders[rel_path] = content
-            except ET.ParseError:
-                new_vdjfolders[rel_path] = content
-        st.vdjfolders = new_vdjfolders
+        replacements = [
+            {'oldPath': old, 'newPath': new}
+            for old, new in path_map.items()
+        ]
+        sync_stats = _sync_vdjfolder_paths(replacements)
+    else:
+        sync_stats = {'folders_changed': 0, 'refs_updated': 0}
 
-    return jsonify({'ok': True, 'updated': len(path_map), 'count': len(st.songs)})
+    return jsonify({
+        'ok': True,
+        'updated': len(path_map),
+        'count': len(st.songs),
+        'vdjfolders_sync': sync_stats,
+    })
 
 
 @app.route('/api/problematic-missing', methods=['GET'])
@@ -4010,9 +4049,8 @@ def api_playlist_remove_from():
 @app.route('/api/playlist-replace-tidal', methods=['POST'])
 def api_playlist_replace_tidal():
     """
-    Zamienia utwory Tidal na lokalne w playliście (tylko zwykłe listy, nie filter).
-    Body: { playlistName, relPath, replacements: [{ tidalPath, acceptedIdx }] }
-    tidalPath: ścieżka Tidal (td123, netsearch://td123), acceptedIdx: indeks w st.songs pliku lokalnego.
+    Zamienia utwory Tidal na lokalne we wszystkich playlistach (aliasy td/netsearch).
+    Body: { playlistName, relPath, replacements: [{ tidalPath, acceptedIdx | acceptedIndices }] }
     """
     _ensure_loaded()
     _push_undo_state()
@@ -4022,7 +4060,10 @@ def api_playlist_replace_tidal():
     replacements = data.get('replacements') or []
     if not name or not replacements:
         return jsonify({'error': 'Podaj playlistName i replacements'}), 400
-    from vdjfolder import normalize_path
+    from file_analyzer import is_streaming
+    from vdjfolder import normalize_path, replace_paths_in_vdjfolder_content, build_path_replacement_lookup
+    import xml.etree.ElementTree as ET
+
     content = None
     for rp, c in st.vdjfolders.items():
         n = rp.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
@@ -4033,13 +4074,12 @@ def api_playlist_replace_tidal():
             break
     if not content:
         return jsonify({'error': 'Nie znaleziono playlisty'}), 404
-    import xml.etree.ElementTree as ET
     root = ET.fromstring(content)
     if root.get("filter") or root.get("Filter"):
         return jsonify({'error': 'Zamiana Tidal→lokalne działa tylko dla zwykłych list (nie filter)'}), 400
-    # tidal_path -> [local_path, ...] – jeden Tidal może być zamieniony na wiele plików
-    from file_analyzer import is_streaming
-    path_map = {}  # normalized tidal path -> list of local paths
+
+    repl_list = []
+    split_replacements: list[tuple[str, list[str]]] = []
     for r in replacements:
         tidal_path = (r.get('tidalPath') or '').strip()
         if not tidal_path:
@@ -4048,6 +4088,7 @@ def api_playlist_replace_tidal():
         if r.get('acceptedIdx') is not None:
             indices = [r.get('acceptedIdx')]
         valid_paths = []
+        first_idx = None
         for ai in indices:
             try:
                 ai = int(ai)
@@ -4056,40 +4097,57 @@ def api_playlist_replace_tidal():
             if 0 <= ai < len(st.songs):
                 lp = st.songs[ai].get('FilePath', '') or ''
                 if lp and not is_streaming(lp):
+                    if first_idx is None:
+                        first_idx = ai
                     valid_paths.append(lp)
-        if valid_paths:
-            path_map[normalize_path(tidal_path)] = valid_paths
-            path_map[tidal_path] = valid_paths
-            if tidal_path.startswith("netsearch://td"):
-                path_map[normalize_path("td" + tidal_path[len("netsearch://td"):])] = valid_paths
-            elif tidal_path.startswith("td") and ":" not in tidal_path:
-                path_map[normalize_path("netsearch://" + tidal_path)] = valid_paths
-    if not path_map:
-        return jsonify({'ok': True, 'modified': 0})
-    modified = 0
-    songs = list(root.findall("song"))
-    for song_elem in songs:
-        p = (song_elem.get("path") or "").strip()
-        if not p:
+        if not valid_paths:
             continue
-        np = normalize_path(p)
-        local_paths = path_map.get(np) or path_map.get(p)
-        if not local_paths:
-            continue
-        if len(local_paths) == 1:
-            song_elem.set("path", local_paths[0])
-            modified += 1
+        if len(valid_paths) == 1:
+            repl_list.append({
+                'oldPath': tidal_path,
+                'newPath': valid_paths[0],
+                'oldIdx': first_idx,
+            })
         else:
-            idx = list(root).index(song_elem)
-            root.remove(song_elem)
-            for lp in local_paths:
-                new_elem = ET.Element("song", path=lp)
-                root.insert(idx, new_elem)
-                idx += 1
-            modified += len(local_paths)
-    out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode', default_namespace='')
-    st.vdjfolders[rel_path] = out
-    return jsonify({'ok': True, 'modified': modified})
+            split_replacements.append((tidal_path, valid_paths))
+
+    sync_stats = _sync_vdjfolder_paths(repl_list) if repl_list else {'folders_changed': 0, 'refs_updated': 0}
+    modified_splits = 0
+
+    if split_replacements and rel_path:
+        try:
+            split_content = st.vdjfolders.get(rel_path, content)
+            split_root = ET.fromstring(split_content)
+            for tidal_path, local_paths in split_replacements:
+                lookup = build_path_replacement_lookup(tidal_path, local_paths[0])
+                if not lookup:
+                    continue
+                for song_elem in list(split_root.findall("song")):
+                    p = (song_elem.get("path") or "").strip()
+                    np = normalize_path(p) if p else ""
+                    if np not in lookup:
+                        continue
+                    idx = list(split_root).index(song_elem)
+                    split_root.remove(song_elem)
+                    for j, lp in enumerate(local_paths):
+                        new_elem = ET.Element("song", path=lp)
+                        split_root.insert(idx + j, new_elem)
+                    modified_splits += len(local_paths)
+            if modified_splits:
+                out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(
+                    split_root, encoding='unicode', default_namespace=''
+                )
+                st.vdjfolders[rel_path] = out
+        except ET.ParseError:
+            pass
+
+    total_modified = sync_stats.get('refs_updated', 0) + modified_splits
+    return jsonify({
+        'ok': True,
+        'modified': total_modified,
+        'vdjfolders_sync': sync_stats,
+        'split_entries': modified_splits,
+    })
 
 
 @app.route('/api/playlist-offline-to-tidal-substitutes', methods=['POST'])
@@ -4493,9 +4551,15 @@ def api_replace_with_tidal():
         return jsonify({"error": "Nieprawidłowy idx"}), 400
     if idx < 0 or idx >= len(st.songs):
         return jsonify({"error": "Indeks poza zakresem"}), 404
+    old_path = st.songs[idx].get("FilePath", "") or ""
     new_path = f"td{tidal_id}"
     st.songs[idx]["FilePath"] = new_path
-    return jsonify({"ok": True, "idx": idx, "newPath": new_path})
+    sync_stats = _sync_vdjfolder_paths([{
+        'oldPath': old_path,
+        'newPath': new_path,
+        'oldIdx': idx,
+    }]) if old_path else {'folders_changed': 0, 'refs_updated': 0}
+    return jsonify({"ok": True, "idx": idx, "newPath": new_path, "vdjfolders_sync": sync_stats})
 
 
 @app.route('/api/remove-songs', methods=['POST'])
@@ -4510,13 +4574,13 @@ def api_remove_songs():
     import session_trash as trash
     data = request.get_json() or {}
     indices = sorted(set(int(i) for i in (data.get("indices") or []) if isinstance(i, (int, str)) and str(i).isdigit()), reverse=True)
-    from vdjfolder import normalize_path, remove_paths_from_vdjfolder_content
+    from vdjfolder import normalize_path, remove_paths_from_vdjfolder_content, path_match_keys
     paths_to_remove = set()
     for i in indices:
         if 0 <= i < len(st.songs):
             p = (st.songs[i].get("FilePath") or "").strip()
             if p:
-                paths_to_remove.add(normalize_path(p))
+                paths_to_remove.update(path_match_keys(p, st.songs[i]))
     vdj_refs_all = trash.capture_vdjfolder_removals(paths_to_remove) if paths_to_remove else []
     indices_asc = sorted(indices)
     for i in indices_asc:
@@ -4644,14 +4708,48 @@ def api_tidal_credentials_info():
         cred_path = str(Path.home() / ".config" / "njr" / "tidal-credentials.json")
         return jsonify({
             'configured': has,
-            'hint': 'Utwórz aplikację na developer.tidal.com, pobierz client_id i client_secret, zapisz w ' + cred_path + ' jako {"client_id":"...","client_secret":"..."}',
+            'redirect_uri_hint': _tidal_redirect_uri() if has else None,
+            'hint': 'Utwórz aplikację na developer.tidal.com, pobierz client_id i client_secret, zapisz w ' + cred_path + ' jako {"client_id":"...","client_secret":"..."}. W aplikacji Tidal dodaj Redirect URI: http://127.0.0.1:5050/tidal-callback (oraz ten sam z aktualnym portem, jeśli ≠ 5050).',
         })
     except ImportError:
         return jsonify({'configured': False, 'hint': 'Moduł tidal_auth niedostępny'})
 
 
-# Tidal OAuth – stan oczekujących autoryzacji (state -> code_verifier)
+# Tidal OAuth – stan oczekujących autoryzacji (state -> code_verifier, także na dysku)
 _tidal_pending_auth: dict[str, str] = {}
+
+
+def _tidal_redirect_uri() -> str:
+    return request.url_root.rstrip('/') + '/tidal-callback'
+
+
+@app.route('/api/tidal-refresh', methods=['POST'])
+def api_tidal_refresh():
+    """Odświeża token Tidal bez logowania w przeglądarce."""
+    try:
+        from tidal_auth import refresh_access_token
+        ok, err = refresh_access_token()
+        if ok:
+            return jsonify({'ok': True})
+        return jsonify({'ok': False, 'error': err or 'Nie udało się odświeżyć tokena'}), 400
+    except ImportError:
+        return jsonify({'ok': False, 'error': 'Moduł tidal_auth niedostępny'}), 500
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/tidal-disconnect', methods=['POST'])
+def api_tidal_disconnect():
+    """Usuwa zapisany token Tidal przed ponownym logowaniem."""
+    try:
+        from tidal_auth import disconnect_tidal
+        disconnect_tidal()
+        _tidal_pending_auth.clear()
+        return jsonify({'ok': True})
+    except ImportError:
+        return jsonify({'ok': False, 'error': 'Moduł tidal_auth niedostępny'}), 500
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/tidal-auth-url', methods=['GET'])
@@ -4661,14 +4759,27 @@ def api_tidal_auth_url():
     User otwiera URL w przeglądarce, loguje się, callback zapisze token.
     """
     try:
-        from tidal_auth import get_authorize_url
-        base = request.url_root.rstrip('/')
-        redirect_uri = base + '/tidal-callback'
+        from tidal_auth import get_authorize_url, save_pending_auth
+        redirect_uri = _tidal_redirect_uri()
         url, state, verifier, err = get_authorize_url(redirect_uri)
         if err:
             return jsonify({'error': err}), 400
         _tidal_pending_auth[state] = verifier
-        return jsonify({'url': url, 'state': state})
+        save_pending_auth(state, verifier)
+        host = request.host or ''
+        port_warning = None
+        if host and not host.endswith(':5050'):
+            port_warning = (
+                f'Aplikacja działa na porcie innym niż 5050 ({host}). '
+                f'W developer.tidal.com dodaj Redirect URI: {redirect_uri} '
+                f'(błąd 11102 = niezgodny redirect URI).'
+            )
+        return jsonify({
+            'url': url,
+            'state': state,
+            'redirect_uri': redirect_uri,
+            'port_warning': port_warning,
+        })
     except ImportError:
         return jsonify({'error': 'Moduł tidal_auth niedostępny'}), 500
     except Exception as e:
@@ -4690,11 +4801,16 @@ def tidal_callback():
         return '<html><body style="font-family:sans-serif;padding:20px;"><h2>Brak kodu</h2><p>Nie otrzymano kodu autoryzacji.</p><p><a href="/">Wróć do aplikacji</a></p></body></html>', 400
     verifier = _tidal_pending_auth.pop(state, None)
     if not verifier:
+        try:
+            from tidal_auth import pop_pending_auth
+            verifier = pop_pending_auth(state)
+        except ImportError:
+            verifier = None
+    if not verifier:
         return '<html><body style="font-family:sans-serif;padding:20px;"><h2>Nieznany state</h2><p>Sesja wygasła. Kliknij „Połącz z Tidal” ponownie.</p><p><a href="/">Wróć do aplikacji</a></p></body></html>', 400
     try:
         from tidal_auth import exchange_code_for_token
-        base = request.url_root.rstrip('/')
-        redirect_uri = base + '/tidal-callback'
+        redirect_uri = _tidal_redirect_uri()
         ok, err = exchange_code_for_token(code, verifier, redirect_uri)
         if ok:
             return '''<html><body style="font-family:sans-serif;padding:20px;background:#0c0c0e;color:#e4e4e7;text-align:center;">
@@ -5588,33 +5704,11 @@ def api_merge_duplicate():
     if np_remove == np_keep:
         return jsonify({'error': 'Ta sama ścieżka – nie ma co scalać'}), 400
 
-    # W vdjfolder: zamień path_remove na path_keep
-    updated_folders = 0
-    if st.vdjfolders:
-        import xml.etree.ElementTree as ET
-        new_vdjfolders = {}
-        for rel_path, content in st.vdjfolders.items():
-            try:
-                root = ET.fromstring(content)
-                if root.tag != "VirtualFolder":
-                    new_vdjfolders[rel_path] = content
-                    continue
-                changed = False
-                for song in root.findall("song"):
-                    p = song.get("path", "")
-                    if normalize_path(p) == np_remove:
-                        song.set("path", path_keep)
-                        changed = True
-                if changed:
-                    out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
-                    new_vdjfolders[rel_path] = out
-                    updated_folders += 1
-                else:
-                    new_vdjfolders[rel_path] = content
-            except ET.ParseError:
-                new_vdjfolders[rel_path] = content
-        st.vdjfolders.clear()
-        st.vdjfolders.update(new_vdjfolders)
+    sync_stats = _sync_vdjfolder_paths([{
+        'oldPath': path_remove,
+        'newPath': path_keep,
+        'oldIdx': remove_idx,
+    }])
 
     # Usuń rekord removeIdx
     st.songs.pop(remove_idx)
@@ -5624,7 +5718,9 @@ def api_merge_duplicate():
         'ok': True,
         'removed_idx': remove_idx,
         'kept_idx': new_keep_idx,
-        'playlists_updated': updated_folders,
+        'playlists_updated': sync_stats.get('folders_changed', 0),
+        'refs_updated': sync_stats.get('refs_updated', 0),
+        'vdjfolders_sync': sync_stats,
         'count': len(st.songs),
     })
 
@@ -5657,7 +5753,7 @@ def api_merge_duplicate_group():
 
     from vdjfolder import normalize_path
     np_keep = normalize_path(path_keep)
-    total_updated = 0
+    total_sync = {'folders_changed': 0, 'refs_updated': 0}
     actually_removed = 0
 
     # Sortuj malejąco, żeby przy usuwaniu nie przesuwać indeksów
@@ -5668,39 +5764,24 @@ def api_merge_duplicate_group():
         if not path_remove:
             st.songs.pop(remove_idx)
             actually_removed += 1
+            if keep_idx > remove_idx:
+                keep_idx -= 1
             continue
         np_remove = normalize_path(path_remove)
         if np_remove == np_keep:
             st.songs.pop(remove_idx)
             actually_removed += 1
+            if keep_idx > remove_idx:
+                keep_idx -= 1
             continue
 
-        # Zamień w vdjfolder
-        if st.vdjfolders:
-            import xml.etree.ElementTree as ET
-            new_vdjfolders = {}
-            for rel_path, content in st.vdjfolders.items():
-                try:
-                    root = ET.fromstring(content)
-                    if root.tag != "VirtualFolder":
-                        new_vdjfolders[rel_path] = content
-                        continue
-                    changed = False
-                    for song in root.findall("song"):
-                        p = song.get("path", "")
-                        if normalize_path(p) == np_remove:
-                            song.set("path", path_keep)
-                            changed = True
-                    if changed:
-                        out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
-                        new_vdjfolders[rel_path] = out
-                        total_updated += 1
-                    else:
-                        new_vdjfolders[rel_path] = content
-                except ET.ParseError:
-                    new_vdjfolders[rel_path] = content
-            st.vdjfolders.clear()
-            st.vdjfolders.update(new_vdjfolders)
+        stats = _sync_vdjfolder_paths([{
+            'oldPath': path_remove,
+            'newPath': path_keep,
+            'oldIdx': remove_idx,
+        }])
+        total_sync['folders_changed'] += stats.get('folders_changed', 0)
+        total_sync['refs_updated'] += stats.get('refs_updated', 0)
 
         st.songs.pop(remove_idx)
         actually_removed += 1
@@ -5710,12 +5791,15 @@ def api_merge_duplicate_group():
     return jsonify({
         'ok': True,
         'removed': actually_removed,
-        'playlists_updated': total_updated,
+        'kept_idx': keep_idx,
+        'playlists_updated': total_sync.get('folders_changed', 0),
+        'refs_updated': total_sync.get('refs_updated', 0),
+        'vdjfolders_sync': total_sync,
         'count': len(st.songs),
     })
 
 
-# Typowe sekwencje mojibake (UTF-8 odczytany jako Latin-1/CP1252) → poprawne znaki
+# Typowe sekwencje mojibake
 # Kolejność: dłuższe sekwencje przed krótszymi (np. Ã³ przed Ã)
 # ¿ (U+00BF) – ż w ISO-8859-2 odczytane jako Latin-1 (np. "już" → "ju¿")
 _MOJIBAKE_REPLACEMENTS = [

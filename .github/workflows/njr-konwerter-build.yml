@@ -313,6 +313,20 @@ jobs:
           find release-assets -type f -exec cp -v {} flat/ \;
           ls -la flat
 
+      - name: Wersja i walidacja assetów
+        id: ver
+        run: |
+          VERSION="$(tr -d ' \t\r\n' < VERSION)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          shopt -s nullglob
+          files=(flat/*)
+          echo "Pliki do wgrania: ${#files[@]}"
+          ls -la flat/ || true
+          if [ "${#files[@]}" -lt 3 ]; then
+            echo "::error::Oczekiwano co najmniej 3 plików (Win + 2× Mac), jest ${#files[@]}. Sprawdź artefakty build."
+            exit 1
+          fi
+
       - name: Ustal tag GitHub Release
         id: rel
         shell: bash
@@ -354,7 +368,61 @@ jobs:
           pathlib.Path("release-notes.md").write_text(body, encoding="utf-8")
           print("Release notes OK, bytes:", pathlib.Path("release-notes.md").stat().st_size)
           PY
-          ls -la flat/
+
+      - name: Usuń istniejące assety tej wersji (nadpisanie przy re-run)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.rel.outputs.tag }}
+          BUILD_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 <<'PY'
+          import json, os, re, subprocess, sys, urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          version = os.environ["BUILD_VERSION"]
+          token = os.environ["GH_TOKEN"]
+          pat = re.compile(rf"NJR-konwerter-{re.escape(version)}-")
+
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+              headers={
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "njr-konwerter-ci",
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  release = json.loads(resp.read().decode())
+          except urllib.error.HTTPError as e:
+              if e.code == 404:
+                  print(f"Release {tag} nie istnieje jeszcze — pomijam kasowanie assetów.")
+                  sys.exit(0)
+              raise
+
+          deleted = 0
+          for asset in release.get("assets") or []:
+              name = asset.get("name") or ""
+              if not pat.search(name):
+                  continue
+              aid = asset.get("id")
+              print(f"Usuwam stary asset: {name} ({aid})")
+              del_req = urllib.request.Request(
+                  f"https://api.github.com/repos/{repo}/releases/assets/{aid}",
+                  method="DELETE",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "User-Agent": "njr-konwerter-ci",
+                  },
+              )
+              with urllib.request.urlopen(del_req, timeout=60):
+                  pass
+              deleted += 1
+          print(f"Usunięto {deleted} assetów wersji {version}.")
+          PY
 
       - uses: softprops/action-gh-release@v2
         with:

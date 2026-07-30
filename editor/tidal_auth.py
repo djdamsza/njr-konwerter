@@ -21,6 +21,9 @@ from typing import Optional
 
 from ssl_utils import urlopen
 
+TIDAL_OAUTH_SCOPE = "user.read playlists.read"
+_PENDING_AUTH_TTL_SEC = 600
+
 
 def _load_credentials() -> tuple[str, str]:
     """Zwraca (client_id, client_secret). Priorytet: env > plik. Brak domyślnych – wymagane developer.tidal.com."""
@@ -56,10 +59,68 @@ def has_tidal_credentials() -> bool:
     return bool(cid and csec)
 
 
-def _token_path() -> Path:
+def _config_dir() -> Path:
     d = Path.home() / ".config" / "njr"
     d.mkdir(parents=True, exist_ok=True)
-    return d / "tidal-token.json"
+    return d
+
+
+def _token_path() -> Path:
+    return _config_dir() / "tidal-token.json"
+
+
+def _pending_auth_path() -> Path:
+    return _config_dir() / "tidal-oauth-pending.json"
+
+
+def save_pending_auth(state: str, verifier: str) -> None:
+    """Zapisuje PKCE verifier na dysk — callback działa po restarcie serwera."""
+    now = time.time()
+    data: dict = {}
+    p = _pending_auth_path()
+    if p.exists():
+        try:
+            with open(p, encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, dict):
+                data = {
+                    k: v for k, v in raw.items()
+                    if isinstance(v, dict) and float(v.get("expires", 0)) > now
+                }
+        except Exception:
+            data = {}
+    data[state] = {"verifier": verifier, "expires": now + _PENDING_AUTH_TTL_SEC}
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def pop_pending_auth(state: str) -> Optional[str]:
+    """Pobiera i usuwa verifier dla danego state."""
+    p = _pending_auth_path()
+    if not p.exists():
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            return None
+        entry = raw.pop(state, None)
+        now = time.time()
+        cleaned = {
+            k: v for k, v in raw.items()
+            if isinstance(v, dict) and float(v.get("expires", 0)) > now
+        }
+        if cleaned:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(cleaned, f)
+        elif p.exists():
+            p.unlink(missing_ok=True)
+        if isinstance(entry, dict):
+            if float(entry.get("expires", 0)) > now:
+                return entry.get("verifier")
+    except Exception:
+        pass
+    return None
 
 
 def _load_token() -> Optional[dict]:
@@ -100,7 +161,7 @@ def _refresh_token(refresh: str) -> Optional[dict]:
             "client_id": cid,
             "refresh_token": refresh,
             "grant_type": "refresh_token",
-            "scope": "user.read playlists.read",
+            "scope": TIDAL_OAUTH_SCOPE,
         }).encode()
         req = urllib.request.Request(
             "https://auth.tidal.com/v1/oauth2/token",
@@ -144,13 +205,11 @@ def get_authorize_url(redirect_uri: str) -> tuple[Optional[str], Optional[str], 
         return None, None, None, "Brak kluczy Tidal. Utwórz ~/.config/njr/tidal-credentials.json z client_id i client_secret z developer.tidal.com"
     verifier, challenge = _pkce_verifier_challenge()
     state = secrets.token_urlsafe(16)
-    # playlists.read wystarczy dla openapi.tidal.com; r_usr usunięty (może być deprecated)
-    scope = "user.read playlists.read"
     params = {
         "response_type": "code",
         "client_id": cid,
         "redirect_uri": redirect_uri,
-        "scope": scope,
+        "scope": TIDAL_OAUTH_SCOPE,
         "code_challenge_method": "S256",
         "code_challenge": challenge,
         "state": state,
@@ -173,7 +232,7 @@ def exchange_code_for_token(code: str, code_verifier: str, redirect_uri: str) ->
             "code": code,
             "redirect_uri": redirect_uri,
             "code_verifier": code_verifier,
-            "scope": "user.read playlists.read r_usr",
+            "scope": TIDAL_OAUTH_SCOPE,
         }).encode()
         req = urllib.request.Request(
             "https://auth.tidal.com/v1/oauth2/token",
@@ -201,6 +260,32 @@ def exchange_code_for_token(code: str, code_verifier: str, redirect_uri: str) ->
             return False, f"HTTP {e.code}: {msg}"
         except Exception:
             return False, f"HTTP {e.code}: {body or str(e)}"
+    except Exception as e:
+        return False, str(e)
+
+
+def disconnect_tidal() -> None:
+    """Usuwa zapisany token — wymusza ponowne logowanie OAuth."""
+    p = _token_path()
+    if p.exists():
+        p.unlink(missing_ok=True)
+
+
+def refresh_access_token() -> tuple[bool, Optional[str]]:
+    """Odświeża token refresh_token bez logowania w przeglądarce."""
+    p = _token_path()
+    if not p.exists():
+        return False, "Brak zapisanego tokena"
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        refresh = (data.get("refreshToken") or "").strip()
+        if not refresh:
+            return False, "Brak refresh tokena — wymagane ponowne logowanie"
+        refreshed = _refresh_token(refresh)
+        if refreshed:
+            return True, None
+        return False, "Odświeżenie tokena nie powiodło się — zaloguj ponownie"
     except Exception as e:
         return False, str(e)
 

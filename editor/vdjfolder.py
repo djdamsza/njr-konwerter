@@ -66,6 +66,232 @@ def normalize_path(p: str) -> str:
     return p
 
 
+def path_match_keys(path: str, song: Optional[dict] = None) -> Set[str]:
+    """
+    Wszystkie znormalizowane klucze ścieżki do dopasowania w .vdjfolder
+    (np. netsearch://td123 ↔ td123, Link.NetSearch).
+    """
+    from vdj_streaming import extract_tidal_id
+
+    keys: Set[str] = set()
+    if path and path.strip():
+        keys.add(normalize_path(path))
+    tid = extract_tidal_id(path) if path else None
+    link_tid = None
+    if song:
+        link = (song.get("Link.NetSearch") or "").strip()
+        if link:
+            link_tid = extract_tidal_id(link) or (link if link.isdigit() else None)
+    if not tid and link_tid:
+        tid = link_tid
+
+    tids = set()
+    if tid:
+        tids.add(tid)
+    if link_tid:
+        tids.add(link_tid)
+    for one_tid in tids:
+        for alias in (
+            f"td{one_tid}",
+            f"netsearch://td{one_tid}",
+            f"streaming://tidal/{one_tid}",
+            f"tidal:tracks:{one_tid}",
+        ):
+            keys.add(normalize_path(alias))
+    return keys
+
+
+def build_path_replacement_lookup(
+    old_path: str,
+    new_path: str,
+    *,
+    old_song: Optional[dict] = None,
+) -> Dict[str, str]:
+    """Mapa starych kluczy ścieżki → nowa kanoniczna ścieżka (do sync playlist)."""
+    if not old_path or not new_path:
+        return {}
+    new_path = new_path.strip()
+    if normalize_path(old_path) == normalize_path(new_path):
+        return {}
+    return {k: new_path for k in path_match_keys(old_path, old_song)}
+
+
+def merge_path_replacement_lookups(*lookups: Dict[str, str]) -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    for lu in lookups:
+        merged.update(lu)
+    return merged
+
+
+def _update_vdjfolder_song_path(song_elem: ET.Element, new_path: str) -> None:
+    """Ustawia path (+ netsearchId) na elemencie <song> w .vdjfolder."""
+    from vdj_streaming import extract_tidal_id, is_tidal_path
+
+    song_elem.set("path", new_path)
+    tid = extract_tidal_id(new_path)
+    if tid and (is_tidal_path(new_path) or new_path.lower().endswith(".vdjcache")):
+        song_elem.set("netsearchId", f"td{tid}")
+    elif "netsearchId" in song_elem.attrib:
+        del song_elem.attrib["netsearchId"]
+
+
+def replace_paths_in_vdjfolder_content(
+    content: str,
+    lookup_map: Dict[str, str],
+) -> Tuple[str, int]:
+    """
+    Zamienia ścieżki w jednym pliku .vdjfolder.
+    lookup_map: znormalizowany stary klucz → nowa ścieżka (kanoniczna).
+    """
+    if not content or not lookup_map:
+        return content, 0
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return content, 0
+    if root.tag != "VirtualFolder":
+        return content, 0
+
+    from vdj_streaming import extract_tidal_id
+
+    modified = 0
+    for song_elem in root.findall("song"):
+        p = (song_elem.get("path") or "").strip()
+        np = normalize_path(p) if p else ""
+        new_path = lookup_map.get(np) if np else None
+        if not new_path:
+            ns = (song_elem.get("netsearchId") or song_elem.get("netsearchid") or "").strip()
+            tid = extract_tidal_id(ns) or (ns[2:] if ns.lower().startswith("td") and ns[2:].isdigit() else None)
+            if tid:
+                for alias in (
+                    normalize_path(f"td{tid}"),
+                    normalize_path(f"netsearch://td{tid}"),
+                ):
+                    new_path = lookup_map.get(alias)
+                    if new_path:
+                        break
+        if new_path and normalize_path(new_path) != np:
+            _update_vdjfolder_song_path(song_elem, new_path)
+            modified += 1
+    if not modified:
+        return content, 0
+    out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
+    return out, modified
+
+
+def replace_paths_in_vdjfolders(
+    vdjfolders: Dict[str, str],
+    lookup_map: Dict[str, str],
+) -> Tuple[Dict[str, str], int, int]:
+    """
+    Zamienia ścieżki we wszystkich .vdjfolder.
+    Zwraca (nowy słownik, liczba zmienionych plików, liczba zamienionych wpisów).
+    """
+    if not vdjfolders or not lookup_map:
+        return vdjfolders, 0, 0
+    out: Dict[str, str] = {}
+    folders_changed = 0
+    refs_updated = 0
+    for rel_path, content in vdjfolders.items():
+        new_content, n = replace_paths_in_vdjfolder_content(content, lookup_map)
+        out[rel_path] = new_content
+        if n:
+            folders_changed += 1
+            refs_updated += n
+    return out, folders_changed, refs_updated
+
+
+def _song_path_priority(song: dict) -> int:
+    """Wyższy = lepszy kanoniczny wpis przy tym samym Tidal ID."""
+    from vdj_streaming import is_tidal_path
+
+    fp = (song.get("FilePath") or "").strip()
+    score = len(song.get("_children_xml") or [])
+    if fp and not is_tidal_path(fp) and not fp.lower().endswith(".vdjcache"):
+        score += 200
+    elif fp and fp.lower().endswith(".vdjcache"):
+        score += 100
+    elif fp:
+        score += 10
+    return score
+
+
+def build_tidal_id_to_canonical_path(songs: List[dict]) -> Dict[str, str]:
+    """Tidal track ID → najlepsza ścieżka z bazy (preferuj lokalne pliki)."""
+    from vdj_streaming import extract_tidal_id
+
+    out: Dict[str, str] = {}
+    scores: Dict[str, int] = {}
+    for s in songs or []:
+        fp = (s.get("FilePath") or "").strip()
+        if not fp:
+            continue
+        sc = _song_path_priority(s)
+        tids: Set[str] = set()
+        tid_fp = extract_tidal_id(fp)
+        if tid_fp:
+            tids.add(tid_fp)
+        link = (s.get("Link.NetSearch") or "").strip()
+        if link:
+            tid_link = extract_tidal_id(link) or (link if link.isdigit() else None)
+            if tid_link:
+                tids.add(tid_link)
+        for tid in tids:
+            if tid not in out or sc > scores.get(tid, -1):
+                out[tid] = fp
+                scores[tid] = sc
+    return out
+
+
+def repair_vdjfolder_paths_from_database(
+    songs: List[dict],
+    vdjfolders: Dict[str, str],
+) -> Tuple[Dict[str, str], int, int]:
+    """
+    Naprawia martwe referencje w playlistach: dopasowuje po Tidal ID i FilePath z bazy.
+    Przed eksportem / po zmianach ścieżek w database.xml.
+    """
+    if not vdjfolders or not songs:
+        return vdjfolders, 0, 0
+
+    from vdj_streaming import extract_tidal_id, is_tidal_path
+
+    valid = {normalize_path((s.get("FilePath") or "").strip()) for s in songs if s.get("FilePath")}
+    valid.discard("")
+    tid_to_path = build_tidal_id_to_canonical_path(songs)
+    lookup: Dict[str, str] = {}
+
+    for rel_path, content in vdjfolders.items():
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        if root.tag != "VirtualFolder":
+            continue
+        for song_elem in root.findall("song"):
+            p = (song_elem.get("path") or "").strip()
+            if not p or p.startswith("search://"):
+                continue
+            np = normalize_path(p)
+            if np in valid:
+                continue
+            tid = extract_tidal_id(p)
+            if not tid:
+                ns = (song_elem.get("netsearchId") or "").strip()
+                tid = extract_tidal_id(ns) or (ns[2:] if ns.lower().startswith("td") and ns[2:].isdigit() else None)
+            canonical = tid_to_path.get(tid) if tid else None
+            if not canonical:
+                continue
+            if normalize_path(canonical) == np:
+                continue
+            for key in path_match_keys(p):
+                lookup[key] = canonical
+
+    if not lookup:
+        return vdjfolders, 0, 0
+    return replace_paths_in_vdjfolders(vdjfolders, lookup)
+
+
 def _tag_for_filter(tag: str) -> str:
     """Tag w formacie filtra (bez #, uppercase dla has tag)."""
     t = tag.strip().lstrip('#')

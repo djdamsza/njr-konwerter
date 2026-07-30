@@ -93,6 +93,9 @@ def main():
         threading.Thread(target=_open, daemon=True).start()
     if port != 5050:
         print(f'NJR konwerter: {url} (port 5050 zajęty)')
+        print('UWAGA Tidal OAuth: dodaj w developer.tidal.com Redirect URI:')
+        print(f'  {url}/tidal-callback')
+        print('(błąd 11102 na stronie logowania = brak tego URI w aplikacji Tidal)')
     else:
         print(f'NJR konwerter: {url}')
     if not open_browser:
