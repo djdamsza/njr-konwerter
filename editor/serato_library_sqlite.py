@@ -581,6 +581,109 @@ def update_local_asset_rating(
         con.close()
 
 
+def update_local_asset_metadata(
+    file_path: str,
+    *,
+    title: str = "",
+    artist: str = "",
+    album: str = "",
+    genre: str = "",
+    key: str = "",
+    bpm: float = 0.0,
+    rating_stars: int = 0,
+    comment: str = "",
+    year: int = 0,
+    length_sec: float = 0.0,
+    remixer: str = "",
+    track_number: int = 0,
+    library_dir: Optional[Path] = None,
+) -> dict:
+    """Uzupełnia kolumny asset w root.sqlite (Serato 4 czyta listę z SQLite, nie z tagów pliku)."""
+    from tag_writer import strip_rating_hack_from_comment
+
+    pid = _portable_id_from_local_path(file_path)
+    if not pid:
+        return {"ok": False, "reason": "bad_path"}
+    lib = _library_dir(library_dir)
+    db_path = lib / "root.sqlite"
+    if not db_path.is_file():
+        return {"ok": False, "reason": "no_root_sqlite"}
+    stars = max(0, min(5, int(rating_stars or 0)))
+    rating_f = (stars / 5.0) if stars > 0 else None
+    clean_cmt = strip_rating_hack_from_comment(comment or "")
+    length_ms = int(length_sec * 1000) if length_sec and length_sec > 0 else None
+    now = int(time.time())
+    try:
+        con = sqlite3.connect(str(db_path), timeout=10)
+    except sqlite3.Error as e:
+        return {"ok": False, "reason": str(e)}
+    try:
+        row = con.execute(
+            "SELECT id FROM asset WHERE portable_id=? COLLATE NOCASE "
+            "OR file_name=? LIMIT 1",
+            (pid, Path(file_path).name),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "reason": "asset_not_found"}
+        aid = row[0]
+        sets = ["revision=revision+1", "time_modified=?", "is_stale=0"]
+        params: list = [now]
+        if title:
+            sets.append("name=?")
+            params.append(title)
+        if artist:
+            sets.append("artist=?")
+            params.append(artist)
+        if album:
+            sets.append("album=?")
+            params.append(album)
+        if genre:
+            sets.append("genre=?")
+            params.append(genre)
+        if key:
+            sets.append("key=?")
+            params.append(key)
+        if bpm and bpm > 0:
+            sets.append("bpm=?")
+            params.append(float(bpm))
+        if rating_f is not None:
+            sets.append("rating=?")
+            params.append(rating_f)
+        if clean_cmt is not None:
+            sets.append("comments=?")
+            params.append(clean_cmt)
+        if year and year > 0:
+            sets.append("year=?")
+            params.append(int(year))
+        if length_ms is not None:
+            sets.extend(["length_ms=?", "length_sec=?"])
+            params.extend([length_ms, int(length_sec)])
+        if remixer:
+            sets.append("remixer=?")
+            params.append(remixer)
+        if track_number and track_number > 0:
+            sets.append("track_number=?")
+            params.append(int(track_number))
+        params.append(aid)
+        con.execute(f"UPDATE asset SET {', '.join(sets)} WHERE id=?", params)
+        space_id = _root_space_id(con)
+        con.execute(
+            "UPDATE space SET revision=revision+1 WHERE id=?",
+            (space_id,),
+        )
+        con.execute(
+            "UPDATE master SET revision=revision+1, last_sync_time=?",
+            (now,),
+        )
+        con.commit()
+        return {"ok": True, "asset_id": aid}
+    except sqlite3.Error as e:
+        con.rollback()
+        return {"ok": False, "reason": str(e)}
+    finally:
+        con.close()
+
+
 def _root_space_id(con: sqlite3.Connection) -> int:
     row = con.execute(
         "SELECT id FROM space WHERE name='Serato Library' COLLATE NOCASE LIMIT 1"

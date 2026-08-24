@@ -125,18 +125,39 @@ def apply_vdj_metadata_from_song(
     )
     out["cues"] = msg_cues if ok_cues else f"skip:{msg_cues}"
 
-    # Library SQLite: ★ w kolumnie Rating (0.0–1.0) + czysty comment
     stars = unified_rating_to_stars(track.rating or 0)
-    if stars > 0 or (track.comment or ""):
-        try:
-            from serato_library_sqlite import update_local_asset_rating
+    try:
+        from serato_library_sqlite import update_local_asset_metadata
+        from serato_smart_crate import build_serato_genre_field
 
-            sq = update_local_asset_rating(
-                p, stars, comment=track.comment or ""
-            )
-            out["sqlite_rating"] = sq
-        except Exception as e:
-            out["sqlite_rating"] = {"ok": False, "reason": str(e)}
+        genre_str = build_serato_genre_field(
+            song.get("Tags.Genre") or "",
+            song.get("Tags.User1") or "",
+            song.get("Tags.User2") or "",
+        ) or (track.genre or "")
+        tn = 0
+        try:
+            tn = int(float(song.get("Tags.TrackNumber") or 0))
+        except (TypeError, ValueError):
+            tn = 0
+        sq = update_local_asset_metadata(
+            p,
+            title=track.title or "",
+            artist=track.artist or "",
+            album=track.album or "",
+            genre=genre_str,
+            key=track.key or "",
+            bpm=float(track.bpm or 0),
+            rating_stars=stars,
+            comment=track.comment or "",
+            year=int(track.year or 0),
+            length_sec=float(track.duration or 0),
+            remixer=(song.get("Tags.Remix") or "").strip(),
+            track_number=tn,
+        )
+        out["sqlite"] = sq
+    except Exception as e:
+        out["sqlite"] = {"ok": False, "reason": str(e)}
     return out
 
 

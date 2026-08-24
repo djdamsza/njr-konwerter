@@ -497,6 +497,17 @@ def _build_otrk_payload(s: dict, path: str, now: int) -> bytes:
     except (TypeError, ValueError):
         pass
     key_str = (s.get("Tags.Key") or "").strip()
+    if not bpm or not key_str:
+        try:
+            from vdj_adapter import _parse_scan_bpm, _parse_scan_key
+
+            children = s.get("_children_xml") or []
+            if not bpm:
+                bpm = _parse_scan_bpm(children) or 0.0
+            if not key_str:
+                key_str = _parse_scan_key(children) or ""
+        except Exception:
+            pass
     duration_sec = 0.0
     try:
         duration_sec = float(s.get("Infos.SongLength") or s.get("Infos.Duration") or 0)
@@ -508,6 +519,12 @@ def _build_otrk_payload(s: dict, path: str, now: int) -> bytes:
         _write_serato_record(otrk, "tsng", _encode_utf16be(title))
     if artist:
         _write_serato_record(otrk, "tart", _encode_utf16be(artist))
+    album = (s.get("Tags.Album") or "").strip()
+    if album:
+        _write_serato_record(otrk, "talb", _encode_utf16be(album))
+    remix = (s.get("Tags.Remix") or "").strip()
+    if remix:
+        _write_serato_record(otrk, "trem", _encode_utf16be(remix))
     if bpm > 0:
         _write_serato_record(otrk, "tbpm", _encode_utf16be(f"{bpm:.2f}"))
     if key_str:
@@ -543,7 +560,6 @@ def _build_otrk_payload(s: dict, path: str, now: int) -> bytes:
     comment = _get_comment_from_song(s)
     # Rating NIE idzie do tcom — Serato czyta ★ z tagów pliku (POPM / rate) i Library SQLite.
     if comment:
-        # usuń ewentualny stary hack „Rating: N” z komentarza
         c = comment.strip()
         if " | Rating: " in c:
             c = c.split(" | Rating: ", 1)[0].strip()
@@ -745,6 +761,94 @@ def merge_vdj_tracks_into_serato_database(
     result["backup"] = str(bak)
     result["total_after"] = len(_database_path_keys(merged))
     return result
+
+
+def upsert_otrks_in_serato_database(
+    items: list[tuple[dict, str]],
+    serato_dir: Optional[Path] = None,
+) -> dict:
+    """
+    Podmienia lub dodaje rekordy otrk w database V2 dla lokalnych plików.
+    items: [(vdj_song, local_path), ...]
+    """
+    import time
+    from datetime import datetime
+
+    base = Path(serato_dir) if serato_dir else Path.home() / "Music" / "_Serato_"
+    db_file = base / "database V2"
+    if not db_file.is_file():
+        db_file = base / "Database V2"
+    if not db_file.is_file():
+        return {"ok": False, "error": f"Brak database V2 w {base}"}
+
+    now = int(time.time())
+    wanted: dict[str, bytes] = {}
+    for song, path in items or []:
+        p = (path or "").strip()
+        if not p or not Path(p).is_file():
+            continue
+        rel = _path_to_serato_relative(p, None, path_style="relative")
+        if not rel:
+            continue
+        key = serato_path_identity_key(rel)
+        if not key:
+            continue
+        wanted[key] = _build_otrk_payload(song, rel, now)
+    if not wanted:
+        return {"ok": True, "replaced": 0, "added": 0}
+
+    raw = db_file.read_bytes()
+    fp = BytesIO(raw)
+    out = BytesIO()
+    replaced = 0
+    seen: set[str] = set()
+    while True:
+        header = fp.read(8)
+        if len(header) < 8:
+            break
+        name = header[:4].decode("ascii", errors="replace")
+        length = struct.unpack(">I", header[4:8])[0]
+        payload = fp.read(length)
+        if name != "otrk":
+            _write_serato_record(out, name, payload)
+            continue
+        rec_path = ""
+        inner = BytesIO(payload)
+        while True:
+            h2 = inner.read(8)
+            if len(h2) < 8:
+                break
+            n2 = h2[:4].decode("ascii", errors="replace")
+            l2 = struct.unpack(">I", h2[4:8])[0]
+            d2 = inner.read(l2)
+            if n2 in ("pfil", "ptrk"):
+                try:
+                    rec_path = d2.decode("utf-16-be").rstrip("\x00")
+                except UnicodeDecodeError:
+                    rec_path = ""
+                break
+        key = serato_path_identity_key(to_serato_relative_path(rec_path)) if rec_path else ""
+        if key and key in wanted:
+            _write_serato_record(out, "otrk", wanted[key])
+            seen.add(key)
+            replaced += 1
+        else:
+            _write_serato_record(out, name, payload)
+
+    added = 0
+    for key, payload in wanted.items():
+        if key in seen:
+            continue
+        _write_serato_record(out, "otrk", payload)
+        added += 1
+
+    if replaced or added:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = Path(str(db_file) + f".pre-upsert-meta-{stamp}.bak")
+        bak.write_bytes(raw)
+        db_file.write_bytes(out.getvalue())
+        return {"ok": True, "replaced": replaced, "added": added, "backup": str(bak)}
+    return {"ok": True, "replaced": 0, "added": 0}
 
 def normalize_and_dedupe_serato_library(
     serato_dir: Optional[Path] = None,
