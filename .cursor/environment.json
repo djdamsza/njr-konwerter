@@ -1,0 +1,17 @@
+{
+  "name": "NJR Konwerter",
+  "install": "sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv && cd editor && python3 -m venv .venv && . .venv/bin/activate && python -m pip install --upgrade pip && pip install -r requirements-dev.txt",
+  "terminals": [
+    {
+      "name": "njr-server",
+      "command": "cd editor && . .venv/bin/activate && NJR_NO_BROWSER=1 python launcher.py",
+      "description": "Flask backend + web UI (NJR konwerter). Serves http://127.0.0.1:5050"
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 5050
+    }
+  ]
+}
