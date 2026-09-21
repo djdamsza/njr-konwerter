@@ -6,6 +6,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EDITOR_DIR="$REPO_ROOT/editor"
 VENV_DIR="$EDITOR_DIR/.venv"
 
+# The default base image ships Python 3 but not the venv/ensurepip module.
+# Install it only when it is missing so the step stays idempotent and fast.
+if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y --no-install-recommends python3-venv
+fi
+
 cd "$EDITOR_DIR"
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
