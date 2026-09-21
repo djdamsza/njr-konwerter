@@ -203,25 +203,102 @@ def load_serato_crate(content: bytes, crate_name: str, drive_root: Optional[str]
     return Playlist(name=crate_name, track_ids=paths)
 
 
+def _serato_db_file(folder: Path) -> Optional[Path]:
+    for name in ("database V2", "Database V2", "DatabaseV2"):
+        f = folder / name
+        if f.is_file():
+            return f
+    return None
+
+
+def looks_like_serato_database_v2(content: bytes) -> bool:
+    """True gdy blob to database V2 (tag vrsn + tekst Database), nie .crate."""
+    if not content or len(content) < 12 or content[:4] != b"vrsn":
+        return False
+    try:
+        length = struct.unpack(">I", content[4:8])[0]
+        text = content[8 : 8 + min(length, 128)].decode("utf-16-be", errors="ignore").lower()
+        return "database" in text
+    except (struct.error, UnicodeDecodeError):
+        return False
+
+
+def default_serato_drive_root(serato_dir: Optional[Path] = None) -> str:
+    """Root woluminu do sklejania ścieżek względnych Serato (C:/ albo /)."""
+    p = Path(serato_dir) if serato_dir else Path.home()
+    raw = str(p).replace("\\", "/")
+    if len(raw) >= 2 and raw[1] == ":":
+        return raw[:2] + "/"
+    try:
+        s = str(p.expanduser().resolve()).replace("\\", "/")
+    except OSError:
+        s = raw
+    if len(s) >= 2 and s[1] == ":":
+        return s[:2] + "/"
+    return "/"
+
+
+def resolve_serato_library_dir(path: Optional[Path] = None) -> Optional[Path]:
+    """
+    Znajdź folder z plikiem database V2.
+    Akceptuje: plik database V2, folder _Serato_, folder nadrzędny (np. Music),
+    albo None = ~/Music/_Serato_.
+    Przy wskazanej ścieżce nie wraca do domyślnej biblioteki (ZIP / VDJ / Engine).
+    """
+    from library_paths import default_serato_dir
+
+    candidates: list[Path] = []
+    if path is None:
+        candidates.append(default_serato_dir())
+    else:
+        p = Path(path).expanduser()
+        if p.is_file():
+            try:
+                head = p.read_bytes()[:256]
+            except OSError:
+                head = b""
+            name = p.name.lower()
+            looks = looks_like_serato_database_v2(head) or (
+                "database v2" in name or name.replace(" ", "") == "databasev2"
+            )
+            if looks:
+                return p.parent
+            return None
+        candidates.append(p)
+        candidates.append(p / "_Serato_")
+
+    seen: set[str] = set()
+    for c in candidates:
+        try:
+            key = str(c)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        if _serato_db_file(c):
+            return c
+    return None
+
+
 def load_serato_folder(serato_path: Path, drive_root: Optional[str] = None) -> UnifiedDatabase:
     """
     Ładuje pełną bibliotekę Serato z folderu _Serato_.
-    serato_path: ścieżka do folderu _Serato_ (lub folderu nadrzędnego – szukamy _Serato_/database V2).
-    drive_root: root dysku (dla ścieżek względnych w DatabaseV2).
+    serato_path: folder _Serato_, folder nadrzędny, albo plik database V2.
+    drive_root: root dysku (C:/ albo /) – ścieżki w Database V2 są względne do woluminu.
     """
-    if not serato_path.is_dir():
-        serato_path = serato_path / "_Serato_"
-    db_file = serato_path / "database V2"
-    if not db_file.exists():
-        db_file = serato_path / "DatabaseV2"
-    if not db_file.exists():
+    resolved = resolve_serato_library_dir(Path(serato_path))
+    if not resolved:
+        return UnifiedDatabase(tracks=[], playlists=[], source="serato")
+    db_file = _serato_db_file(resolved)
+    if not db_file:
         return UnifiedDatabase(tracks=[], playlists=[], source="serato")
 
     content = db_file.read_bytes()
-    root = drive_root or str(serato_path.parent)
+    root = drive_root or default_serato_drive_root(resolved)
     db = load_serato_database_v2(content, drive_root=root)
 
-    subcrates = serato_path / "Subcrates"
+    subcrates = resolved / "Subcrates"
     if subcrates.is_dir():
         for cf in subcrates.glob("*.crate"):
             try:

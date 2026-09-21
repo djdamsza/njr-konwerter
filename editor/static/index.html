@@ -601,11 +601,18 @@
     <main class="main-content">
       <div class="card-panel active" id="card-import">
   <div class="toolbar" id="importToolbar">
-    <input type="file" id="universalInput" accept=".zip,.xml,.djxml,.m.db,.nml,.db,.njr,*" style="display: none;" title="VDJ, Rekordbox, Serato, DJXML, Engine DJ, Traktor, zachowany postęp (.njr)">
-    <button id="importUniversalBtn" title="Otwórz dowolną bazę DJ – VDJ, RB, Serato, DJXML, Engine DJ, Traktor">Otwórz bazę</button>
+    <input type="file" id="universalInput" style="display: none;" title="VDJ, Rekordbox, Serato (database V2), DJXML, Engine DJ, Traktor, zachowany postęp (.njr)">
+    <button type="button" id="importUniversalBtn" title="Plik: ZIP VDJ, XML, NML, m.db, database V2, .njr">Otwórz plik</button>
+    <button type="button" id="importFolderBtn" title="Folder _Serato_, Music, VirtualDJ (database.xml) albo Engine Library">Otwórz folder</button>
+    <button type="button" id="importSeratoBtn" title="Wczytaj Music\_Serato_ z dysku — bez ZIP">Otwórz Serato</button>
     <span class="status" id="status">Nie załadowano</span>
     <span class="muted" id="saveReminder" style="font-size: 12px; margin-left: 8px; display: none;">Zmiany w pamięci – użyj „Eksport” na dole strony.</span>
   </div>
+  <p class="muted" id="importSeratoHint" style="font-size: 12px; margin: -8px 0 12px; padding: 0 4px;">
+    Serato: nie pakuj biblioteki do ZIP. Kliknij <strong>Otwórz Serato</strong>
+    albo <strong>Otwórz folder</strong> i wskaż <code>_Serato_</code> / <code>Music</code>
+    (plik <code>database V2</code> nie ma rozszerzenia — filtr „ZIP” go ukrywa).
+  </p>
 
   <div class="db-stats" id="dbStats" style="display: none;">
     <div class="db-stats-item">
@@ -2588,6 +2595,85 @@
 
     document.getElementById('importUniversalBtn').onclick = () => document.getElementById('universalInput').click();
 
+    async function applyLoadedLibrary(d) {
+      rbBetaActive = false;
+      const rbTools = document.getElementById('rbBetaTools');
+      if (rbTools) rbTools.style.display = 'none';
+      const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
+      setStatus(msg, 'loaded');
+      window.njrLibrarySource = d.source || '';
+      updateSeratoExportHref();
+      applyEngineMappingSuggestion(false);
+      (async () => {
+        try {
+          const d = await fetchJson(API + '/serato-drive-root-suggestion');
+          const rootEl = document.getElementById('seratoDriveRoot');
+          if (d.path && rootEl && !rootEl.value) rootEl.value = d.path;
+          const cratesEl = document.getElementById('seratoCratesOnly');
+          if (cratesEl && typeof d.recommendCratesOnly === 'boolean') {
+            cratesEl.checked = !!d.recommendCratesOnly;
+          }
+          const hint = document.getElementById('seratoExportHint');
+          if (hint) {
+            if (d.hasLibrary) {
+              hint.innerHTML = 'Wykryto <code>' + (d.seratoDir || '~/Music/_Serato_') + '</code> — eksport crates bez nadpisywania database V2.';
+            } else {
+              hint.innerHTML = 'Nie znaleziono lokalnej biblioteki Serato. Po eksporcie utwórz <code>~/Music/_Serato_/</code> i skopiuj Subcrates z ZIP.';
+            }
+          }
+          updateSeratoExportHref();
+        } catch (_) {
+          const hint = document.getElementById('seratoExportHint');
+          if (hint) hint.textContent = 'Folder Serato: ~/Music/_Serato_/ (wykrywanie automatyczne).';
+        }
+      })();
+      const vdjBtn = document.getElementById('exportVdjBtn');
+      if (vdjBtn) {
+        vdjBtn.textContent = 'Pobierz paczkę VDJ (.zip)';
+        vdjBtn.href = API + '/download';
+        vdjBtn.download = 'vdj-export.zip';
+      }
+      const plCount = d.playlists ?? d.vdjfolders ?? 0;
+      document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
+      document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');
+      const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML', folder_beta: 'RB Beta' };
+      document.getElementById('statsSource').textContent = srcNames[d.source] || d.source || '—';
+      document.getElementById('dbStats').style.display = 'flex';
+      updateTagList();
+      await doSearch();
+      refreshUndoButton();
+      refreshTrashBadge();
+    }
+
+    async function loadLibraryFromPath(path, extra) {
+      setStatus('Importowanie…', '');
+      const body = Object.assign({ path: path || '' }, extra || {});
+      const r = await fetch(API + '/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      await applyLoadedLibrary(d);
+    }
+
+    async function pickLibraryFolder() {
+      try {
+        const r = await fetch(API + '/pick-folder');
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.path) return d.path;
+        if (d.error) setStatus(d.error + ' — wklej ścieżkę ręcznie.', '');
+      } catch (_) {}
+      const typed = window.prompt(
+        'Wskaż folder biblioteki DJ.\n'
+        + 'Serato: Music\\_Serato_ albo Music (tam jest database V2).\n'
+        + 'VirtualDJ: folder z database.xml.\n'
+        + 'Engine DJ: Engine Library.'
+      );
+      return (typed || '').trim() || null;
+    }
+
     document.getElementById('universalInput').onchange = async (e) => {
       const f = e.target.files?.[0];
       if (!f) return;
@@ -2598,57 +2684,44 @@
         const r = await fetch(API + '/load-universal', { method: 'POST', body: fd });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.error || r.statusText);
-        rbBetaActive = false;
-        document.getElementById('rbBetaTools').style.display = 'none';
-        const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
-        setStatus(msg, 'loaded');
-        window.njrLibrarySource = d.source || '';
-        updateSeratoExportHref();
-        applyEngineMappingSuggestion(false);
-        (async () => {
-          try {
-            const d = await fetchJson(API + '/serato-drive-root-suggestion');
-            const rootEl = document.getElementById('seratoDriveRoot');
-            if (d.path && rootEl && !rootEl.value) rootEl.value = d.path;
-            const cratesEl = document.getElementById('seratoCratesOnly');
-            if (cratesEl && typeof d.recommendCratesOnly === 'boolean') {
-              cratesEl.checked = !!d.recommendCratesOnly;
-            }
-            const hint = document.getElementById('seratoExportHint');
-            if (hint) {
-              if (d.hasLibrary) {
-                hint.innerHTML = 'Wykryto <code>' + (d.seratoDir || '~/Music/_Serato_') + '</code> — eksport crates bez nadpisywania database V2.';
-              } else {
-                hint.innerHTML = 'Nie znaleziono lokalnej biblioteki Serato. Po eksporcie utwórz <code>~/Music/_Serato_/</code> i skopiuj Subcrates z ZIP.';
-              }
-            }
-            updateSeratoExportHref();
-          } catch (_) {
-            const hint = document.getElementById('seratoExportHint');
-            if (hint) hint.textContent = 'Folder Serato: ~/Music/_Serato_/ (wykrywanie automatyczne).';
-          }
-        })();
-        const vdjBtn = document.getElementById('exportVdjBtn');
-        if (vdjBtn) {
-          vdjBtn.textContent = 'Pobierz paczkę VDJ (.zip)';
-          vdjBtn.href = API + '/download';
-          vdjBtn.download = 'vdj-export.zip';
-        }
-        const plCount = d.playlists ?? d.vdjfolders ?? 0;
-        document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
-        document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');
-        const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML', folder_beta: 'RB Beta' };
-        document.getElementById('statsSource').textContent = srcNames[d.source] || d.source || '—';
-        document.getElementById('dbStats').style.display = 'flex';
-        updateTagList();
-        await doSearch();
-        refreshUndoButton();
-        refreshTrashBadge();
+        await applyLoadedLibrary(d);
       } catch (err) {
         setStatus('Błąd: ' + err.message, 'error');
       }
       e.target.value = '';
     };
+
+    const importFolderBtn = document.getElementById('importFolderBtn');
+    if (importFolderBtn) {
+      importFolderBtn.onclick = async () => {
+        try {
+          const path = await pickLibraryFolder();
+          if (!path) return;
+          await loadLibraryFromPath(path);
+        } catch (err) {
+          setStatus('Błąd: ' + err.message, 'error');
+        }
+      };
+    }
+
+    const importSeratoBtn = document.getElementById('importSeratoBtn');
+    if (importSeratoBtn) {
+      importSeratoBtn.onclick = async () => {
+        try {
+          if (!window.njrLibraryPaths || !window.njrLibraryPaths.serato_dir) {
+            await loadLibraryPaths();
+          }
+          const seratoDir = (window.njrLibraryPaths && window.njrLibraryPaths.serato_dir) || '';
+          if (seratoDir) {
+            await loadLibraryFromPath(seratoDir);
+          } else {
+            await loadLibraryFromPath('', { source: 'serato' });
+          }
+        } catch (err) {
+          setStatus('Błąd: ' + err.message, 'error');
+        }
+      };
+    }
 
     async function refreshUndoButton() {
       try {

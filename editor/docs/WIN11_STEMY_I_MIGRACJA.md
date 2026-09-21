@@ -70,6 +70,8 @@ Serato wymaga **ścieżek względnych do roota dysku z literą na Windows** (np.
 
 **PC backup + Dysk Google:** baza Serato na Win11 ma już aktualne crates/cue, ale ścieżki z Maca (`Users/…/Desktop/…`) nie trafiają w pliki. Muzyka ma **zostać** na Dysku Google (lustrzane / pobrane pliki — ten komputer nie jest głównym). W NJR: **Eksport → Serato DJ → Przepnij ścieżki na Dysk Google**. Nie kopiuje plików. Env `NJR_GOOGLE_DRIVE` albo pole w UI (`G:\Mój dysk`). API: `POST /api/remap-serato-google-drive`. CLI: `python remap_serato_google_drive.py`. Zamknij Serato przed remapem.
 
+**Otwieranie bazy w NJR (bez ZIP):** w karcie Import kliknij **Otwórz Serato** (wczyta `%USERPROFILE%\Music\_Serato_`) albo **Otwórz folder** i wskaż `_Serato_` / `Music`. Nie pakuj biblioteki do archiwum — `database V2` nie ma rozszerzenia i filtr „plik ZIP” go ukrywa. Remap GDrive działa też bez wczytanej bazy (przycisk w Eksport).
+
 ### Engine DJ Desktop
 
 | | macOS | Windows 11 |
@@ -248,6 +250,7 @@ Czyszczenie cache Mac (`clean_engine_disk.py`) na Win11 **nie jest potrzebne** d
 
 | Objaw | Przyczyna | Co zrobić |
 |-------|-----------|-----------|
+| NJR każe wczytać ZIP / nie widać bazy Serato | `Otwórz bazę` to picker plików z filtrem ZIP; `database V2` nie ma rozszerzenia | **Otwórz Serato** albo **Otwórz folder** → `_Serato_` / `Music`. Remap GDrive: Eksport, bez wczytywania |
 | Sync 409 / „aplikacja uruchomiona” | VDJ/Serato/Engine w tle | Zamknij procesy w Menedżerze zadań |
 | Brakujące pliki po przeniesieniu na Win | Ścieżki Mac w bazie | **Przepnij ścieżki na Dysk Google** (Serato) albo wspólny dysk + sync NJR; nie kopiuj ślepo samego `m.db` |
 | Serato szuka plików na Desktop / Users/Mac | Baza z Maca, muzyka na GDrive | NJR remap GDrive; nie kopiuj muzyki na ten PC (backup) |

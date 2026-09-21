@@ -19,6 +19,7 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 - Komunikaty zamykania aplikacji: Menedżer zadań na Windows, Cmd+Q na Macu.
 - Skrypt `auto_stems_to_patriot.py` na Windows sam przechodzi w `--manual-render` (brak AppleScript).
 - Przewodnik: `editor/docs/WIN11_STEMY_I_MIGRACJA.md`.
+- **Otwórz Serato bez ZIP:** przyciski **Otwórz folder** / **Otwórz Serato** wczytują `Music\_Serato_` (plik `database V2` nie ma rozszerzenia — stary filtr „ZIP” go ukrywał). `POST /api/load` przyjmuje folder, plik V2 albo `{source:"serato"}`. `/api/load-universal` rozpoznaje magię `vrsn`+Database zanim uzna plik za ZIP.
 
 ## 1.0.12 (2026-07-30)
 
