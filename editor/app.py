@@ -83,8 +83,12 @@ from engine_libdjinterop import (
     validate_engine_schema,
 )
 from dj_apps_guard import sync_guard_blockers
-from engine_patriot_sync import sync_metadata_and_playlists_to_patriot
-from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+from engine_patriot_sync import diagnose_patriot_library, sync_metadata_and_playlists_to_patriot
+from engine_stems import patriot_engine_available, resolve_patriot_engine
+from library_paths import (
+    close_engine_hint,
+    default_vdj_folders,
+)
 from serato_parser import (
     load_serato_database_v2,
     load_serato_folder,
@@ -128,6 +132,27 @@ CORS(app, origins=_CORS_ORIGINS, supports_credentials=True)
 APP_VERSION = read_app_version()
 
 register_blueprints(app)
+
+
+def _patriot_from_request(data: dict | None = None) -> Path:
+    """Patriot z body/query albo auto-detekcja (Win11: litera dysku)."""
+    data = data or {}
+    raw = (
+        data.get('patriotDir')
+        or data.get('patriotEngine')
+        or request.args.get('patriotEngine')
+        or request.args.get('patriotDir')
+        or ''
+    ).strip()
+    return resolve_patriot_engine(raw or None)
+
+
+def _sync_patriot_enabled(data: dict, patriot: Path) -> bool:
+    """Domyślnie sync na Patriot gdy dysk jest podłączony (wyłącz: syncPatriot=0)."""
+    raw = data.get('syncPatriot', None)
+    if raw is None:
+        return patriot_engine_available(patriot)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
 
 # Legacy aliases — trasy w app.py korzystają ze wspólnego stanu (app_state).
 def _ensure_loaded():
@@ -2390,9 +2415,8 @@ def api_sync_engine_desktop():
             or ''
         )
 
-        sync_patriot = str(data.get('syncPatriot', '0')).strip().lower() in (
-            '1', 'true', 'yes', 'on',
-        )
+        patriot = _patriot_from_request(data)
+        sync_patriot = _sync_patriot_enabled(data, patriot)
 
         db = _unified_db_for_export(playlist_tree=True)
         target = engine_dir or default_engine_desktop_library()
@@ -2469,7 +2493,6 @@ def api_sync_engine_desktop():
             analysis_hint = 'Brak utworów wymagających analizy po tym syncu.'
 
         patriot_sync = None
-        patriot = DEFAULT_PATRIOT_ENGINE
         if sync_patriot and patriot_engine_available(patriot):
             try:
                 patriot_sync = sync_metadata_and_playlists_to_patriot(db, patriot)
@@ -2480,7 +2503,7 @@ def api_sync_engine_desktop():
             f'VDJ → Engine: {len(export_doc["tracks"])} utworów, '
             f'{playlists_total} playlist. +{added} nowych. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki). Zamknij i otwórz Engine (Cmd+Q).',
+            'Ścieżki Music/ (symlinki). ' + close_engine_hint() + ', potem otwórz Engine ponownie.',
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -2754,9 +2777,8 @@ def api_sync_serato_to_engine():
         include_all = str(data.get('includeAll', '1')).strip().lower() not in (
             '0', 'false', 'no', 'off',
         )
-        sync_patriot = str(data.get('syncPatriot', '0')).strip().lower() in (
-            '1', 'true', 'yes', 'on',
-        )
+        patriot = _patriot_from_request(data)
+        sync_patriot = _sync_patriot_enabled(data, patriot)
 
         db = prepare_serato_unified_for_engine(
             serato_dir,
@@ -2852,7 +2874,6 @@ def api_sync_serato_to_engine():
             analysis_hint = 'Brak utworów wymagających analizy po tym syncu.'
 
         patriot_sync = None
-        patriot = DEFAULT_PATRIOT_ENGINE
         if sync_patriot and patriot_engine_available(patriot):
             try:
                 patriot_sync = sync_metadata_and_playlists_to_patriot(db, patriot)
@@ -2864,7 +2885,9 @@ def api_sync_serato_to_engine():
             f'{playlists_total} playlist (folder „Serato” / MyLists). '
             f'+{added} nowych. Hot cues: {tracks_with_cues}. Loops: {tracks_with_loops}. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki — bez kopiowania). Zamknij i otwórz Engine (Cmd+Q), poczekaj na analizę.',
+            'Ścieżki Music/ (symlinki — bez kopiowania). '
+            + close_engine_hint()
+            + ', potem otwórz Engine i poczekaj na analizę.',
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -2930,7 +2953,7 @@ def api_validate_engine_library():
         if result['engine_running']:
             result.setdefault('warnings', []).append(
                 'Engine DJ jest uruchomiony — walidacja odczytu OK, '
-                'ale merge/naprawa wymaga zamknięcia (Cmd+Q).'
+                f'ale merge/naprawa wymaga zamknięcia. {close_engine_hint()}.'
             )
         status = 200 if result.get('ok') else 400
         return jsonify(result), status
@@ -2955,7 +2978,8 @@ def api_auto_repair_engine_playlists():
             backup_engine_database2,
             default_engine_desktop_library,
         )
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+        from engine_stems import patriot_engine_available
+        from library_paths import desktop_library_label
 
         data = request.get_json(silent=True) or {}
         results: list[dict] = []
@@ -2993,10 +3017,9 @@ def api_auto_repair_engine_playlists():
 
         mac_raw = (data.get('engineDir') or '').strip()
         mac = Path(mac_raw).expanduser() if mac_raw else default_engine_desktop_library()
-        results.append(_repair_one(mac, 'Mac'))
+        results.append(_repair_one(mac, desktop_library_label()))
 
-        pat_raw = (data.get('patriotDir') or '').strip()
-        patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+        patriot = _patriot_from_request(data)
         if patriot_engine_available(patriot):
             results.append(_repair_one(patriot, 'Patriot'))
 
@@ -3025,13 +3048,10 @@ def api_auto_repair_patriot_playlists():
             'reason': 'engine_running',
         })
     try:
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+        from engine_stems import patriot_engine_available
 
         data = request.get_json(silent=True) or {}
-        pat_raw = (data.get('patriotDir') or '').strip()
-        patriot = (
-            Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
-        )
+        patriot = _patriot_from_request(data)
         if not patriot_engine_available(patriot):
             return jsonify({
                 'ok': False,
@@ -3081,13 +3101,13 @@ def api_diagnose_engine_playlists():
 def api_repair_engine_playlists():
     """
     Remap PlaylistEntity po Sync Manager (stare ID/UUID Maca → lokalne).
-    Body: { engineDir? } — domyślnie Mac Engine Library; Patriot: /Volumes/Patriot/Engine Library.
+    Body: { engineDir? } — domyślnie Desktop Engine Library; Patriot: wykryty dysk (Win: np. E:\\Engine Library).
     Zamknij Engine DJ przed wywołaniem.
     """
     if is_engine_desktop_running():
         return jsonify({
             'error': (
-                'Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) '
+                f'Engine DJ Desktop jest uruchomiony — {close_engine_hint()} '
                 'i ponów naprawę playlist.'
             ),
         }), 409
@@ -3129,17 +3149,29 @@ def api_repair_engine_playlists():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/diagnose-patriot-library', methods=['GET'])
+def api_diagnose_patriot_library():
+    """
+    Diagnostyka Patriota: duplikaty po Export to Drive + playlisty.
+    Query: patriotEngine? / patriotDir?
+    """
+    try:
+        patriot = _patriot_from_request()
+        out = diagnose_patriot_library(patriot)
+        out['close_engine_hint'] = close_engine_hint()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/engine-stems-diagnose', methods=['GET'])
 def api_engine_stems_diagnose():
     """Diagnoza po utracie stemów (np. błędny Sync Manager → Export Stems)."""
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, diagnose_stems_incident
+    from engine_stems import diagnose_stems_incident
 
     mac_raw = (request.args.get('macEngine') or '').strip()
-    pat_raw = (request.args.get('patriotEngine') or '').strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request()
     try:
         return jsonify(diagnose_stems_incident(mac, patriot))
     except Exception as e:
@@ -3148,15 +3180,12 @@ def api_engine_stems_diagnose():
 
 @app.route('/api/engine-stems-status', methods=['GET'])
 def api_engine_stems_status():
-    """Status stemów Mac vs Patriot (miejsce na dysku, kolejka)."""
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, stems_migration_status
+    """Status stemów Desktop vs Patriot (miejsce na dysku, kolejka)."""
+    from engine_stems import stems_migration_status
 
     mac_raw = (request.args.get('macEngine') or '').strip()
-    pat_raw = (request.args.get('patriotEngine') or '').strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request()
     try:
         return jsonify(stems_migration_status(mac, patriot))
     except Exception as e:
@@ -3166,21 +3195,16 @@ def api_engine_stems_status():
 @app.route('/api/engine-stems-prepare-batch', methods=['POST'])
 def api_engine_stems_prepare_batch():
     """
-    Playlistę NJR Stems Batch na Mac (kolejna partia bez stemów na Patriot).
+    Playlistę NJR Stems Batch na Desktop (kolejna partia bez stemów na Patriot).
     Body: batchSize, macEngine, patriotEngine. Zamknij Engine DJ przed wywołaniem.
     """
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, prepare_stems_batch_playlist
+    from engine_stems import prepare_stems_batch_playlist
 
     data = request.get_json(silent=True) or {}
     batch = int(data.get('batchSize') or request.args.get('batchSize') or 20)
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
-    pat_raw = (
-        data.get('patriotEngine') or request.args.get('patriotEngine') or ''
-    ).strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request(data)
     try:
         return jsonify(
             prepare_stems_batch_playlist(mac, patriot, batch_size=max(1, batch))
@@ -3194,12 +3218,10 @@ def api_engine_stems_prepare_batch():
 @app.route('/api/engine-stems-migrate', methods=['POST'])
 def api_engine_stems_migrate():
     """
-    Przenosi stemy z Mac Stems/ na Patriot i usuwa z Maca.
+    Przenosi stemy z Desktop Stems/ na Patriot i usuwa lokalne kopie.
     Body: batchSize, deleteMac, dryRun, macEngine, patriotEngine.
     """
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, migrate_stems_to_patriot
+    from engine_stems import migrate_stems_to_patriot
 
     data = request.get_json(silent=True) or {}
     batch_raw = data.get('batchSize', request.args.get('batchSize'))
@@ -3209,11 +3231,8 @@ def api_engine_stems_migrate():
         delete_mac = delete_mac.lower() not in ('0', 'false', 'no')
     dry_run = bool(data.get('dryRun') or request.args.get('dryRun'))
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
-    pat_raw = (
-        data.get('patriotEngine') or request.args.get('patriotEngine') or ''
-    ).strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request(data)
     try:
         return jsonify(
             migrate_stems_to_patriot(
@@ -5206,14 +5225,7 @@ def api_online_playlist_download_backup():
 
 def _get_vdj_folders_path() -> Path:
     """Ścieżka do folderu VDJ Folders (gdzie vdjfolder musi być, żeby VDJ go rozpoznał)."""
-    import platform
-    home = Path.home()
-    if platform.system() == 'Darwin':  # macOS
-        return home / "Library" / "Application Support" / "VirtualDJ" / "Folders"
-    if platform.system() == 'Windows':
-        local = Path(os.environ.get('LOCALAPPDATA', home / 'AppData' / 'Local'))
-        return local / "VirtualDJ" / "Folders"
-    return home / ".virtualdj" / "Folders"
+    return default_vdj_folders()
 
 
 def _get_vdj_base_path() -> Path:

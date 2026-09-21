@@ -36,6 +36,8 @@ NJR Konwerter używa `unified_model.py` jako warstwy pośredniej. Poniżej: co j
 - Merge Engine wymaga **zamkniętych** VDJ / Serato / Engine (patrz `dj_apps_guard.py`).
 - Waveformy Engine nie są migrowane z VDJ/Serato — Engine analizuje pliki po sync.
 
+Win11 (stemy, Patriot, Rane): `docs/WIN11_STEMY_I_MIGRACJA.md`.
+
 ## API sync
 
 - `POST /api/sync-engine-desktop` — VDJ → Engine (blokuje gdy VDJ lub Engine działają).

@@ -9,13 +9,13 @@ from pathlib import Path
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
 from file_analyzer import get_audio_channels
 from engine_stems import (
-    DEFAULT_PATRIOT_ENGINE,
     STEMS_BATCH_PARENT,
     STEMS_BATCH_PLAYLIST,
     _upsert_batch_playlist,
     get_library_uuid,
     list_stem_files,
     match_mac_to_patriot_tracks,
+    resolve_patriot_engine,
 )
 from engine_stems_render import batch_playlist_track_ids, resolve_batch_size
 
@@ -65,7 +65,7 @@ def list_eligible_stem_queue(
     Engine DJ wymaga stereo — mono są pomijane (require_stereo=True).
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     mac_uuid = get_library_uuid(mac_engine)
     mac_stems = set(list_stem_files(mac_engine, library_uuid=mac_uuid))
@@ -195,7 +195,7 @@ def prepare_duration_stems_batch(
 ) -> dict:
     """Tworzy playlistę NJR / NJR Stems Batch z kolejną partią (1–10 min)."""
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     if is_engine_desktop_running():
         raise RuntimeError(
@@ -312,7 +312,7 @@ def run_stems_batch_loop(
     )
 
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
     requested_batch = batch_size
     batch_size = resolve_batch_size(
         batch_size, _disk_free_gb(mac_engine), force=force_batch

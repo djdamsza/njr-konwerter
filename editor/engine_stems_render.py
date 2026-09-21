@@ -20,7 +20,6 @@ from pathlib import Path
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
 from engine_stems import (
-    DEFAULT_PATRIOT_ENGINE,
     STEMS_BATCH_PARENT,
     STEMS_BATCH_PLAYLIST,
     get_library_uuid,
@@ -29,6 +28,7 @@ from engine_stems import (
     match_mac_to_patriot_tracks,
     migrate_stems_to_patriot,
     prepare_stems_batch_playlist,
+    resolve_patriot_engine,
     stems_migration_status,
 )
 
@@ -421,7 +421,7 @@ def run_auto_stems_pipeline(
     lub osiągnięto max_batches.
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     if not patriot_engine.is_dir():
         return {"ok": False, "error": f"Brak Patriot: {patriot_engine}"}
@@ -553,7 +553,7 @@ def watch_and_migrate_stems(
   Ctrl+C aby zatrzymać watcher (render Engine DJ może dalej działać).
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     stable_sizes: dict[str, int] = {}
     totals = {

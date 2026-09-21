@@ -40,6 +40,9 @@ def _pgrep_running(pattern: str) -> bool:
     return False
 
 
+from library_paths import close_engine_hint
+
+
 def is_vdj_running() -> tuple[bool, str]:
     """True gdy VirtualDJ jest uruchomiony."""
     if _pgrep_running("VirtualDJ"):
@@ -60,7 +63,7 @@ def is_engine_running() -> tuple[bool, str]:
     from engine_libdjinterop import is_engine_desktop_running
 
     if is_engine_desktop_running():
-        return True, "Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) przed synchronizacją."
+        return True, f"{close_engine_hint()} przed synchronizacją."
     return False, ""
 
 
@@ -144,7 +147,7 @@ def sync_guard_blockers(
         running, msg = is_engine_running()
         if running:
             issues.append(("Engine DJ", msg))
-            checklist.append("Zamknij Engine DJ (Cmd+Q)")
+            checklist.append(close_engine_hint())
 
     if not issues:
         return False, "", checklist

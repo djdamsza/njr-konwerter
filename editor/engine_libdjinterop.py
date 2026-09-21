@@ -95,8 +95,10 @@ def assert_engine_library_safe_for_write(engine_dir: Path) -> None:
     - brak konfliktu legacy m.db + Database2/m.db (libdjinterop/database_not_found)
     """
     if is_engine_desktop_running():
+        from library_paths import close_engine_hint
+
         raise RuntimeError(
-            "Zamknij Engine DJ Desktop przed synchronizacją (Cmd+Q). "
+            f"{close_engine_hint()} przed synchronizacją. "
             "Równoległa praca grozi korupcją bazy (Engine DJ developer guidelines)."
         )
     engine_dir = engine_dir.resolve()

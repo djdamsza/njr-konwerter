@@ -26,7 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running  # noqa: E402
-from engine_stems import DEFAULT_PATRIOT_ENGINE  # noqa: E402
+from engine_stems import default_patriot_engine  # noqa: E402
 from engine_stems_queue import (  # noqa: E402
     DEFAULT_MAX_LENGTH_SEC,
     DEFAULT_MIN_LENGTH_SEC,
@@ -70,7 +70,7 @@ def _open_engine() -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Partie stemów 1–10 min (Engine DJ)")
     parser.add_argument("--mac", type=Path, default=None)
-    parser.add_argument("--patriot", type=Path, default=DEFAULT_PATRIOT_ENGINE)
+    parser.add_argument("--patriot", type=Path, default=None)
     parser.add_argument("--batch", type=int, default=None, help="Wielkość partii (domyślnie auto)")
     parser.add_argument("--min-sec", type=int, default=DEFAULT_MIN_LENGTH_SEC)
     parser.add_argument("--max-sec", type=int, default=DEFAULT_MAX_LENGTH_SEC)
@@ -120,7 +120,7 @@ def main() -> int:
 
     args = parser.parse_args()
     mac = args.mac or default_engine_desktop_library()
-    patriot = args.patriot
+    patriot = args.patriot or default_patriot_engine()
     force_batch = getattr(args, "force_batch", False)
 
     def _batch_size(st: dict) -> int:

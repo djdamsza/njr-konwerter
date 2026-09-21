@@ -7,7 +7,6 @@ ale ``trackId`` musi odpowiadać utworowi w bibliotece Patriot.
 """
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import sqlite3
@@ -16,8 +15,11 @@ import unicodedata
 from pathlib import Path
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
+from library_paths import close_engine_hint, default_patriot_engine, resolve_patriot_engine
 
-DEFAULT_PATRIOT_ENGINE = Path("/Volumes/Patriot/Engine Library")
+# Back-compat dla `from engine_stems import DEFAULT_PATRIOT_ENGINE`.
+# Na Windows to litera dysku (wykryta albo E:\Engine Library), nie /Volumes/Patriot.
+DEFAULT_PATRIOT_ENGINE = default_patriot_engine()
 STEMS_BATCH_PLAYLIST = "NJR Stems Batch"
 STEMS_BATCH_PARENT = "NJR"
 SQLITE_BUSY_TIMEOUT_SEC = 60
@@ -174,7 +176,7 @@ def index_tracks_by_filename(engine_dir: Path) -> dict[str, list[dict]]:
 
 def patriot_engine_available(patriot_engine: Path | None = None) -> bool:
     """True gdy podłączona biblioteka Engine na dysku Rane (Patriot)."""
-    target = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    target = resolve_patriot_engine(patriot_engine)
     return (target / "Database2" / "m.db").is_file()
 
 
@@ -419,10 +421,10 @@ def stems_migration_status(
 ) -> dict:
     """Podsumowanie stemów i kolejki do migracji / renderu."""
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     if not mac_engine.is_dir():
-        return {"ok": False, "error": f"Brak biblioteki Mac: {mac_engine}"}
+        return {"ok": False, "error": f"Brak biblioteki Engine Desktop: {mac_engine}"}
     if not patriot_engine.is_dir():
         return {
             "ok": False,
@@ -508,7 +510,7 @@ def diagnose_stems_incident(
     Sprawdza osierocone pliki i różnice Mac vs Patriot.
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
     status = stems_migration_status(mac_engine, patriot_engine)
 
     mac_stems_dir = mac_engine / "Stems"
@@ -678,10 +680,10 @@ def prepare_stems_batch_playlist(
     do stemów (brak stemów na Patriot, gotowe do analizy na Mac).
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
     if is_engine_desktop_running():
         raise RuntimeError(
-            "Zamknij Engine DJ Desktop (Cmd+Q) przed utworzeniem playlisty partii."
+            f"{close_engine_hint()} przed utworzeniem playlisty partii."
         )
 
     status = stems_migration_status(mac_engine, patriot_engine)
@@ -788,13 +790,13 @@ def migrate_stems_to_patriot(
     opcjonalnie usuwa pliki z Maca.
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine = resolve_patriot_engine(patriot_engine)
 
     if not patriot_engine.is_dir():
         return {"ok": False, "error": f"Brak Patriot: {patriot_engine}"}
     if not allow_engine_running and is_engine_desktop_running():
         raise RuntimeError(
-            "Zamknij Engine DJ Desktop (Cmd+Q) przed migracją stemów."
+            f"{close_engine_hint()} przed migracją stemów."
         )
 
     mac_uuid = mac_library_uuid or infer_library_uuid_from_stems(

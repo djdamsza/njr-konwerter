@@ -28,6 +28,16 @@ def api_version():
     return jsonify({'version': APP_VERSION})
 
 
+@bp.route('/api/library-paths')
+def api_library_paths():
+    """Ścieżki VDJ / Serato / Engine Desktop / Patriot (Win11: litera dysku)."""
+    from library_paths import runtime_library_paths
+
+    payload = runtime_library_paths()
+    payload['version'] = APP_VERSION
+    return jsonify(payload)
+
+
 @bp.route('/api/check-updates', methods=['POST'])
 def api_check_updates():
     result = updater.check_for_updates(APP_VERSION)

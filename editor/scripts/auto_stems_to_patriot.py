@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 
 from engine_libdjinterop import default_engine_desktop_library  # noqa: E402
 from engine_stems import (  # noqa: E402
-    DEFAULT_PATRIOT_ENGINE,
+    default_patriot_engine,
     migrate_stems_to_patriot,
     prepare_stems_batch_playlist,
     stems_migration_status,
@@ -52,7 +52,7 @@ def main() -> int:
         description="Automatyczne stemy Engine DJ → Patriot (NJR)"
     )
     parser.add_argument("--mac", type=Path, default=None)
-    parser.add_argument("--patriot", type=Path, default=DEFAULT_PATRIOT_ENGINE)
+    parser.add_argument("--patriot", type=Path, default=None)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("status", help="Podsumowanie + sugerowana partia")
@@ -126,7 +126,12 @@ def main() -> int:
 
     args = parser.parse_args()
     mac = args.mac or default_engine_desktop_library()
-    patriot = args.patriot
+    patriot = args.patriot or default_patriot_engine()
+
+    if getattr(args, "manual_render", False) is False and args.cmd in ("run", "render"):
+        import platform
+        if platform.system() != "Darwin":
+            args.manual_render = True
 
     try:
         if args.cmd == "status":

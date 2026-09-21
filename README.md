@@ -26,6 +26,7 @@ chmod +x scripts/build-local.sh
 | Element | Opis |
 |---|---|
 | `editor/` | Backend Flask + frontend + eksporty |
+| `editor/docs/WIN11_STEMY_I_MIGRACJA.md` | Windows 11: Engine DJ, stemy, Patriot / Rane |
 | `scripts/` | Skrypty build/deploy |
 | `releases/` | Artefakty build (nie commitować binarek) |
 | `VERSION` | Wersja |

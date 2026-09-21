@@ -191,6 +191,41 @@
     .export-btn-vdj { background: #2d5a87; }
     .export-btn-serato { background: #e11d48; }
     .export-btn-engine { background: #c45c26; }
+    .path-status {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 10px;
+      line-height: 1.45;
+    }
+    .path-status code { font-size: 11px; }
+    .path-status .ok { color: #4ade80; }
+    .path-status .warn { color: #fbbf24; }
+    .patriot-path-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 12px;
+    }
+    .patriot-path-row input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--accent);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+    .stems-batch-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .stems-batch-row input { width: 72px; padding: 6px 8px; }
     .export-btn-muted {
       background: transparent;
       border: 1px solid var(--accent) !important;
@@ -1391,12 +1426,32 @@
         <div class="export-card">
           <h4>Engine DJ</h4>
           <p>
-            <strong>Zalecane:</strong> najpierw pobierz eksport <strong>Serato</strong> powyżej,
-            potem w <strong>Engine DJ Desktop</strong> zaimportuj bibliotekę Serato
-            (File → Import Library / Import from Serato — zależnie od wersji).
-            Engine najlepiej czyta przygotowaną bibliotekę Serato.
+            Sync VDJ/Serato → Engine DJ Desktop, potem stemy na dysk Patriot (Rane SYSTEM ONE).
+            Na Win11: Create stems w Engine omija Macowy bug tempów AI.
+            <strong>Nie używaj</strong> „Export Stems” ani „Export to Drive” w Sync Manager.
           </p>
+          <p class="path-status" id="enginePathStatus">Wykrywam ścieżki bibliotek…</p>
+          <div class="patriot-path-row">
+            <label for="patriotEnginePath">Patriot Engine Library</label>
+            <input type="text" id="patriotEnginePath" placeholder="E:\Engine Library" autocomplete="off">
+            <button type="button" id="pickPatriotBtn" class="export-btn-njr">Wybierz folder</button>
+          </div>
           <div class="export-actions">
+            <button type="button" id="syncEngineDesktopBtn" class="export-btn-engine export-requires-license">Sync VDJ → Engine</button>
+            <button type="button" id="syncSeratoToEngineBtn" class="export-btn-engine export-requires-license">Sync Serato → Engine</button>
+            <button type="button" id="repairEnginePlaylistsBtn" class="export-btn-njr">Napraw playlisty Engine</button>
+            <button type="button" id="diagnosePatriotBtn" class="export-btn-njr">Diagnostyka Patriota</button>
+          </div>
+          <div class="stems-batch-row">
+            <label for="engineStemsBatchSize">Partia stemów</label>
+            <input type="number" id="engineStemsBatchSize" value="15" min="1" max="50">
+          </div>
+          <div class="export-actions">
+            <button type="button" id="engineStemsStatusBtn" class="export-btn-njr">Status stemów</button>
+            <button type="button" id="engineStemsPrepareBtn" class="export-btn-engine">Przygotuj partię (NJR Stems Batch)</button>
+            <button type="button" id="engineStemsMigrateBtn" class="export-btn-engine">Przenieś stemy na Patriot</button>
+          </div>
+          <div class="export-actions" style="margin-top: 10px;">
             <button type="button" id="exportEngineViaSeratoBtn" class="export-btn-engine export-requires-license">Pobierz Serato → import w Engine</button>
           </div>
           <details class="export-advanced">
@@ -1443,14 +1498,7 @@
       <button type="button" id="installSeratoCratesBtn" style="display:none"></button>
       <button type="button" id="writeSeratoCuesBtn" style="display:none"></button>
       <button type="button" id="dedupeSeratoBtn" style="display:none"></button>
-      <button type="button" id="syncEngineDesktopBtn" style="display:none"></button>
-      <button type="button" id="syncSeratoToEngineBtn" style="display:none"></button>
-      <button type="button" id="repairEnginePlaylistsBtn" style="display:none"></button>
-      <button type="button" id="engineStemsStatusBtn" style="display:none"></button>
-      <button type="button" id="engineStemsPrepareBtn" style="display:none"></button>
-      <button type="button" id="engineStemsMigrateBtn" style="display:none"></button>
       <button type="button" id="writeTagsBtn" style="display:none"></button>
-      <input type="number" id="engineStemsBatchSize" value="15" style="display:none">
       <button type="button" id="seratoBrowseBtn" style="display:none"></button>
     </div>
   </div>
@@ -1477,9 +1525,60 @@
 
   <script>
     const API = '/api';
+    window.njrLibraryPaths = {
+      platform: '',
+      desktop_label: 'Engine DJ Desktop',
+      engine_desktop: '',
+      patriot_engine: '',
+      patriot_mounted: false,
+      close_engine_hint: 'Zamknij Engine DJ',
+      close_all_dj_hint: 'Zamknij VirtualDJ, Serato DJ i Engine DJ',
+    };
+    function patriotEnginePathValue() {
+      return (document.getElementById('patriotEnginePath')?.value || '').trim()
+        || window.njrLibraryPaths.patriot_engine
+        || '';
+    }
+    function withPatriotPayload(extra) {
+      const body = extra ? { ...extra } : {};
+      const pat = patriotEnginePathValue();
+      if (pat) {
+        body.patriotEngine = pat;
+        body.patriotDir = pat;
+      }
+      return body;
+    }
+    function patriotQuery() {
+      const pat = patriotEnginePathValue();
+      return pat ? ('?patriotEngine=' + encodeURIComponent(pat)) : '';
+    }
+    function renderEnginePathStatus(d) {
+      const el = document.getElementById('enginePathStatus');
+      if (!el || !d) return;
+      const deskOk = d.engine_desktop_exists;
+      const patOk = d.patriot_mounted;
+      el.innerHTML =
+        (d.desktop_label || 'Desktop') + ': <code>' + (d.engine_desktop || '—') + '</code> '
+        + (deskOk ? '<span class="ok">baza OK</span>' : '<span class="warn">brak m.db</span>')
+        + '<br>Patriot: <code>' + (d.patriot_engine || '—') + '</code> '
+        + (patOk ? '<span class="ok">podłączony</span>' : '<span class="warn">nie wykryto — podaj literę dysku</span>');
+    }
+    async function loadLibraryPaths() {
+      try {
+        const r = await fetch('/api/library-paths');
+        const d = await r.json();
+        window.njrLibraryPaths = Object.assign(window.njrLibraryPaths, d || {});
+        const input = document.getElementById('patriotEnginePath');
+        if (input && d.patriot_engine && !input.value) input.value = d.patriot_engine;
+        renderEnginePathStatus(d);
+        const ver = document.getElementById('version-footer');
+        if (ver && d.version) ver.textContent = 'NJR Konwerter v' + d.version;
+      } catch (_) {}
+    }
+    loadLibraryPaths();
     fetch('/api/version').then(r => r.json()).then(d => {
       const el = document.getElementById('version-footer');
-      if (el) el.textContent = 'NJR Konwerter v' + (d.version || '');
+      if (el && !window.njrLibraryPaths.version) el.textContent = 'NJR Konwerter v' + (d.version || '');
     }).catch(() => {});
     async function checkForUpdates() {
       const resultEl = document.getElementById('update-result');
@@ -2140,7 +2239,14 @@
     const syncEngineBtn = document.getElementById('syncEngineDesktopBtn');
     if (syncEngineBtn) {
       syncEngineBtn.onclick = async () => {
-        if (!confirm('Synchronizacja VDJ → Engine DJ Desktop (~/Music/Engine Library).\n\nChecklist przed sync:\n• Zamknij VirtualDJ\n• Zamknij Serato DJ (jeśli otwarty)\n• Zamknij Engine DJ (Cmd+Q)\n\nKliknij OK aby kontynuować.\n\nPlaylisty trafią do folderu „VDJ” z zachowaniem drzewa (MyLists / gatunki / …). Beatgrid, cue i loop zostaną zaktualizowane.')) return;
+        const paths = window.njrLibraryPaths || {};
+        const desk = paths.engine_desktop || '~/Music/Engine Library';
+        if (!confirm(
+          'Synchronizacja VDJ → Engine DJ Desktop (' + desk + ').\n\n'
+          + 'Checklist przed sync:\n• ' + (paths.close_all_dj_hint || 'Zamknij VDJ / Serato / Engine')
+          + '\n\nKliknij OK aby kontynuować.\n\nPlaylisty trafią do folderu „VDJ”. Beatgrid, cue i loop zostaną zaktualizowane.\n'
+          + 'NIE używaj Export to Drive w Sync Manager.'
+        )) return;
         try {
           setStatus('Synchronizacja Engine DJ Desktop…', '');
           await runLongJob({
@@ -2151,7 +2257,7 @@
               const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
               const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
               const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
-              const body = { playlistPrefix: '' };
+              const body = withPatriotPayload({ playlistPrefix: '' });
               if (libraryRoot) body.libraryRoot = libraryRoot;
               if (pathFrom) body.pathFrom = pathFrom;
               if (pathTo) body.pathTo = pathTo;
@@ -2181,7 +2287,15 @@
     const syncSeratoEngineBtn = document.getElementById('syncSeratoToEngineBtn');
     if (syncSeratoEngineBtn) {
       syncSeratoEngineBtn.onclick = async () => {
-        if (!confirm('Serato → Engine DJ Desktop\n\nPlaylisty i lokalne pliki z ~/Music/_Serato_.\nSymlinki Music/ na Macu (bez kopiowania plików).\n\nGdy Patriot podłączony:\n• NJR usuwa duplikaty po Export to Drive\n• synchronizuje playlisty na dysk Rane\n\nChecklist:\n• Zamknij Serato DJ, VirtualDJ, Engine DJ (Cmd+Q)\n\nNIE używaj Export to Drive w Sync Manager.\n\nOK aby kontynuować.')) return;
+        const paths = window.njrLibraryPaths || {};
+        if (!confirm(
+          'Serato → Engine DJ Desktop\n\nPlaylisty i lokalne pliki z '
+          + (paths.serato_dir || '~/Music/_Serato_')
+          + '.\nSymlinki Music/ (bez kopiowania plików).\n\n'
+          + 'Gdy Patriot podłączony: NJR dopisze playlisty na dysk Rane.\n\n'
+          + 'Checklist:\n• ' + (paths.close_all_dj_hint || 'Zamknij aplikacje DJ')
+          + '\n\nNIE używaj Export to Drive w Sync Manager.\n\nOK aby kontynuować.'
+        )) return;
         try {
           setStatus('Serato → Engine… ładowanie crates i synchronizacja…', '');
           await runLongJob({
@@ -2192,7 +2306,7 @@
               const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
               const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
               const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
-              const body = {};
+              const body = withPatriotPayload({});
               if (libraryRoot) body.libraryRoot = libraryRoot;
               if (pathFrom) body.pathFrom = pathFrom;
               if (pathTo) body.pathTo = pathTo;
@@ -2222,26 +2336,29 @@
     const repairEnginePlaylistsBtn = document.getElementById('repairEnginePlaylistsBtn');
     if (repairEnginePlaylistsBtn) {
       repairEnginePlaylistsBtn.onclick = async () => {
-        const pat = '/Volumes/Patriot/Engine Library';
+        const paths = window.njrLibraryPaths || {};
+        const pat = patriotEnginePathValue() || paths.patriot_engine || '';
+        const closeHint = paths.close_engine_hint || 'Zamknij Engine DJ';
         const choice = confirm(
-          'Napraw playlisty Engine (PlaylistEntity: ID/UUID Maca → lokalne).\n\n'
-          + 'OK = Patriot (' + pat + ')\n'
-          + 'Anuluj = najpierw zapytam o Mac Engine Library.\n\n'
-          + 'Zamknij Engine DJ (Cmd+Q) przed naprawą.'
+          'Napraw playlisty Engine (PlaylistEntity: ID/UUID źródła → lokalne).\n\n'
+          + 'OK = Patriot (' + (pat || 'wykryj dysk') + ')\n'
+          + 'Anuluj = najpierw zapytam o bibliotekę Desktop.\n\n'
+          + closeHint + ' przed naprawą.'
         );
         let engineDir = pat;
         if (!choice) {
-          if (!confirm('Naprawić Mac ~/Music/Engine Library?')) return;
+          const desk = paths.engine_desktop || '~/Music/Engine Library';
+          if (!confirm('Naprawić ' + (paths.desktop_label || 'Desktop') + ' ' + desk + '?')) return;
           engineDir = '';
         }
         try {
           setStatus('Naprawiam powiązania playlist Engine…', '');
           await runLongJob({
             title: 'Naprawa playlist Engine',
-            detail: 'Remap PlaylistEntity (ID Maca → lokalne)…',
+            detail: 'Remap PlaylistEntity (ID źródła → lokalne)…',
             button: repairEnginePlaylistsBtn,
             run: async () => {
-              const body = {};
+              const body = withPatriotPayload({});
               if (engineDir) body.engineDir = engineDir;
               const r = await fetch(API + '/repair-engine-playlists', {
                 method: 'POST',
@@ -2263,6 +2380,38 @@
         }
       };
     }
+    const diagnosePatriotBtn = document.getElementById('diagnosePatriotBtn');
+    if (diagnosePatriotBtn) {
+      diagnosePatriotBtn.onclick = async () => {
+        try {
+          setStatus('Diagnostyka Patriota…', '');
+          const r = await fetch(API + '/diagnose-patriot-library' + patriotQuery());
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const extras = d.duplicate_filename_extra_rows || 0;
+          const msg = d.patriot_mounted
+            ? (`Patriot ${d.engine_dir || patriotEnginePathValue()}: ${d.track_count || 0} utworów, `
+              + `duplikaty nazw: ${d.duplicate_filename_groups || 0} (+${extras} extra). `
+              + (d.likely_export_duplication ? 'Prawdopodobny Export to Drive — nie syncuj playlist aż do naprawy. ' : '')
+              + (d.playlists && d.playlists.healthy === false ? 'Playlisty wymagają naprawy. ' : 'Playlisty OK. '))
+            : ('Patriot niepodłączony: ' + (d.engine_dir || patriotEnginePathValue() || 'brak ścieżki'));
+          setStatus(msg, d.patriot_mounted ? 'loaded' : 'error');
+        } catch (err) { setStatus('Błąd diagnostyki Patriota: ' + err.message, 'error'); }
+      };
+    }
+    const pickPatriotBtn = document.getElementById('pickPatriotBtn');
+    if (pickPatriotBtn) {
+      pickPatriotBtn.onclick = async () => {
+        try {
+          const r = await fetch(API + '/pick-folder');
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.path) throw new Error(d.error || 'Nie wybrano folderu');
+          const input = document.getElementById('patriotEnginePath');
+          if (input) input.value = d.path;
+          window.njrLibraryPaths.patriot_engine = d.path;
+        } catch (err) { setStatus('Wybór folderu: ' + err.message, 'error'); }
+      };
+    }
     const engineStemsBatchInput = document.getElementById('engineStemsBatchSize');
     const engineStemsStatusBtn = document.getElementById('engineStemsStatusBtn');
     const engineStemsPrepareBtn = document.getElementById('engineStemsPrepareBtn');
@@ -2274,12 +2423,13 @@
     if (engineStemsStatusBtn) {
       engineStemsStatusBtn.onclick = async () => {
         try {
-          setStatus('Sprawdzam stemy Mac vs Patriot…', '');
-          const r = await fetch(API + '/engine-stems-status');
+          setStatus('Sprawdzam stemy Desktop vs Patriot…', '');
+          const r = await fetch(API + '/engine-stems-status' + patriotQuery());
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const desk = (window.njrLibraryPaths && window.njrLibraryPaths.desktop_label) || 'Desktop';
           const msg = [
-            `Mac: ${d.mac_stems_count || 0} stemów (${d.mac_stems_gb || 0} GB), wolne ${d.mac_free_gb ?? '?'} GB`,
+            `${desk}: ${d.mac_stems_count || 0} stemów (${d.mac_stems_gb || 0} GB), wolne ${d.mac_free_gb ?? '?'} GB`,
             `Patriot: ${d.patriot_stems_count || 0}/${d.patriot_tracks_total || 0} stemów (${d.patriot_stems_gb || 0} GB)`,
             `Do renderu: ~${d.mac_tracks_ready_for_stem_render || 0}, gotowe do przeniesienia: ${d.mac_stems_ready_to_migrate || 0}`,
           ].join(' · ');
@@ -2289,13 +2439,14 @@
     }
     if (engineStemsPrepareBtn) {
       engineStemsPrepareBtn.onclick = async () => {
-        if (!confirm('Przygotować playlistę „NJR / NJR Stems Batch”?\n\nZamknij Engine DJ (Cmd+Q). Potem w Engine: Create stems dla tej playlisty.')) return;
+        const closeHint = (window.njrLibraryPaths && window.njrLibraryPaths.close_engine_hint) || 'Zamknij Engine DJ';
+        if (!confirm('Przygotować playlistę „NJR / NJR Stems Batch”?\n\n' + closeHint + '. Potem w Engine: Create stems dla tej playlisty.')) return;
         try {
           setStatus('Tworzę playlistę partii stemów…', '');
           const r = await fetch(API + '/engine-stems-prepare-batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ batchSize: engineStemsBatchSize() }),
+            body: JSON.stringify(withPatriotPayload({ batchSize: engineStemsBatchSize() })),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.error) throw new Error(d.error || r.statusText);
@@ -2309,18 +2460,20 @@
     if (engineStemsMigrateBtn) {
       engineStemsMigrateBtn.onclick = async () => {
         const batch = engineStemsBatchSize();
-        if (!confirm(`Przenieść do ${batch ? batch + ' ' : ''}stemów na Patriot i usunąć z Maca?\n\nZamknij Engine DJ (Cmd+Q).`)) return;
+        const closeHint = (window.njrLibraryPaths && window.njrLibraryPaths.close_engine_hint) || 'Zamknij Engine DJ';
+        const pat = patriotEnginePathValue();
+        if (!confirm(`Przenieść do ${batch ? batch + ' ' : ''}stemów na Patriot${pat ? ' (' + pat + ')' : ''} i usunąć z Desktop?\n\n` + closeHint + '.')) return;
         try {
           setStatus('Migracja stemów na Patriot…', '');
           await runLongJob({
             title: 'Migracja stemów → Patriot',
-            detail: 'Kopiowanie plików .stems i zwalnianie miejsca na Macu…',
+            detail: 'Kopiowanie plików .stems i zwalnianie miejsca na Desktop…',
             button: engineStemsMigrateBtn,
             run: async () => {
               const r = await fetch(API + '/engine-stems-migrate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ batchSize: batch, deleteMac: true }),
+                body: JSON.stringify(withPatriotPayload({ batchSize: batch, deleteMac: true })),
               });
               const d = await r.json().catch(() => ({}));
               if (!r.ok || d.error) throw new Error(d.error || r.statusText);

@@ -42,7 +42,7 @@ from engine_libdjinterop import (  # noqa: E402
     default_engine_desktop_library,
     is_engine_desktop_running,
 )
-from engine_stems import DEFAULT_PATRIOT_ENGINE  # noqa: E402
+from engine_stems import default_patriot_engine  # noqa: E402
 
 DEFAULT_LOG = (
     Path.home()
@@ -333,7 +333,7 @@ def main() -> int:
         description="Monitor dysku Engine DJ (cache / stems / free / TM snapshots)"
     )
     parser.add_argument("--mac", type=Path, default=None)
-    parser.add_argument("--patriot", type=Path, default=DEFAULT_PATRIOT_ENGINE)
+    parser.add_argument("--patriot", type=Path, default=None)
     parser.add_argument(
         "--interval",
         type=float,
@@ -367,7 +367,7 @@ def main() -> int:
     mac = args.mac or default_engine_desktop_library()
     return run_monitor(
         mac_engine=mac,
-        patriot_engine=args.patriot,
+        patriot_engine=args.patriot or default_patriot_engine(),
         interval=args.interval,
         log_path=args.log,
         warn_free_gb=args.warn_free_gb,

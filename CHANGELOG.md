@@ -4,6 +4,18 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.0.13 (2026-09-21)
+
+### Windows 11 — stemy i Patriot
+- Auto-detekcja dysku Patriot (`E:\Engine Library` itd.) po etykiecie woluminu i obecności `Database2/m.db` — bez twardej ścieżki Mac `/Volumes/Patriot`.
+- Env `NJR_PATRIOT_ENGINE` oraz pole w UI (Eksport → Engine DJ) do ręcznego wskazania biblioteki Rane.
+- `GET /api/library-paths` — Desktop Engine, Patriot, VDJ (`Documents\VirtualDJ`), Serato.
+- `GET /api/diagnose-patriot-library` — diagnostyka duplikatów po Export to Drive.
+- Sync VDJ/Serato → Engine dopisuje playlisty na Patriot, gdy dysk jest podłączony (wyłącz: `syncPatriot=0`).
+- Komunikaty zamykania aplikacji: Menedżer zadań na Windows, Cmd+Q na Macu.
+- Skrypt `auto_stems_to_patriot.py` na Windows sam przechodzi w `--manual-render` (brak AppleScript).
+- Przewodnik: `editor/docs/WIN11_STEMY_I_MIGRACJA.md`.
+
 ## 1.0.12 (2026-07-30)
 
 ### Sync playlist po podmianie utworów
