@@ -17,6 +17,9 @@ editor/.venv/
 editor/.venv-*/
 editor/.pytest_cache/
 editor/logs/
+# Zepsuty symlink Mac (/Users/test/…) — Windows tar nie umie go rozpakować
+editor/test-backup-vdj.zip
+editor/engine_bridge/build/
 editor/engine_bridge/build/
 editor/engine_bridge/build-test/
 
