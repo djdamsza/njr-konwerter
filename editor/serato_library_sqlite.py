@@ -19,7 +19,9 @@ from typing import Optional
 
 from vdj_streaming import extract_tidal_id, is_serato_tidal_path
 
-SERATO_LIBRARY_DIR = Path.home() / "Library/Application Support/Serato/Library"
+from library_paths import default_serato_sqlite_dir
+
+SERATO_LIBRARY_DIR = default_serato_sqlite_dir()
 TIDAL_SQLITE = SERATO_LIBRARY_DIR / "tidal.sqlite"
 
 # tidal.sqlite: space_id 2 = Serato Library (lokalne crates z streamingiem)
@@ -1036,14 +1038,28 @@ def _build_local_basename_index(search_roots: list[Path]) -> dict[str, list[str]
     return index
 
 
+def _portable_location_rank(pid: str) -> int:
+    """Wyższy = lepszy: Dysk Google > lokalny Desktop > reszta."""
+    pl = "/" + (pid or "").replace("\\", "/")
+    if re.search(r"(?i)/(?:My Drive|Mój dysk|Google Drive|GoogleDrive)/", pl):
+        return 2
+    if re.match(r"(?i)^(?:Mój dysk|My Drive|Google Drive)/", pid or ""):
+        return 2
+    if "/Desktop/muzyka dj/" in pl or (pid or "").startswith("Users/test/Desktop/"):
+        return 1
+    return 0
+
+
 def _resolve_root_portable_id(
     portable_id: str,
     *,
     file_name: str = "",
     basename_index: Optional[dict[str, list[str]]] = None,
+    gdrive_index=None,
 ) -> tuple[str, bool]:
     """Zwraca (najlepsze portable_id, czy plik istnieje na dysku)."""
-    from serato_parser import map_stale_serato_path_to_desktop, serato_path_exists_on_disk
+    from serato_gdrive import map_serato_path_to_google_drive, serato_path_exists_on_disk
+    from serato_parser import map_stale_serato_path_to_desktop
 
     raw = _fix_legacy_portable_id_prefixes(portable_id)
     if not raw and file_name:
@@ -1062,6 +1078,9 @@ def _resolve_root_portable_id(
 
     add(raw)
     add(_normalize_portable_id_candidate(raw))
+    gmapped = map_serato_path_to_google_drive(raw, index=gdrive_index) if gdrive_index else None
+    if gmapped:
+        add(gmapped)
     mapped = map_stale_serato_path_to_desktop(raw)
     if mapped:
         add(mapped)
@@ -1076,7 +1095,6 @@ def _resolve_root_portable_id(
     stale = (
         re.compile(r"(?i)^(?:G:/)?Inne komputery/"),
         re.compile(r"(?i)^Volumes/"),
-        re.compile(r"(?i)^G:/"),
         re.compile(r"(?i)^Users/test/Music/Users/"),
         re.compile(r"(?i)^Users/test/\.Trash/"),
     )
@@ -1085,10 +1103,13 @@ def _resolve_root_portable_id(
         s = 0
         if exists:
             s += 1_000_000
-        if "/Desktop/muzyka dj/" in ("/" + pid):
-            s += 50_000
-        if pid.startswith("Users/test/Desktop/"):
-            s += 10_000
+        rank = _portable_location_rank(pid)
+        if rank >= 2:
+            s += 80_000
+        elif rank == 1:
+            s += 5_000
+            if pid.startswith("Users/test/Desktop/"):
+                s += 2_000
         if any(p.search(pid) for p in stale):
             s -= 100_000
         return s
@@ -1167,7 +1188,7 @@ def repair_root_sqlite_path_links(
     """
     Naprawia złe powiązania plików w root.sqlite (Serato 4+):
     - usuwa duplikaty (Inne komputery / G:/ / podwójny Users/…/Music/Users/…)
-    - zostawia wpis wskazujący na istniejący plik (preferuj Desktop/muzyka dj)
+    - zostawia wpis wskazujący na istniejący plik (preferuj Dysk Google, nie kopię na Desktop)
     - przenosi odwołania w crate na zwycięzcę
     Serato musi być zamknięty.
     """
@@ -1194,14 +1215,19 @@ def repair_root_sqlite_path_links(
         "still_missing": 0,
     }
 
+    from library_paths import google_drive_roots
+    from serato_gdrive import build_google_drive_audio_index, resolve_serato_portable_file
+
     home = Path.home()
     search_roots = [
+        *google_drive_roots(),
         home / "Desktop" / "muzyka dj",
         home / "Desktop",
         home / "Music",
         home / "Downloads",
     ]
     basename_index = _build_local_basename_index(search_roots)
+    gdrive_index = build_google_drive_audio_index()
 
     rows = con.execute(
         "SELECT id, portable_id, file_name, is_missing FROM asset "
@@ -1220,16 +1246,19 @@ def repair_root_sqlite_path_links(
             if len(group) <= 1:
                 aid, pid, fname, missing = group[0]
                 best, exists = _resolve_root_portable_id(
-                    pid, file_name=fname, basename_index=basename_index
+                    pid,
+                    file_name=fname,
+                    basename_index=basename_index,
+                    gdrive_index=gdrive_index,
                 )
                 if best != pid or (exists and missing):
                     stats["groups"] += 1
                     if not dry_run:
                         size = None
                         if exists:
-                            p = Path("/" + best) if not best.startswith("/") else Path(best)
+                            p = resolve_serato_portable_file(best)
                             try:
-                                size = p.stat().st_size
+                                size = p.stat().st_size if p else None
                             except OSError:
                                 pass
                         con.execute(
@@ -1246,7 +1275,10 @@ def repair_root_sqlite_path_links(
             resolved: list[tuple[int, str, str, bool, int]] = []
             for aid, pid, fname, missing in group:
                 best, exists = _resolve_root_portable_id(
-                    pid, file_name=fname, basename_index=basename_index
+                    pid,
+                    file_name=fname,
+                    basename_index=basename_index,
+                    gdrive_index=gdrive_index,
                 )
                 bonus = 0
                 if exists and missing:
@@ -1256,8 +1288,8 @@ def repair_root_sqlite_path_links(
             resolved.sort(
                 key=lambda x: (
                     x[3],
+                    _portable_location_rank(x[2]),
                     x[4],
-                    0 if x[2].startswith("Users/test/Desktop/") else 1,
                     -x[0],
                 ),
                 reverse=True,
@@ -1292,13 +1324,9 @@ def repair_root_sqlite_path_links(
                     else:
                         size = None
                         if winner_exists:
-                            p = (
-                                Path("/" + winner_best)
-                                if not winner_best.startswith("/")
-                                else Path(winner_best)
-                            )
+                            p = resolve_serato_portable_file(winner_best)
                             try:
-                                size = p.stat().st_size
+                                size = p.stat().st_size if p else None
                             except OSError:
                                 pass
                         con.execute(

@@ -83,11 +83,17 @@ from engine_libdjinterop import (
     validate_engine_schema,
 )
 from dj_apps_guard import sync_guard_blockers
-from engine_patriot_sync import sync_metadata_and_playlists_to_patriot
-from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+from engine_patriot_sync import diagnose_patriot_library, sync_metadata_and_playlists_to_patriot
+from engine_stems import patriot_engine_available, resolve_patriot_engine
+from library_paths import (
+    close_engine_hint,
+    default_vdj_folders,
+)
 from serato_parser import (
     load_serato_database_v2,
     load_serato_folder,
+    looks_like_serato_database_v2,
+    resolve_serato_library_dir,
     save_serato_database_v2,
     save_serato_crate,
     iter_serato_crate_files,
@@ -128,6 +134,27 @@ CORS(app, origins=_CORS_ORIGINS, supports_credentials=True)
 APP_VERSION = read_app_version()
 
 register_blueprints(app)
+
+
+def _patriot_from_request(data: dict | None = None) -> Path:
+    """Patriot z body/query albo auto-detekcja (Win11: litera dysku)."""
+    data = data or {}
+    raw = (
+        data.get('patriotDir')
+        or data.get('patriotEngine')
+        or request.args.get('patriotEngine')
+        or request.args.get('patriotDir')
+        or ''
+    ).strip()
+    return resolve_patriot_engine(raw or None)
+
+
+def _sync_patriot_enabled(data: dict, patriot: Path) -> bool:
+    """Domyślnie sync na Patriot gdy dysk jest podłączony (wyłącz: syncPatriot=0)."""
+    raw = data.get('syncPatriot', None)
+    if raw is None:
+        return patriot_engine_available(patriot)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
 
 # Legacy aliases — trasy w app.py korzystają ze wspólnego stanu (app_state).
 def _ensure_loaded():
@@ -272,38 +299,116 @@ def handle_value_error(e):
     return jsonify({'error': str(e)}), 400
 
 
+def _install_serato_unified(
+    db,
+    *,
+    path: str = "",
+    message: str = "Załadowano Serato DJ",
+    loaded_via: str = "path",
+):
+    st.songs = unified_to_vdj_songs(db)
+    st.unified = db
+    st.version = ""
+    st.db_path = None
+    st.vdjfolders = {}
+    st.extra_files = {}
+    st.source = "serato"
+    return jsonify({
+        "ok": True,
+        "count": len(st.songs),
+        "playlists": len(db.playlists),
+        "path": path,
+        "loadedVia": loaded_via,
+        "source": "serato",
+        "message": message,
+    })
+
+
 @app.route('/api/load', methods=['POST'])
 def api_load():
-    """Ładuje database.xml z podanej ścieżki (lub ZIP – backup VDJ)."""
+    """Ładuje bazę ze ścieżki na dysku: ZIP VDJ, folder _Serato_, database.xml, Engine m.db."""
     _clear_undo_stack()
     data = request.get_json() or {}
     path = data.get('path', '').strip()
-    if not path:
-        return jsonify({'error': 'Brak ścieżki'}), 400
-    p = Path(path).expanduser().resolve()
-    if not p.exists():
-        return jsonify({'error': f'Plik nie istnieje: {p}'}), 404
+    source_hint = (data.get('source') or '').strip().lower()
+    drive_root = (data.get("driveRoot") or "").strip() or None
     try:
+        if not path and source_hint == "serato":
+            serato = resolve_serato_library_dir(None)
+            if not serato:
+                return jsonify({
+                    "error": (
+                        "Nie znaleziono biblioteki Serato (~/Music/_Serato_/database V2). "
+                        "Użyj „Otwórz folder” i wskaż _Serato_ albo Music."
+                    ),
+                }), 404
+            db = load_serato_folder(serato, drive_root=drive_root)
+            return _install_serato_unified(
+                db,
+                path=str(serato),
+                message=f"Załadowano Serato DJ ({serato})",
+            )
+        if not path:
+            return jsonify({'error': 'Brak ścieżki'}), 400
+        p = Path(path).expanduser().resolve()
+        if not p.exists():
+            return jsonify({'error': f'Plik nie istnieje: {p}'}), 404
+        serato = resolve_serato_library_dir(p)
+        if serato:
+            db = load_serato_folder(serato, drive_root=drive_root)
+            return _install_serato_unified(
+                db,
+                path=str(serato),
+                message=f"Załadowano Serato DJ ({serato})",
+            )
         if p.is_dir():
-            serato_dir = p / "_Serato_"
-            db_v2 = serato_dir / "database V2"
-            if not db_v2.exists():
-                db_v2 = serato_dir / "DatabaseV2"
-            if serato_dir.is_dir() and db_v2.exists():
-                drive_root = (data.get("driveRoot") or "").strip() or None
-                db = load_serato_folder(p, drive_root=drive_root)
+            vdj_xml = p / "database.xml"
+            if vdj_xml.is_file():
+                st.songs, st.version = load_database(vdj_xml)
+                st.db_path = vdj_xml
+                scanned = scan_vdjfolders(p)
+                st.vdjfolders = {
+                    str(fp.relative_to(p)).replace("\\", "/"): content
+                    for fp, content in scanned.items()
+                }
+                st.extra_files = {}
+                st.source = "vdj"
+                st.unified = None
+                return jsonify({
+                    "ok": True,
+                    "count": len(st.songs),
+                    "version": st.version,
+                    "path": str(vdj_xml),
+                    "loadedVia": "path",
+                    "source": "vdj",
+                    "vdjfolders": len(st.vdjfolders),
+                    "message": "Załadowano VirtualDJ (folder)",
+                })
+            engine_db = p / "Database2" / "m.db"
+            if not engine_db.is_file():
+                engine_db = p / "m.db"
+            if engine_db.is_file():
+                db = load_engine_db(engine_db)
                 st.songs = unified_to_vdj_songs(db)
                 st.unified = db
                 st.version = ""
                 st.db_path = None
                 st.vdjfolders = {}
                 st.extra_files = {}
-                st.source = "serato"
+                st.source = "engine"
                 return jsonify({
-                    "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                    "path": str(p), "loadedVia": "path", "source": "serato",
+                    "ok": True,
+                    "count": len(st.songs),
+                    "playlists": len(db.playlists),
+                    "path": str(engine_db),
+                    "loadedVia": "path",
+                    "source": "engine",
+                    "message": "Załadowano Engine DJ (folder)",
                 })
-            raise ValueError("Folder nie zawiera biblioteki Serato (_Serato_/database V2)")
+            raise ValueError(
+                "Folder nie zawiera biblioteki DJ. "
+                "Wskaż _Serato_ (database V2), VirtualDJ (database.xml) albo Engine Library."
+            )
         if p.suffix.lower() == '.zip':
             db_content, vdjfiles, extra = _load_from_zip(p)
             st.songs, st.version = _load_from_content(db_content)
@@ -427,7 +532,22 @@ def api_load_universal():
                 "vdjfolders": len(st.vdjfolders),
                 "message": "Załadowano zachowany postęp (.njr)",
             })
-        if ext == ".zip" or "vdj" in fn:
+        if looks_like_serato_database_v2(content) or (
+            ext not in (".zip",) and (
+                "database v2" in fn or "databasev2" in fn.replace(" ", "")
+            )
+        ):
+            drive_root = (request.form.get("driveRoot") or "").strip() or None
+            db = load_serato_database_v2(content, drive_root=drive_root)
+            return _install_serato_unified(
+                db,
+                loaded_via="file",
+                message=(
+                    "Załadowano Serato DJ (database V2). "
+                    "Aby dociągnąć crates, użyj „Otwórz folder” / „Otwórz Serato” — bez ZIP."
+                ),
+            )
+        if ext == ".zip" or content[:2] == b"PK":
             with zipfile.ZipFile(BytesIO(content), "r") as z:
                 names = z.namelist()
             serato_db = next((n for n in names if "_serato_" in n.lower() and "database v2" in n.lower()), None)
@@ -439,17 +559,11 @@ def api_load_universal():
                     drive_root = (request.form.get("driveRoot") or "").strip() or None
                     serato_folder = Path(tmpdir) / Path(serato_db).parent
                     db = load_serato_folder(serato_folder, drive_root=drive_root)
-                    st.songs = unified_to_vdj_songs(db)
-                    st.unified = db
-                    st.version = ""
-                    st.db_path = None
-                    st.vdjfolders = {}
-                    st.extra_files = {}
-                    st.source = "serato"
-                    return jsonify({
-                        "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                        "source": "serato", "message": "Załadowano Serato DJ (ZIP z _Serato_)",
-                    })
+                    return _install_serato_unified(
+                        db,
+                        loaded_via="file",
+                        message="Załadowano Serato DJ (ZIP z _Serato_)",
+                    )
             db_content, vdjfiles, extra = _load_from_zip(BytesIO(content))
             st.songs, st.version = _load_from_content(db_content)
             st.db_path = None
@@ -503,21 +617,6 @@ def api_load_universal():
                 })
             finally:
                 tmp_path.unlink(missing_ok=True)
-        fn_lower = fn.lower().strip()
-        if "database v2" in fn_lower or "databasev2" in fn_lower or fn_lower == "database v2":
-            drive_root = (request.form.get("driveRoot") or "").strip() or None
-            db = load_serato_database_v2(content, drive_root=drive_root)
-            st.songs = unified_to_vdj_songs(db)
-            st.unified = db
-            st.version = ""
-            st.db_path = None
-            st.vdjfolders = {}
-            st.extra_files = {}
-            st.source = "serato"
-            return jsonify({
-                "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                "source": "serato", "message": "Załadowano Serato DJ (database V2)",
-            })
         if ext == ".djxml":
             db = load_djxml(content)
             st.songs = unified_to_vdj_songs(db)
@@ -576,7 +675,11 @@ def api_load_universal():
                 "source": "vdj", "message": "Załadowano VirtualDJ (database.xml)",
             })
         return jsonify({
-            "error": f"Nieznany format. Obsługiwane: .zip (VDJ), .xml (VDJ/RB), .djxml, .m.db (Engine), .nml (Traktor), database V2 (Serato). Otrzymano: {ext or fn[:30]}",
+            "error": (
+                "Nieznany format. Wskaż folder _Serato_ (Otwórz folder), "
+                "plik database V2, .zip (VDJ), .xml, .djxml, .m.db, .nml albo .njr. "
+                f"Otrzymano: {ext or fn[:40]}"
+            ),
         }), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1976,6 +2079,70 @@ def api_dedupe_serato_library():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/remap-serato-google-drive', methods=['POST'])
+def api_remap_serato_google_drive():
+    """
+    Przepina ścieżki w database V2 + crates (+ root.sqlite) na pliki
+    już pobrane na Dysk Google. Nie kopiuje muzyki.
+    Body: { seratoDir?, googleDrive?, sqliteDir?, dryRun?, includeSqlite? }
+    Serato musi być zamknięty.
+    """
+    r = _require_export_license()
+    if r:
+        return r
+    data = request.get_json(silent=True) or {}
+    serato_raw = (data.get("seratoDir") or "").strip()
+    serato_dir = Path(serato_raw).expanduser() if serato_raw else (
+        Path.home() / "Music" / "_Serato_"
+    )
+    guard = _sync_guard_json_response(
+        require_serato_closed=True,
+        require_engine_closed=False,
+        check_serato_db_lock=True,
+        serato_dir=serato_dir,
+    )
+    if guard:
+        return guard
+    gdrive = (data.get("googleDrive") or data.get("google_drive") or "").strip()
+    sqlite_raw = (data.get("sqliteDir") or "").strip()
+    dry_run = bool(data.get("dryRun") or data.get("dry_run"))
+    include_sqlite = data.get("includeSqlite")
+    if include_sqlite is None:
+        include_sqlite = data.get("include_sqlite", True)
+    try:
+        from serato_gdrive import remap_serato_library_to_google_drive
+
+        stats = remap_serato_library_to_google_drive(
+            serato_dir,
+            google_drive=gdrive or None,
+            dry_run=dry_run,
+            include_sqlite=bool(include_sqlite),
+            sqlite_dir=Path(sqlite_raw).expanduser() if sqlite_raw else None,
+        )
+        if not stats.get("ok"):
+            return jsonify(stats), 400
+        rew = int(stats.get("db_rewrites") or 0)
+        crates = int(stats.get("crate_files") or 0)
+        sql = stats.get("sqlite") or {}
+        sql_n = int(sql.get("updated") or 0) if isinstance(sql, dict) else 0
+        exist = int(stats.get("verified_exist") or 0)
+        missing = int(stats.get("verified_missing") or 0)
+        prefix = "Dry-run: " if dry_run else ""
+        stats["message"] = (
+            f"{prefix}Przepięto {rew} ścieżek w database V2"
+            + (f", {crates} crates" if crates else "")
+            + (f", {sql_n} w root.sqlite" if sql_n else "")
+            + f". Serato: {exist} plików pod nową ścieżką"
+            + (f", {missing} bez pliku" if missing else "")
+            + ". Ścieżki z literą dysku (G:/…). Pliki zostają na Dysku Google."
+        )
+        if stats.get("warning"):
+            stats["message"] += " UWAGA: " + stats["warning"]
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 _serato_cues_job: dict = {
     "running": False,
     "done": 0,
@@ -2390,9 +2557,8 @@ def api_sync_engine_desktop():
             or ''
         )
 
-        sync_patriot = str(data.get('syncPatriot', '0')).strip().lower() in (
-            '1', 'true', 'yes', 'on',
-        )
+        patriot = _patriot_from_request(data)
+        sync_patriot = _sync_patriot_enabled(data, patriot)
 
         db = _unified_db_for_export(playlist_tree=True)
         target = engine_dir or default_engine_desktop_library()
@@ -2469,7 +2635,6 @@ def api_sync_engine_desktop():
             analysis_hint = 'Brak utworów wymagających analizy po tym syncu.'
 
         patriot_sync = None
-        patriot = DEFAULT_PATRIOT_ENGINE
         if sync_patriot and patriot_engine_available(patriot):
             try:
                 patriot_sync = sync_metadata_and_playlists_to_patriot(db, patriot)
@@ -2480,7 +2645,7 @@ def api_sync_engine_desktop():
             f'VDJ → Engine: {len(export_doc["tracks"])} utworów, '
             f'{playlists_total} playlist. +{added} nowych. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki). Zamknij i otwórz Engine (Cmd+Q).',
+            'Ścieżki Music/ (symlinki). ' + close_engine_hint() + ', potem otwórz Engine ponownie.',
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -2754,9 +2919,8 @@ def api_sync_serato_to_engine():
         include_all = str(data.get('includeAll', '1')).strip().lower() not in (
             '0', 'false', 'no', 'off',
         )
-        sync_patriot = str(data.get('syncPatriot', '0')).strip().lower() in (
-            '1', 'true', 'yes', 'on',
-        )
+        patriot = _patriot_from_request(data)
+        sync_patriot = _sync_patriot_enabled(data, patriot)
 
         db = prepare_serato_unified_for_engine(
             serato_dir,
@@ -2852,7 +3016,6 @@ def api_sync_serato_to_engine():
             analysis_hint = 'Brak utworów wymagających analizy po tym syncu.'
 
         patriot_sync = None
-        patriot = DEFAULT_PATRIOT_ENGINE
         if sync_patriot and patriot_engine_available(patriot):
             try:
                 patriot_sync = sync_metadata_and_playlists_to_patriot(db, patriot)
@@ -2864,7 +3027,9 @@ def api_sync_serato_to_engine():
             f'{playlists_total} playlist (folder „Serato” / MyLists). '
             f'+{added} nowych. Hot cues: {tracks_with_cues}. Loops: {tracks_with_loops}. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki — bez kopiowania). Zamknij i otwórz Engine (Cmd+Q), poczekaj na analizę.',
+            'Ścieżki Music/ (symlinki — bez kopiowania). '
+            + close_engine_hint()
+            + ', potem otwórz Engine i poczekaj na analizę.',
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -2930,7 +3095,7 @@ def api_validate_engine_library():
         if result['engine_running']:
             result.setdefault('warnings', []).append(
                 'Engine DJ jest uruchomiony — walidacja odczytu OK, '
-                'ale merge/naprawa wymaga zamknięcia (Cmd+Q).'
+                f'ale merge/naprawa wymaga zamknięcia. {close_engine_hint()}.'
             )
         status = 200 if result.get('ok') else 400
         return jsonify(result), status
@@ -2955,7 +3120,8 @@ def api_auto_repair_engine_playlists():
             backup_engine_database2,
             default_engine_desktop_library,
         )
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+        from engine_stems import patriot_engine_available
+        from library_paths import desktop_library_label
 
         data = request.get_json(silent=True) or {}
         results: list[dict] = []
@@ -2993,10 +3159,9 @@ def api_auto_repair_engine_playlists():
 
         mac_raw = (data.get('engineDir') or '').strip()
         mac = Path(mac_raw).expanduser() if mac_raw else default_engine_desktop_library()
-        results.append(_repair_one(mac, 'Mac'))
+        results.append(_repair_one(mac, desktop_library_label()))
 
-        pat_raw = (data.get('patriotDir') or '').strip()
-        patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+        patriot = _patriot_from_request(data)
         if patriot_engine_available(patriot):
             results.append(_repair_one(patriot, 'Patriot'))
 
@@ -3025,13 +3190,10 @@ def api_auto_repair_patriot_playlists():
             'reason': 'engine_running',
         })
     try:
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
+        from engine_stems import patriot_engine_available
 
         data = request.get_json(silent=True) or {}
-        pat_raw = (data.get('patriotDir') or '').strip()
-        patriot = (
-            Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
-        )
+        patriot = _patriot_from_request(data)
         if not patriot_engine_available(patriot):
             return jsonify({
                 'ok': False,
@@ -3081,13 +3243,13 @@ def api_diagnose_engine_playlists():
 def api_repair_engine_playlists():
     """
     Remap PlaylistEntity po Sync Manager (stare ID/UUID Maca → lokalne).
-    Body: { engineDir? } — domyślnie Mac Engine Library; Patriot: /Volumes/Patriot/Engine Library.
+    Body: { engineDir? } — domyślnie Desktop Engine Library; Patriot: wykryty dysk (Win: np. E:\\Engine Library).
     Zamknij Engine DJ przed wywołaniem.
     """
     if is_engine_desktop_running():
         return jsonify({
             'error': (
-                'Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) '
+                f'Engine DJ Desktop jest uruchomiony — {close_engine_hint()} '
                 'i ponów naprawę playlist.'
             ),
         }), 409
@@ -3129,17 +3291,29 @@ def api_repair_engine_playlists():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/diagnose-patriot-library', methods=['GET'])
+def api_diagnose_patriot_library():
+    """
+    Diagnostyka Patriota: duplikaty po Export to Drive + playlisty.
+    Query: patriotEngine? / patriotDir?
+    """
+    try:
+        patriot = _patriot_from_request()
+        out = diagnose_patriot_library(patriot)
+        out['close_engine_hint'] = close_engine_hint()
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/engine-stems-diagnose', methods=['GET'])
 def api_engine_stems_diagnose():
     """Diagnoza po utracie stemów (np. błędny Sync Manager → Export Stems)."""
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, diagnose_stems_incident
+    from engine_stems import diagnose_stems_incident
 
     mac_raw = (request.args.get('macEngine') or '').strip()
-    pat_raw = (request.args.get('patriotEngine') or '').strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request()
     try:
         return jsonify(diagnose_stems_incident(mac, patriot))
     except Exception as e:
@@ -3148,15 +3322,12 @@ def api_engine_stems_diagnose():
 
 @app.route('/api/engine-stems-status', methods=['GET'])
 def api_engine_stems_status():
-    """Status stemów Mac vs Patriot (miejsce na dysku, kolejka)."""
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, stems_migration_status
+    """Status stemów Desktop vs Patriot (miejsce na dysku, kolejka)."""
+    from engine_stems import stems_migration_status
 
     mac_raw = (request.args.get('macEngine') or '').strip()
-    pat_raw = (request.args.get('patriotEngine') or '').strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request()
     try:
         return jsonify(stems_migration_status(mac, patriot))
     except Exception as e:
@@ -3166,21 +3337,16 @@ def api_engine_stems_status():
 @app.route('/api/engine-stems-prepare-batch', methods=['POST'])
 def api_engine_stems_prepare_batch():
     """
-    Playlistę NJR Stems Batch na Mac (kolejna partia bez stemów na Patriot).
+    Playlistę NJR Stems Batch na Desktop (kolejna partia bez stemów na Patriot).
     Body: batchSize, macEngine, patriotEngine. Zamknij Engine DJ przed wywołaniem.
     """
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, prepare_stems_batch_playlist
+    from engine_stems import prepare_stems_batch_playlist
 
     data = request.get_json(silent=True) or {}
     batch = int(data.get('batchSize') or request.args.get('batchSize') or 20)
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
-    pat_raw = (
-        data.get('patriotEngine') or request.args.get('patriotEngine') or ''
-    ).strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request(data)
     try:
         return jsonify(
             prepare_stems_batch_playlist(mac, patriot, batch_size=max(1, batch))
@@ -3194,12 +3360,10 @@ def api_engine_stems_prepare_batch():
 @app.route('/api/engine-stems-migrate', methods=['POST'])
 def api_engine_stems_migrate():
     """
-    Przenosi stemy z Mac Stems/ na Patriot i usuwa z Maca.
+    Przenosi stemy z Desktop Stems/ na Patriot i usuwa lokalne kopie.
     Body: batchSize, deleteMac, dryRun, macEngine, patriotEngine.
     """
-    from pathlib import Path
-
-    from engine_stems import DEFAULT_PATRIOT_ENGINE, migrate_stems_to_patriot
+    from engine_stems import migrate_stems_to_patriot
 
     data = request.get_json(silent=True) or {}
     batch_raw = data.get('batchSize', request.args.get('batchSize'))
@@ -3209,11 +3373,8 @@ def api_engine_stems_migrate():
         delete_mac = delete_mac.lower() not in ('0', 'false', 'no')
     dry_run = bool(data.get('dryRun') or request.args.get('dryRun'))
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
-    pat_raw = (
-        data.get('patriotEngine') or request.args.get('patriotEngine') or ''
-    ).strip()
     mac = Path(mac_raw).expanduser() if mac_raw else None
-    patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
+    patriot = _patriot_from_request(data)
     try:
         return jsonify(
             migrate_stems_to_patriot(
@@ -5206,14 +5367,7 @@ def api_online_playlist_download_backup():
 
 def _get_vdj_folders_path() -> Path:
     """Ścieżka do folderu VDJ Folders (gdzie vdjfolder musi być, żeby VDJ go rozpoznał)."""
-    import platform
-    home = Path.home()
-    if platform.system() == 'Darwin':  # macOS
-        return home / "Library" / "Application Support" / "VirtualDJ" / "Folders"
-    if platform.system() == 'Windows':
-        local = Path(os.environ.get('LOCALAPPDATA', home / 'AppData' / 'Local'))
-        return local / "VirtualDJ" / "Folders"
-    return home / ".virtualdj" / "Folders"
+    return default_vdj_folders()
 
 
 def _get_vdj_base_path() -> Path:

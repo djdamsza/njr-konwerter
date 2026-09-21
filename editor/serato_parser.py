@@ -203,25 +203,102 @@ def load_serato_crate(content: bytes, crate_name: str, drive_root: Optional[str]
     return Playlist(name=crate_name, track_ids=paths)
 
 
+def _serato_db_file(folder: Path) -> Optional[Path]:
+    for name in ("database V2", "Database V2", "DatabaseV2"):
+        f = folder / name
+        if f.is_file():
+            return f
+    return None
+
+
+def looks_like_serato_database_v2(content: bytes) -> bool:
+    """True gdy blob to database V2 (tag vrsn + tekst Database), nie .crate."""
+    if not content or len(content) < 12 or content[:4] != b"vrsn":
+        return False
+    try:
+        length = struct.unpack(">I", content[4:8])[0]
+        text = content[8 : 8 + min(length, 128)].decode("utf-16-be", errors="ignore").lower()
+        return "database" in text
+    except (struct.error, UnicodeDecodeError):
+        return False
+
+
+def default_serato_drive_root(serato_dir: Optional[Path] = None) -> str:
+    """Root woluminu do sklejania ścieżek względnych Serato (C:/ albo /)."""
+    p = Path(serato_dir) if serato_dir else Path.home()
+    raw = str(p).replace("\\", "/")
+    if len(raw) >= 2 and raw[1] == ":":
+        return raw[:2] + "/"
+    try:
+        s = str(p.expanduser().resolve()).replace("\\", "/")
+    except OSError:
+        s = raw
+    if len(s) >= 2 and s[1] == ":":
+        return s[:2] + "/"
+    return "/"
+
+
+def resolve_serato_library_dir(path: Optional[Path] = None) -> Optional[Path]:
+    """
+    Znajdź folder z plikiem database V2.
+    Akceptuje: plik database V2, folder _Serato_, folder nadrzędny (np. Music),
+    albo None = ~/Music/_Serato_.
+    Przy wskazanej ścieżce nie wraca do domyślnej biblioteki (ZIP / VDJ / Engine).
+    """
+    from library_paths import default_serato_dir
+
+    candidates: list[Path] = []
+    if path is None:
+        candidates.append(default_serato_dir())
+    else:
+        p = Path(path).expanduser()
+        if p.is_file():
+            try:
+                head = p.read_bytes()[:256]
+            except OSError:
+                head = b""
+            name = p.name.lower()
+            looks = looks_like_serato_database_v2(head) or (
+                "database v2" in name or name.replace(" ", "") == "databasev2"
+            )
+            if looks:
+                return p.parent
+            return None
+        candidates.append(p)
+        candidates.append(p / "_Serato_")
+
+    seen: set[str] = set()
+    for c in candidates:
+        try:
+            key = str(c)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        if _serato_db_file(c):
+            return c
+    return None
+
+
 def load_serato_folder(serato_path: Path, drive_root: Optional[str] = None) -> UnifiedDatabase:
     """
     Ładuje pełną bibliotekę Serato z folderu _Serato_.
-    serato_path: ścieżka do folderu _Serato_ (lub folderu nadrzędnego – szukamy _Serato_/database V2).
-    drive_root: root dysku (dla ścieżek względnych w DatabaseV2).
+    serato_path: folder _Serato_, folder nadrzędny, albo plik database V2.
+    drive_root: root dysku (C:/ albo /) – ścieżki w Database V2 są względne do woluminu.
     """
-    if not serato_path.is_dir():
-        serato_path = serato_path / "_Serato_"
-    db_file = serato_path / "database V2"
-    if not db_file.exists():
-        db_file = serato_path / "DatabaseV2"
-    if not db_file.exists():
+    resolved = resolve_serato_library_dir(Path(serato_path))
+    if not resolved:
+        return UnifiedDatabase(tracks=[], playlists=[], source="serato")
+    db_file = _serato_db_file(resolved)
+    if not db_file:
         return UnifiedDatabase(tracks=[], playlists=[], source="serato")
 
     content = db_file.read_bytes()
-    root = drive_root or str(serato_path.parent)
+    root = drive_root or default_serato_drive_root(resolved)
     db = load_serato_database_v2(content, drive_root=root)
 
-    subcrates = serato_path / "Subcrates"
+    subcrates = resolved / "Subcrates"
     if subcrates.is_dir():
         for cf in subcrates.glob("*.crate"):
             try:
@@ -290,10 +367,37 @@ def canonical_serato_relative_path(path: str) -> str:
     return collapse_serato_broken_path_prefixes(to_serato_relative_path(path))
 
 
-def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
+def _set_otrk_bmis_false(otrk: bytes) -> bytes:
+    """Zeruje flagę bmis (missing) w rekordzie otrk, jeśli pole już jest."""
+    fp = BytesIO(otrk)
+    out = BytesIO()
+    found = False
+    while True:
+        header = fp.read(8)
+        if len(header) < 8:
+            break
+        name = header[:4].decode("ascii", errors="replace")
+        length = struct.unpack(">I", header[4:8])[0]
+        payload = fp.read(length)
+        if len(payload) < length:
+            break
+        if name == "bmis":
+            payload = struct.pack("?", False)
+            found = True
+        _write_serato_record(out, name, payload)
+    return out.getvalue() if found else otrk
+
+
+def _rewrite_paths_in_container(
+    data: bytes,
+    transform,
+    *,
+    clear_missing: bool = False,
+) -> tuple[bytes, int]:
     """
     Prepisuje pfil/ptrk w kontenerze rekordów Serato (otrk lub top-level).
     Zachowuje pozostałe pola bajtowo. Zwraca (nowe_data, liczba_zmian).
+    clear_missing: po zmianie ścieżki wyzeruj bmis (żółty trójkąt w Serato).
     """
     fp = BytesIO(data)
     out = BytesIO()
@@ -320,8 +424,12 @@ def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
         elif name in ("otrk",) or (name and name[0] in ("o", "r")):
             # zagnieżdżony kontener — recursively for otrk only to be safe
             if name == "otrk":
-                new_payload, c = _rewrite_paths_in_container(payload, transform)
+                new_payload, c = _rewrite_paths_in_container(
+                    payload, transform, clear_missing=clear_missing
+                )
                 changed += c
+                if clear_missing and c:
+                    new_payload = _set_otrk_bmis_false(new_payload)
                 _write_serato_record(out, name, new_payload)
             else:
                 _write_serato_record(out, name, payload)
@@ -754,8 +862,9 @@ def normalize_and_dedupe_serato_library(
     """
     1) Przepisz database V2 + .crate na ścieżki relatywne (Users/…).
     2) Usuń klony /Users vs Users.
-    3) (purge_stale) Zmapuj stare ścieżki (Inne komputery/G:/Volumes/osx/Mój dysk)
-       na Desktop; usuń martwe duble po nazwie pliku; wyrzuć osierocone missing.
+    3) (purge_stale) Zmapuj stare ścieżki (Inne komputery / Volumes)
+       na Desktop gdy brak Dysku Google; usuń martwe duble po nazwie pliku;
+       wyrzuć osierocone missing. Ścieżek Mój dysk / My Drive nie rusza.
     Robi kopię .bak database V2. Serato musi być zamknięty.
     """
     from datetime import datetime
@@ -833,13 +942,9 @@ def serato_path_exists_on_disk(path: str) -> bool:
         return True
     if "://" in p[:64] or p.startswith("clouddrive:"):
         return False
-    if len(p) >= 2 and p[1] == ":":
-        return False
-    if p.startswith("/"):
-        return Path(p).is_file()
-    if p.startswith("Users/") or p.startswith("Volumes/"):
-        return Path("/" + p).is_file()
-    return False
+    from serato_gdrive import serato_path_exists_on_disk as _gdrive_exists
+
+    return _gdrive_exists(path)
 
 
 def apply_serato_path_replace(
@@ -1016,8 +1121,8 @@ def filter_track_paths_for_serato(
 
 def map_stale_serato_path_to_desktop(path: str, desktop: Optional[Path] = None) -> Optional[str]:
     """
-    Stare lokalizacje (Inne komputery / G: / Volumes/osx / Mój dysk)
-    → Users/…/Desktop/… jeśli plik tam jest.
+    Stare lokalizacje (Inne komputery / Volumes) → Users/…/Desktop/…
+    jeśli plik tam jest. Ścieżek Dysku Google (Mój dysk / My Drive) nie rusza.
     """
     p = (path or "").strip().replace("\\", "/")
     if not p or serato_path_exists_on_disk(p):
@@ -1028,8 +1133,7 @@ def map_stale_serato_path_to_desktop(path: str, desktop: Optional[Path] = None) 
         r"(?i)^(?:G:/)?Inne komputery/[^/]+/(.*)$",
         r"(?i)^Volumes/osx/Inne komputery/[^/]+/(.*)$",
         r"(?i)^Volumes/[^/]+/Inne komputery/[^/]+/(.*)$",
-        r"(?i)^Volumes/osx/Mój dysk/(.*)$",
-        r"(?i)^Mój dysk/(.*)$",
+        # Mój dysk / My Drive zostają na Dysku Google — nie przepinamy na Desktop.
     ):
         m = re.match(pat, p)
         if m:

@@ -543,10 +543,15 @@ def unified_to_engine_export_doc(
     tracks_skipped = 0
 
     if engine_music_layout and patriot_path_index is None:
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, index_tracks_by_filename, patriot_engine_available
+        from engine_stems import (
+            default_patriot_engine,
+            index_tracks_by_filename,
+            patriot_engine_available,
+        )
 
-        if patriot_engine_available(DEFAULT_PATRIOT_ENGINE):
-            patriot_path_index = index_tracks_by_filename(DEFAULT_PATRIOT_ENGINE)
+        patriot = default_patriot_engine()
+        if patriot_engine_available(patriot):
+            patriot_path_index = index_tracks_by_filename(patriot)
 
     for t in db.tracks:
         row = track_to_engine_json(

@@ -41,7 +41,7 @@ jobs:
 
       - name: Testy round-trip formatów
         working-directory: editor
-        run: python -m unittest test_roundtrip_formats -v
+        run: python -m unittest test_roundtrip_formats test_library_paths test_serato_gdrive test_serato_open -v
 
       - name: Wersja spójna z plikiem VERSION
         run: |

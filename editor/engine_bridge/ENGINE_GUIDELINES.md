@@ -26,7 +26,7 @@
 
 1. **VirtualDJ zamknięty** (sync VDJ → Engine)
 2. **Serato DJ zamknięty** (sync Serato → Engine; brak świeżego WAL/SHM przy `database V2`)
-3. Engine DJ **zamknięty** (Cmd+Q)
+3. Engine DJ **zamknięty** (`close_engine_hint()` — Cmd+Q na Mac, pełne wyjście / Menedżer zadań na Windows)
 4. Brak **legacy `m.db`** w korzeniu przy istniejącym `Database2/m.db`
 5. **Walidacja schematu** — `validate_engine_schema()`: 2.18.0…3.0.2, `PRAGMA integrity_check`, ostrzeżenie o brakujących `hm.db`/`sm.db`/`stm.db`
 6. Automatyczna **kopia zapasowa** `Database2/` (wbudowana w sync)

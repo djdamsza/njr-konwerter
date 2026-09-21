@@ -191,6 +191,41 @@
     .export-btn-vdj { background: #2d5a87; }
     .export-btn-serato { background: #e11d48; }
     .export-btn-engine { background: #c45c26; }
+    .path-status {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 10px;
+      line-height: 1.45;
+    }
+    .path-status code { font-size: 11px; }
+    .path-status .ok { color: #4ade80; }
+    .path-status .warn { color: #fbbf24; }
+    .patriot-path-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 12px;
+    }
+    .patriot-path-row input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--accent);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+    }
+    .stems-batch-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .stems-batch-row input { width: 72px; padding: 6px 8px; }
     .export-btn-muted {
       background: transparent;
       border: 1px solid var(--accent) !important;
@@ -566,11 +601,18 @@
     <main class="main-content">
       <div class="card-panel active" id="card-import">
   <div class="toolbar" id="importToolbar">
-    <input type="file" id="universalInput" accept=".zip,.xml,.djxml,.m.db,.nml,.db,.njr,*" style="display: none;" title="VDJ, Rekordbox, Serato, DJXML, Engine DJ, Traktor, zachowany postęp (.njr)">
-    <button id="importUniversalBtn" title="Otwórz dowolną bazę DJ – VDJ, RB, Serato, DJXML, Engine DJ, Traktor">Otwórz bazę</button>
+    <input type="file" id="universalInput" style="display: none;" title="VDJ, Rekordbox, Serato (database V2), DJXML, Engine DJ, Traktor, zachowany postęp (.njr)">
+    <button type="button" id="importUniversalBtn" title="Plik: ZIP VDJ, XML, NML, m.db, database V2, .njr">Otwórz plik</button>
+    <button type="button" id="importFolderBtn" title="Folder _Serato_, Music, VirtualDJ (database.xml) albo Engine Library">Otwórz folder</button>
+    <button type="button" id="importSeratoBtn" title="Wczytaj Music\_Serato_ z dysku — bez ZIP">Otwórz Serato</button>
     <span class="status" id="status">Nie załadowano</span>
     <span class="muted" id="saveReminder" style="font-size: 12px; margin-left: 8px; display: none;">Zmiany w pamięci – użyj „Eksport” na dole strony.</span>
   </div>
+  <p class="muted" id="importSeratoHint" style="font-size: 12px; margin: -8px 0 12px; padding: 0 4px;">
+    Serato: nie pakuj biblioteki do ZIP. Kliknij <strong>Otwórz Serato</strong>
+    albo <strong>Otwórz folder</strong> i wskaż <code>_Serato_</code> / <code>Music</code>
+    (plik <code>database V2</code> nie ma rozszerzenia — filtr „ZIP” go ukrywa).
+  </p>
 
   <div class="db-stats" id="dbStats" style="display: none;">
     <div class="db-stats-item">
@@ -1381,9 +1423,17 @@
           <p>
             Eksport crates (i opcjonalnie cue) do archiwum <code>_Serato_</code>.
             Folder Serato wykrywany jest automatycznie (<code>~/Music/_Serato_/</code>).
+            Na Win11 (PC backup): baza Serato zostaje, ścieżki wskazują pliki na Dysku Google — bez kopiowania muzyki na Desktop.
           </p>
+          <p class="path-status" id="seratoGdriveStatus">Szukam Dysku Google…</p>
+          <div class="patriot-path-row">
+            <label for="googleDrivePath">Dysk Google (muzyka)</label>
+            <input type="text" id="googleDrivePath" placeholder="G:\Mój dysk" autocomplete="off">
+            <button type="button" id="pickGoogleDriveBtn" class="export-btn-njr">Wybierz folder</button>
+          </div>
           <div class="export-actions">
             <button type="button" id="exportSeratoBtn" class="export-btn-serato export-requires-license">Pobierz eksport Serato (.zip)</button>
+            <button type="button" id="remapSeratoGdriveBtn" class="export-btn-serato export-requires-license">Przepnij ścieżki na Dysk Google</button>
           </div>
           <p class="export-hint" id="seratoExportHint">Szukam biblioteki Serato…</p>
         </div>
@@ -1391,12 +1441,32 @@
         <div class="export-card">
           <h4>Engine DJ</h4>
           <p>
-            <strong>Zalecane:</strong> najpierw pobierz eksport <strong>Serato</strong> powyżej,
-            potem w <strong>Engine DJ Desktop</strong> zaimportuj bibliotekę Serato
-            (File → Import Library / Import from Serato — zależnie od wersji).
-            Engine najlepiej czyta przygotowaną bibliotekę Serato.
+            Sync VDJ/Serato → Engine DJ Desktop, potem stemy na dysk Patriot (Rane SYSTEM ONE).
+            Na Win11: Create stems w Engine omija Macowy bug tempów AI.
+            <strong>Nie używaj</strong> „Export Stems” ani „Export to Drive” w Sync Manager.
           </p>
+          <p class="path-status" id="enginePathStatus">Wykrywam ścieżki bibliotek…</p>
+          <div class="patriot-path-row">
+            <label for="patriotEnginePath">Patriot Engine Library</label>
+            <input type="text" id="patriotEnginePath" placeholder="E:\Engine Library" autocomplete="off">
+            <button type="button" id="pickPatriotBtn" class="export-btn-njr">Wybierz folder</button>
+          </div>
           <div class="export-actions">
+            <button type="button" id="syncEngineDesktopBtn" class="export-btn-engine export-requires-license">Sync VDJ → Engine</button>
+            <button type="button" id="syncSeratoToEngineBtn" class="export-btn-engine export-requires-license">Sync Serato → Engine</button>
+            <button type="button" id="repairEnginePlaylistsBtn" class="export-btn-njr">Napraw playlisty Engine</button>
+            <button type="button" id="diagnosePatriotBtn" class="export-btn-njr">Diagnostyka Patriota</button>
+          </div>
+          <div class="stems-batch-row">
+            <label for="engineStemsBatchSize">Partia stemów</label>
+            <input type="number" id="engineStemsBatchSize" value="15" min="1" max="50">
+          </div>
+          <div class="export-actions">
+            <button type="button" id="engineStemsStatusBtn" class="export-btn-njr">Status stemów</button>
+            <button type="button" id="engineStemsPrepareBtn" class="export-btn-engine">Przygotuj partię (NJR Stems Batch)</button>
+            <button type="button" id="engineStemsMigrateBtn" class="export-btn-engine">Przenieś stemy na Patriot</button>
+          </div>
+          <div class="export-actions" style="margin-top: 10px;">
             <button type="button" id="exportEngineViaSeratoBtn" class="export-btn-engine export-requires-license">Pobierz Serato → import w Engine</button>
           </div>
           <details class="export-advanced">
@@ -1443,14 +1513,7 @@
       <button type="button" id="installSeratoCratesBtn" style="display:none"></button>
       <button type="button" id="writeSeratoCuesBtn" style="display:none"></button>
       <button type="button" id="dedupeSeratoBtn" style="display:none"></button>
-      <button type="button" id="syncEngineDesktopBtn" style="display:none"></button>
-      <button type="button" id="syncSeratoToEngineBtn" style="display:none"></button>
-      <button type="button" id="repairEnginePlaylistsBtn" style="display:none"></button>
-      <button type="button" id="engineStemsStatusBtn" style="display:none"></button>
-      <button type="button" id="engineStemsPrepareBtn" style="display:none"></button>
-      <button type="button" id="engineStemsMigrateBtn" style="display:none"></button>
       <button type="button" id="writeTagsBtn" style="display:none"></button>
-      <input type="number" id="engineStemsBatchSize" value="15" style="display:none">
       <button type="button" id="seratoBrowseBtn" style="display:none"></button>
     </div>
   </div>
@@ -1477,9 +1540,71 @@
 
   <script>
     const API = '/api';
+    window.njrLibraryPaths = {
+      platform: '',
+      desktop_label: 'Engine DJ Desktop',
+      engine_desktop: '',
+      patriot_engine: '',
+      patriot_mounted: false,
+      close_engine_hint: 'Zamknij Engine DJ',
+      close_all_dj_hint: 'Zamknij VirtualDJ, Serato DJ i Engine DJ',
+    };
+    function patriotEnginePathValue() {
+      return (document.getElementById('patriotEnginePath')?.value || '').trim()
+        || window.njrLibraryPaths.patriot_engine
+        || '';
+    }
+    function withPatriotPayload(extra) {
+      const body = extra ? { ...extra } : {};
+      const pat = patriotEnginePathValue();
+      if (pat) {
+        body.patriotEngine = pat;
+        body.patriotDir = pat;
+      }
+      return body;
+    }
+    function patriotQuery() {
+      const pat = patriotEnginePathValue();
+      return pat ? ('?patriotEngine=' + encodeURIComponent(pat)) : '';
+    }
+    function renderEnginePathStatus(d) {
+      const el = document.getElementById('enginePathStatus');
+      if (!el || !d) return;
+      const deskOk = d.engine_desktop_exists;
+      const patOk = d.patriot_mounted;
+      el.innerHTML =
+        (d.desktop_label || 'Desktop') + ': <code>' + (d.engine_desktop || '—') + '</code> '
+        + (deskOk ? '<span class="ok">baza OK</span>' : '<span class="warn">brak m.db</span>')
+        + '<br>Patriot: <code>' + (d.patriot_engine || '—') + '</code> '
+        + (patOk ? '<span class="ok">podłączony</span>' : '<span class="warn">nie wykryto — podaj literę dysku</span>');
+    }
+    async function loadLibraryPaths() {
+      try {
+        const r = await fetch('/api/library-paths');
+        const d = await r.json();
+        window.njrLibraryPaths = Object.assign(window.njrLibraryPaths, d || {});
+        const input = document.getElementById('patriotEnginePath');
+        if (input && d.patriot_engine && !input.value) input.value = d.patriot_engine;
+        renderEnginePathStatus(d);
+        const gInput = document.getElementById('googleDrivePath');
+        if (gInput && d.google_drive && !gInput.value) gInput.value = d.google_drive;
+        const gEl = document.getElementById('seratoGdriveStatus');
+        if (gEl) {
+          const roots = d.google_drive_roots || [];
+          if (roots.length) {
+            gEl.innerHTML = 'Dysk Google: <code>' + roots[0] + '</code> <span class="ok">pliki zostają tutaj</span>';
+          } else {
+            gEl.innerHTML = 'Dysk Google: <span class="warn">nie wykryto — wskaż folder lustrzanych plików (G:\\Mój dysk)</span>';
+          }
+        }
+        const ver = document.getElementById('version-footer');
+        if (ver && d.version) ver.textContent = 'NJR Konwerter v' + d.version;
+      } catch (_) {}
+    }
+    loadLibraryPaths();
     fetch('/api/version').then(r => r.json()).then(d => {
       const el = document.getElementById('version-footer');
-      if (el) el.textContent = 'NJR Konwerter v' + (d.version || '');
+      if (el && !window.njrLibraryPaths.version) el.textContent = 'NJR Konwerter v' + (d.version || '');
     }).catch(() => {});
     async function checkForUpdates() {
       const resultEl = document.getElementById('update-result');
@@ -2140,7 +2265,14 @@
     const syncEngineBtn = document.getElementById('syncEngineDesktopBtn');
     if (syncEngineBtn) {
       syncEngineBtn.onclick = async () => {
-        if (!confirm('Synchronizacja VDJ → Engine DJ Desktop (~/Music/Engine Library).\n\nChecklist przed sync:\n• Zamknij VirtualDJ\n• Zamknij Serato DJ (jeśli otwarty)\n• Zamknij Engine DJ (Cmd+Q)\n\nKliknij OK aby kontynuować.\n\nPlaylisty trafią do folderu „VDJ” z zachowaniem drzewa (MyLists / gatunki / …). Beatgrid, cue i loop zostaną zaktualizowane.')) return;
+        const paths = window.njrLibraryPaths || {};
+        const desk = paths.engine_desktop || '~/Music/Engine Library';
+        if (!confirm(
+          'Synchronizacja VDJ → Engine DJ Desktop (' + desk + ').\n\n'
+          + 'Checklist przed sync:\n• ' + (paths.close_all_dj_hint || 'Zamknij VDJ / Serato / Engine')
+          + '\n\nKliknij OK aby kontynuować.\n\nPlaylisty trafią do folderu „VDJ”. Beatgrid, cue i loop zostaną zaktualizowane.\n'
+          + 'NIE używaj Export to Drive w Sync Manager.'
+        )) return;
         try {
           setStatus('Synchronizacja Engine DJ Desktop…', '');
           await runLongJob({
@@ -2151,7 +2283,7 @@
               const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
               const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
               const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
-              const body = { playlistPrefix: '' };
+              const body = withPatriotPayload({ playlistPrefix: '' });
               if (libraryRoot) body.libraryRoot = libraryRoot;
               if (pathFrom) body.pathFrom = pathFrom;
               if (pathTo) body.pathTo = pathTo;
@@ -2181,7 +2313,15 @@
     const syncSeratoEngineBtn = document.getElementById('syncSeratoToEngineBtn');
     if (syncSeratoEngineBtn) {
       syncSeratoEngineBtn.onclick = async () => {
-        if (!confirm('Serato → Engine DJ Desktop\n\nPlaylisty i lokalne pliki z ~/Music/_Serato_.\nSymlinki Music/ na Macu (bez kopiowania plików).\n\nGdy Patriot podłączony:\n• NJR usuwa duplikaty po Export to Drive\n• synchronizuje playlisty na dysk Rane\n\nChecklist:\n• Zamknij Serato DJ, VirtualDJ, Engine DJ (Cmd+Q)\n\nNIE używaj Export to Drive w Sync Manager.\n\nOK aby kontynuować.')) return;
+        const paths = window.njrLibraryPaths || {};
+        if (!confirm(
+          'Serato → Engine DJ Desktop\n\nPlaylisty i lokalne pliki z '
+          + (paths.serato_dir || '~/Music/_Serato_')
+          + '.\nSymlinki Music/ (bez kopiowania plików).\n\n'
+          + 'Gdy Patriot podłączony: NJR dopisze playlisty na dysk Rane.\n\n'
+          + 'Checklist:\n• ' + (paths.close_all_dj_hint || 'Zamknij aplikacje DJ')
+          + '\n\nNIE używaj Export to Drive w Sync Manager.\n\nOK aby kontynuować.'
+        )) return;
         try {
           setStatus('Serato → Engine… ładowanie crates i synchronizacja…', '');
           await runLongJob({
@@ -2192,7 +2332,7 @@
               const libraryRoot = (document.getElementById('engineLibraryRoot')?.value || '').trim();
               const pathFrom = (document.getElementById('enginePathFrom')?.value || '').trim();
               const pathTo = (document.getElementById('enginePathTo')?.value || '').trim();
-              const body = {};
+              const body = withPatriotPayload({});
               if (libraryRoot) body.libraryRoot = libraryRoot;
               if (pathFrom) body.pathFrom = pathFrom;
               if (pathTo) body.pathTo = pathTo;
@@ -2222,26 +2362,29 @@
     const repairEnginePlaylistsBtn = document.getElementById('repairEnginePlaylistsBtn');
     if (repairEnginePlaylistsBtn) {
       repairEnginePlaylistsBtn.onclick = async () => {
-        const pat = '/Volumes/Patriot/Engine Library';
+        const paths = window.njrLibraryPaths || {};
+        const pat = patriotEnginePathValue() || paths.patriot_engine || '';
+        const closeHint = paths.close_engine_hint || 'Zamknij Engine DJ';
         const choice = confirm(
-          'Napraw playlisty Engine (PlaylistEntity: ID/UUID Maca → lokalne).\n\n'
-          + 'OK = Patriot (' + pat + ')\n'
-          + 'Anuluj = najpierw zapytam o Mac Engine Library.\n\n'
-          + 'Zamknij Engine DJ (Cmd+Q) przed naprawą.'
+          'Napraw playlisty Engine (PlaylistEntity: ID/UUID źródła → lokalne).\n\n'
+          + 'OK = Patriot (' + (pat || 'wykryj dysk') + ')\n'
+          + 'Anuluj = najpierw zapytam o bibliotekę Desktop.\n\n'
+          + closeHint + ' przed naprawą.'
         );
         let engineDir = pat;
         if (!choice) {
-          if (!confirm('Naprawić Mac ~/Music/Engine Library?')) return;
+          const desk = paths.engine_desktop || '~/Music/Engine Library';
+          if (!confirm('Naprawić ' + (paths.desktop_label || 'Desktop') + ' ' + desk + '?')) return;
           engineDir = '';
         }
         try {
           setStatus('Naprawiam powiązania playlist Engine…', '');
           await runLongJob({
             title: 'Naprawa playlist Engine',
-            detail: 'Remap PlaylistEntity (ID Maca → lokalne)…',
+            detail: 'Remap PlaylistEntity (ID źródła → lokalne)…',
             button: repairEnginePlaylistsBtn,
             run: async () => {
-              const body = {};
+              const body = withPatriotPayload({});
               if (engineDir) body.engineDir = engineDir;
               const r = await fetch(API + '/repair-engine-playlists', {
                 method: 'POST',
@@ -2263,6 +2406,110 @@
         }
       };
     }
+    const diagnosePatriotBtn = document.getElementById('diagnosePatriotBtn');
+    if (diagnosePatriotBtn) {
+      diagnosePatriotBtn.onclick = async () => {
+        try {
+          setStatus('Diagnostyka Patriota…', '');
+          const r = await fetch(API + '/diagnose-patriot-library' + patriotQuery());
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const extras = d.duplicate_filename_extra_rows || 0;
+          const msg = d.patriot_mounted
+            ? (`Patriot ${d.engine_dir || patriotEnginePathValue()}: ${d.track_count || 0} utworów, `
+              + `duplikaty nazw: ${d.duplicate_filename_groups || 0} (+${extras} extra). `
+              + (d.likely_export_duplication ? 'Prawdopodobny Export to Drive — nie syncuj playlist aż do naprawy. ' : '')
+              + (d.playlists && d.playlists.healthy === false ? 'Playlisty wymagają naprawy. ' : 'Playlisty OK. '))
+            : ('Patriot niepodłączony: ' + (d.engine_dir || patriotEnginePathValue() || 'brak ścieżki'));
+          setStatus(msg, d.patriot_mounted ? 'loaded' : 'error');
+        } catch (err) { setStatus('Błąd diagnostyki Patriota: ' + err.message, 'error'); }
+      };
+    }
+    const pickPatriotBtn = document.getElementById('pickPatriotBtn');
+    if (pickPatriotBtn) {
+      pickPatriotBtn.onclick = async () => {
+        try {
+          const r = await fetch(API + '/pick-folder');
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.path) throw new Error(d.error || 'Nie wybrano folderu');
+          const input = document.getElementById('patriotEnginePath');
+          if (input) input.value = d.path;
+          window.njrLibraryPaths.patriot_engine = d.path;
+        } catch (err) { setStatus('Wybór folderu: ' + err.message, 'error'); }
+      };
+    }
+    const pickGoogleDriveBtn = document.getElementById('pickGoogleDriveBtn');
+    if (pickGoogleDriveBtn) {
+      pickGoogleDriveBtn.onclick = async () => {
+        try {
+          const r = await fetch(API + '/pick-folder');
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.path) throw new Error(d.error || 'Nie wybrano folderu');
+          const input = document.getElementById('googleDrivePath');
+          if (input) input.value = d.path;
+          window.njrLibraryPaths.google_drive = d.path;
+        } catch (err) { setStatus('Wybór Dysku Google: ' + err.message, 'error'); }
+      };
+    }
+    const remapSeratoGdriveBtn = document.getElementById('remapSeratoGdriveBtn');
+    if (remapSeratoGdriveBtn) {
+      remapSeratoGdriveBtn.onclick = async () => {
+        const paths = window.njrLibraryPaths || {};
+        const gdrive = (document.getElementById('googleDrivePath')?.value || '').trim()
+          || paths.google_drive || '';
+        const closeHint = paths.close_all_dj_hint || 'Zamknij Serato DJ';
+        if (!confirm(
+          'Przepięcie ścieżek Serato na Dysk Google\n\n'
+          + 'ZAMKNIJ Serato. Potem w Serato: File → Rescan / Analyze jeśli utwory dalej są szare.\n\n'
+          + 'Ścieżki będą z literą dysku, np. G:/Mój dysk/… — bez litery Serato szuka na C: i nie otwiera plików.\n'
+          + 'Muzyka NIE jest kopiowana (zostaje na GDrive).\n'
+          + 'Pliki muszą być pobrane (nie „tylko online”).\n\n'
+          + 'Folder: ' + (gdrive || '(auto-detekcja)') + '\n'
+          + 'Serato: ' + (paths.serato_dir || '~/Music/_Serato_') + '\n\n'
+          + closeHint + '.\n\nOK aby kontynuować.'
+        )) return;
+        try {
+          setStatus('Przepinam ścieżki Serato na Dysk Google…', '');
+          await runLongJob({
+            title: 'Serato → Dysk Google',
+            detail: 'Indeks plików i zapis database V2 / crates…',
+            button: remapSeratoGdriveBtn,
+            run: async () => {
+              const body = {};
+              if (gdrive) body.googleDrive = gdrive;
+              if (paths.serato_dir) body.seratoDir = paths.serato_dir;
+              const r = await fetch(API + '/remap-serato-google-drive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok || d.error || d.ok === false) {
+                throw new Error(d.error || d.message || r.statusText);
+              }
+              const msg = d.message || 'Przepięto ścieżki na Dysk Google.';
+              const sample = (d.redirects_sample || []).slice(0, 3).map(
+                (x) => (x.from || '') + ' → ' + (x.to || '')
+              ).join('\n');
+              const extra = [
+                sample,
+                d.warning || '',
+                'Zamknij i otwórz Serato (Rescan jeśli trzeba).',
+              ].filter(Boolean).join('\n\n');
+              setStatus(msg + ' (indeks: ' + (d.indexed_files || 0) + ' plików)', 'loaded');
+              showJobDonePopup({
+                title: 'Serato → Dysk Google — gotowe',
+                message: msg,
+                detail: extra || undefined,
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd przepięcia Serato: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Serato → Dysk Google — błąd', message: err.message, type: 'error' });
+        }
+      };
+    }
     const engineStemsBatchInput = document.getElementById('engineStemsBatchSize');
     const engineStemsStatusBtn = document.getElementById('engineStemsStatusBtn');
     const engineStemsPrepareBtn = document.getElementById('engineStemsPrepareBtn');
@@ -2274,12 +2521,13 @@
     if (engineStemsStatusBtn) {
       engineStemsStatusBtn.onclick = async () => {
         try {
-          setStatus('Sprawdzam stemy Mac vs Patriot…', '');
-          const r = await fetch(API + '/engine-stems-status');
+          setStatus('Sprawdzam stemy Desktop vs Patriot…', '');
+          const r = await fetch(API + '/engine-stems-status' + patriotQuery());
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+          const desk = (window.njrLibraryPaths && window.njrLibraryPaths.desktop_label) || 'Desktop';
           const msg = [
-            `Mac: ${d.mac_stems_count || 0} stemów (${d.mac_stems_gb || 0} GB), wolne ${d.mac_free_gb ?? '?'} GB`,
+            `${desk}: ${d.mac_stems_count || 0} stemów (${d.mac_stems_gb || 0} GB), wolne ${d.mac_free_gb ?? '?'} GB`,
             `Patriot: ${d.patriot_stems_count || 0}/${d.patriot_tracks_total || 0} stemów (${d.patriot_stems_gb || 0} GB)`,
             `Do renderu: ~${d.mac_tracks_ready_for_stem_render || 0}, gotowe do przeniesienia: ${d.mac_stems_ready_to_migrate || 0}`,
           ].join(' · ');
@@ -2289,13 +2537,14 @@
     }
     if (engineStemsPrepareBtn) {
       engineStemsPrepareBtn.onclick = async () => {
-        if (!confirm('Przygotować playlistę „NJR / NJR Stems Batch”?\n\nZamknij Engine DJ (Cmd+Q). Potem w Engine: Create stems dla tej playlisty.')) return;
+        const closeHint = (window.njrLibraryPaths && window.njrLibraryPaths.close_engine_hint) || 'Zamknij Engine DJ';
+        if (!confirm('Przygotować playlistę „NJR / NJR Stems Batch”?\n\n' + closeHint + '. Potem w Engine: Create stems dla tej playlisty.')) return;
         try {
           setStatus('Tworzę playlistę partii stemów…', '');
           const r = await fetch(API + '/engine-stems-prepare-batch', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ batchSize: engineStemsBatchSize() }),
+            body: JSON.stringify(withPatriotPayload({ batchSize: engineStemsBatchSize() })),
           });
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.error) throw new Error(d.error || r.statusText);
@@ -2309,18 +2558,20 @@
     if (engineStemsMigrateBtn) {
       engineStemsMigrateBtn.onclick = async () => {
         const batch = engineStemsBatchSize();
-        if (!confirm(`Przenieść do ${batch ? batch + ' ' : ''}stemów na Patriot i usunąć z Maca?\n\nZamknij Engine DJ (Cmd+Q).`)) return;
+        const closeHint = (window.njrLibraryPaths && window.njrLibraryPaths.close_engine_hint) || 'Zamknij Engine DJ';
+        const pat = patriotEnginePathValue();
+        if (!confirm(`Przenieść do ${batch ? batch + ' ' : ''}stemów na Patriot${pat ? ' (' + pat + ')' : ''} i usunąć z Desktop?\n\n` + closeHint + '.')) return;
         try {
           setStatus('Migracja stemów na Patriot…', '');
           await runLongJob({
             title: 'Migracja stemów → Patriot',
-            detail: 'Kopiowanie plików .stems i zwalnianie miejsca na Macu…',
+            detail: 'Kopiowanie plików .stems i zwalnianie miejsca na Desktop…',
             button: engineStemsMigrateBtn,
             run: async () => {
               const r = await fetch(API + '/engine-stems-migrate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ batchSize: batch, deleteMac: true }),
+                body: JSON.stringify(withPatriotPayload({ batchSize: batch, deleteMac: true })),
               });
               const d = await r.json().catch(() => ({}));
               if (!r.ok || d.error) throw new Error(d.error || r.statusText);
@@ -2344,6 +2595,85 @@
 
     document.getElementById('importUniversalBtn').onclick = () => document.getElementById('universalInput').click();
 
+    async function applyLoadedLibrary(d) {
+      rbBetaActive = false;
+      const rbTools = document.getElementById('rbBetaTools');
+      if (rbTools) rbTools.style.display = 'none';
+      const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
+      setStatus(msg, 'loaded');
+      window.njrLibrarySource = d.source || '';
+      updateSeratoExportHref();
+      applyEngineMappingSuggestion(false);
+      (async () => {
+        try {
+          const d = await fetchJson(API + '/serato-drive-root-suggestion');
+          const rootEl = document.getElementById('seratoDriveRoot');
+          if (d.path && rootEl && !rootEl.value) rootEl.value = d.path;
+          const cratesEl = document.getElementById('seratoCratesOnly');
+          if (cratesEl && typeof d.recommendCratesOnly === 'boolean') {
+            cratesEl.checked = !!d.recommendCratesOnly;
+          }
+          const hint = document.getElementById('seratoExportHint');
+          if (hint) {
+            if (d.hasLibrary) {
+              hint.innerHTML = 'Wykryto <code>' + (d.seratoDir || '~/Music/_Serato_') + '</code> — eksport crates bez nadpisywania database V2.';
+            } else {
+              hint.innerHTML = 'Nie znaleziono lokalnej biblioteki Serato. Po eksporcie utwórz <code>~/Music/_Serato_/</code> i skopiuj Subcrates z ZIP.';
+            }
+          }
+          updateSeratoExportHref();
+        } catch (_) {
+          const hint = document.getElementById('seratoExportHint');
+          if (hint) hint.textContent = 'Folder Serato: ~/Music/_Serato_/ (wykrywanie automatyczne).';
+        }
+      })();
+      const vdjBtn = document.getElementById('exportVdjBtn');
+      if (vdjBtn) {
+        vdjBtn.textContent = 'Pobierz paczkę VDJ (.zip)';
+        vdjBtn.href = API + '/download';
+        vdjBtn.download = 'vdj-export.zip';
+      }
+      const plCount = d.playlists ?? d.vdjfolders ?? 0;
+      document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
+      document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');
+      const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML', folder_beta: 'RB Beta' };
+      document.getElementById('statsSource').textContent = srcNames[d.source] || d.source || '—';
+      document.getElementById('dbStats').style.display = 'flex';
+      updateTagList();
+      await doSearch();
+      refreshUndoButton();
+      refreshTrashBadge();
+    }
+
+    async function loadLibraryFromPath(path, extra) {
+      setStatus('Importowanie…', '');
+      const body = Object.assign({ path: path || '' }, extra || {});
+      const r = await fetch(API + '/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      await applyLoadedLibrary(d);
+    }
+
+    async function pickLibraryFolder() {
+      try {
+        const r = await fetch(API + '/pick-folder');
+        const d = await r.json().catch(() => ({}));
+        if (r.ok && d.path) return d.path;
+        if (d.error) setStatus(d.error + ' — wklej ścieżkę ręcznie.', '');
+      } catch (_) {}
+      const typed = window.prompt(
+        'Wskaż folder biblioteki DJ.\n'
+        + 'Serato: Music\\_Serato_ albo Music (tam jest database V2).\n'
+        + 'VirtualDJ: folder z database.xml.\n'
+        + 'Engine DJ: Engine Library.'
+      );
+      return (typed || '').trim() || null;
+    }
+
     document.getElementById('universalInput').onchange = async (e) => {
       const f = e.target.files?.[0];
       if (!f) return;
@@ -2354,57 +2684,44 @@
         const r = await fetch(API + '/load-universal', { method: 'POST', body: fd });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.error || r.statusText);
-        rbBetaActive = false;
-        document.getElementById('rbBetaTools').style.display = 'none';
-        const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
-        setStatus(msg, 'loaded');
-        window.njrLibrarySource = d.source || '';
-        updateSeratoExportHref();
-        applyEngineMappingSuggestion(false);
-        (async () => {
-          try {
-            const d = await fetchJson(API + '/serato-drive-root-suggestion');
-            const rootEl = document.getElementById('seratoDriveRoot');
-            if (d.path && rootEl && !rootEl.value) rootEl.value = d.path;
-            const cratesEl = document.getElementById('seratoCratesOnly');
-            if (cratesEl && typeof d.recommendCratesOnly === 'boolean') {
-              cratesEl.checked = !!d.recommendCratesOnly;
-            }
-            const hint = document.getElementById('seratoExportHint');
-            if (hint) {
-              if (d.hasLibrary) {
-                hint.innerHTML = 'Wykryto <code>' + (d.seratoDir || '~/Music/_Serato_') + '</code> — eksport crates bez nadpisywania database V2.';
-              } else {
-                hint.innerHTML = 'Nie znaleziono lokalnej biblioteki Serato. Po eksporcie utwórz <code>~/Music/_Serato_/</code> i skopiuj Subcrates z ZIP.';
-              }
-            }
-            updateSeratoExportHref();
-          } catch (_) {
-            const hint = document.getElementById('seratoExportHint');
-            if (hint) hint.textContent = 'Folder Serato: ~/Music/_Serato_/ (wykrywanie automatyczne).';
-          }
-        })();
-        const vdjBtn = document.getElementById('exportVdjBtn');
-        if (vdjBtn) {
-          vdjBtn.textContent = 'Pobierz paczkę VDJ (.zip)';
-          vdjBtn.href = API + '/download';
-          vdjBtn.download = 'vdj-export.zip';
-        }
-        const plCount = d.playlists ?? d.vdjfolders ?? 0;
-        document.getElementById('statsTracks').textContent = (d.count || 0).toLocaleString('pl-PL');
-        document.getElementById('statsPlaylists').textContent = plCount.toLocaleString('pl-PL');
-        const srcNames = { vdj: 'VirtualDJ', rb: 'Rekordbox', serato: 'Serato DJ', engine: 'Engine DJ', traktor: 'Traktor', djxml: 'DJXML', folder_beta: 'RB Beta' };
-        document.getElementById('statsSource').textContent = srcNames[d.source] || d.source || '—';
-        document.getElementById('dbStats').style.display = 'flex';
-        updateTagList();
-        await doSearch();
-        refreshUndoButton();
-        refreshTrashBadge();
+        await applyLoadedLibrary(d);
       } catch (err) {
         setStatus('Błąd: ' + err.message, 'error');
       }
       e.target.value = '';
     };
+
+    const importFolderBtn = document.getElementById('importFolderBtn');
+    if (importFolderBtn) {
+      importFolderBtn.onclick = async () => {
+        try {
+          const path = await pickLibraryFolder();
+          if (!path) return;
+          await loadLibraryFromPath(path);
+        } catch (err) {
+          setStatus('Błąd: ' + err.message, 'error');
+        }
+      };
+    }
+
+    const importSeratoBtn = document.getElementById('importSeratoBtn');
+    if (importSeratoBtn) {
+      importSeratoBtn.onclick = async () => {
+        try {
+          if (!window.njrLibraryPaths || !window.njrLibraryPaths.serato_dir) {
+            await loadLibraryPaths();
+          }
+          const seratoDir = (window.njrLibraryPaths && window.njrLibraryPaths.serato_dir) || '';
+          if (seratoDir) {
+            await loadLibraryFromPath(seratoDir);
+          } else {
+            await loadLibraryFromPath('', { source: 'serato' });
+          }
+        } catch (err) {
+          setStatus('Błąd: ' + err.message, 'error');
+        }
+      };
+    }
 
     async function refreshUndoButton() {
       try {

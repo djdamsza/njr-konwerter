@@ -28,7 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine_stems import (  # noqa: E402
-    DEFAULT_PATRIOT_ENGINE,
+    default_patriot_engine,
     migrate_stems_to_patriot,
     prepare_stems_batch_playlist,
     stems_migration_status,
@@ -42,13 +42,13 @@ def main() -> int:
         "--mac",
         type=Path,
         default=None,
-        help="Mac Engine Library (domyślnie ~/Music/Engine Library)",
+        help="Lokalna Engine Library Desktop (domyślnie ~/Music/Engine Library; na Win11 też --mac)",
     )
     parser.add_argument(
         "--patriot",
         type=Path,
-        default=DEFAULT_PATRIOT_ENGINE,
-        help="Patriot Engine Library",
+        default=None,
+        help="Patriot Engine Library (auto-detekcja; Win: np. E:\\Engine Library)",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -69,7 +69,7 @@ def main() -> int:
 
     args = parser.parse_args()
     mac = args.mac or default_engine_desktop_library()
-    patriot = args.patriot
+    patriot = args.patriot or default_patriot_engine()
 
     try:
         if args.cmd == "status":

@@ -298,7 +298,8 @@ class TestSeratoExportPathFilter(unittest.TestCase):
 
             walk(data)
             self.assertEqual(len(paths), 1)
-            self.assertIn("Users/", paths[0])
+            self.assertTrue(paths[0].replace("\\", "/").endswith("exists.mp3"))
+            self.assertNotIn("missing", paths[0])
 
 
 class TestSeratoTidalExport(unittest.TestCase):

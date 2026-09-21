@@ -24,7 +24,7 @@ from engine_disk_cleanup import (  # noqa: E402
 )
 from engine_libdjinterop import default_engine_desktop_library  # noqa: E402
 from engine_stems import (  # noqa: E402
-    DEFAULT_PATRIOT_ENGINE,
+    default_patriot_engine,
     get_library_uuid,
     infer_library_uuid_from_stems,
     list_stem_files,
@@ -38,7 +38,7 @@ def main() -> int:
         description="Czyści ukryty cache Engine DJ na Macu (nie tylko odnośniki w aplikacji)"
     )
     parser.add_argument("--mac", type=Path, default=None)
-    parser.add_argument("--patriot", type=Path, default=DEFAULT_PATRIOT_ENGINE)
+    parser.add_argument("--patriot", type=Path, default=None)
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("scan", help="Pokaż cache Engine DJ do usunięcia")
     p_clean = sub.add_parser("clean", help="Usuń cache + opcjonalnie stemy z Maca")
@@ -65,7 +65,7 @@ def main() -> int:
 
     args = parser.parse_args()
     mac = args.mac or default_engine_desktop_library()
-    patriot = args.patriot
+    patriot = args.patriot or default_patriot_engine()
 
     try:
         if args.cmd == "scan":
