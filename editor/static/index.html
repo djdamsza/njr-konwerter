@@ -2453,8 +2453,10 @@
         const closeHint = paths.close_all_dj_hint || 'Zamknij Serato DJ';
         if (!confirm(
           'Przepięcie ścieżek Serato na Dysk Google\n\n'
-          + 'Baza Serato zostaje. Zmieniają się tylko ścieżki w database V2, crates i root.sqlite.\n'
-          + 'Pliki muzyki NIE są kopiowane — zostają na Dysku Google (ten PC = backup).\n\n'
+          + 'ZAMKNIJ Serato. Potem w Serato: File → Rescan / Analyze jeśli utwory dalej są szare.\n\n'
+          + 'Ścieżki będą z literą dysku, np. G:/Mój dysk/… — bez litery Serato szuka na C: i nie otwiera plików.\n'
+          + 'Muzyka NIE jest kopiowana (zostaje na GDrive).\n'
+          + 'Pliki muszą być pobrane (nie „tylko online”).\n\n'
           + 'Folder: ' + (gdrive || '(auto-detekcja)') + '\n'
           + 'Serato: ' + (paths.serato_dir || '~/Music/_Serato_') + '\n\n'
           + closeHint + '.\n\nOK aby kontynuować.'
@@ -2482,11 +2484,16 @@
               const sample = (d.redirects_sample || []).slice(0, 3).map(
                 (x) => (x.from || '') + ' → ' + (x.to || '')
               ).join('\n');
+              const extra = [
+                sample,
+                d.warning || '',
+                'Zamknij i otwórz Serato (Rescan jeśli trzeba).',
+              ].filter(Boolean).join('\n\n');
               setStatus(msg + ' (indeks: ' + (d.indexed_files || 0) + ' plików)', 'loaded');
               showJobDonePopup({
                 title: 'Serato → Dysk Google — gotowe',
                 message: msg,
-                detail: sample || undefined,
+                detail: extra || undefined,
               });
             },
           });

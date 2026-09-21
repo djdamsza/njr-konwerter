@@ -2047,13 +2047,19 @@ def api_remap_serato_google_drive():
         crates = int(stats.get("crate_files") or 0)
         sql = stats.get("sqlite") or {}
         sql_n = int(sql.get("updated") or 0) if isinstance(sql, dict) else 0
+        exist = int(stats.get("verified_exist") or 0)
+        missing = int(stats.get("verified_missing") or 0)
         prefix = "Dry-run: " if dry_run else ""
         stats["message"] = (
             f"{prefix}Przepięto {rew} ścieżek w database V2"
             + (f", {crates} crates" if crates else "")
             + (f", {sql_n} w root.sqlite" if sql_n else "")
-            + ". Pliki zostają na Dysku Google — bez kopiowania."
+            + f". Serato: {exist} plików pod nową ścieżką"
+            + (f", {missing} bez pliku" if missing else "")
+            + ". Ścieżki z literą dysku (G:/…). Pliki zostają na Dysku Google."
         )
+        if stats.get("warning"):
+            stats["message"] += " UWAGA: " + stats["warning"]
         return jsonify(stats)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -192,9 +192,18 @@ def google_drive_roots() -> list[Path]:
                     for child in _GDRIVE_DIR_NAMES:
                         add(vol / child)
 
-    # Preferuj „My Drive” / „Mój dysk” nad korzeniem litery dysku
+    home_key = str(_safe_resolve(Path.home())).replace("\\", "/").lower()
+
+    def _under_home(p: Path) -> bool:
+        s = str(p).replace("\\", "/").lower()
+        return s == home_key or s.startswith(home_key.rstrip("/") + "/")
+
+    # 1) kopia w profilu (Users/…/Google Drive) — Serato otwiera to pewnie
+    # 2) folder „My Drive” / „Mój dysk”
+    # 3) sama litera wirtualnego dysku G:
     found.sort(
         key=lambda p: (
+            0 if _under_home(p) else 1,
             0 if _looks_like_google_drive(p.name) else 1,
             len(str(p)),
         )

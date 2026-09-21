@@ -75,11 +75,70 @@ class TestStripAndLookup(unittest.TestCase):
         self.assertTrue(any(s.endswith("Mój dysk/muzyka dj/a.mp3") for s in as_str))
         self.assertFalse(any("Mój dysk/Mój dysk/" in s for s in as_str))
 
-    def test_absolute_to_portable_strips_drive_letter(self):
+    def test_absolute_to_portable_keeps_windows_drive_letter(self):
         self.assertEqual(
             absolute_to_serato_portable("G:/Mój dysk/muzyka dj/a.mp3"),
-            "Mój dysk/muzyka dj/a.mp3",
+            "G:/Mój dysk/muzyka dj/a.mp3",
         )
+        self.assertEqual(
+            absolute_to_serato_portable(r"G:\Mój dysk\muzyka dj\a.mp3"),
+            "G:/Mój dysk/muzyka dj/a.mp3",
+        )
+
+    def test_nfc_lookup_matches_nfd_serato_path(self):
+        import unicodedata
+        from serato_gdrive import GoogleDriveAudioIndex
+
+        with tempfile.TemporaryDirectory() as td:
+            gdrive = Path(td) / "Mój dysk"
+            folder = gdrive / "muzyka dj"
+            folder.mkdir(parents=True)
+            name = "Tęsknota.mp3"
+            (folder / name).write_bytes(b"x")
+            idx = GoogleDriveAudioIndex([gdrive])
+            nfd = unicodedata.normalize("NFD", name)
+            self.assertNotEqual(nfd, name)
+            hit = idx.lookup(f"Users/mac/Desktop/muzyka dj/{nfd}")
+            self.assertIsNotNone(hit)
+            self.assertTrue(hit.replace("\\", "/").endswith("muzyka dj/" + name) or name in hit)
+
+    def test_bmis_cleared_when_path_rewritten(self):
+        from serato_parser import _rewrite_paths_in_container
+        import struct
+
+        otrk = BytesIO()
+        _write_serato_record(otrk, "pfil", _encode_utf16be("Users/mac/Desktop/a.mp3"))
+        _write_serato_record(otrk, "bmis", struct.pack("?", True))
+        db = _db(otrk.getvalue())
+
+        def xf(old: str) -> str:
+            return "G:/Mój dysk/a.mp3" if "Users/" in old else old
+
+        new, n = _rewrite_paths_in_container(db, xf, clear_missing=True)
+        self.assertGreaterEqual(n, 1)
+        loaded = load_serato_database_v2(new)
+        self.assertIn("G:/Mój dysk/a.mp3", loaded.tracks[0].path.replace("\\", "/"))
+
+        flags = []
+        fp = BytesIO(new)
+
+        def walk(payload: bytes) -> None:
+            inner = BytesIO(payload)
+            while True:
+                header = inner.read(8)
+                if len(header) < 8:
+                    break
+                name = header[:4].decode("ascii", "replace")
+                length = struct.unpack(">I", header[4:8])[0]
+                blob = inner.read(length)
+                if name == "bmis":
+                    flags.append(blob)
+                elif name == "otrk":
+                    walk(blob)
+
+        walk(new)
+        self.assertTrue(flags)
+        self.assertEqual(flags[0], struct.pack("?", False))
 
     def test_moj_dysk_not_remapped_to_desktop(self):
         mapped = map_stale_serato_path_to_desktop("Mój dysk/muzyka dj/ghost.mp3")

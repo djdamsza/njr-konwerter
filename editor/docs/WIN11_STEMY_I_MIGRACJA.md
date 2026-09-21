@@ -66,7 +66,7 @@ Przed podmianą `database.xml` zrób kopię (`database.xml.bak`).
 | Serato 4 Library | `~/Library/Application Support/Serato/Library/root.sqlite` | `%APPDATA%\Serato\Library\root.sqlite` |
 | Root ścieżek przy eksporcie NJR | `/Users/…/` lub `/Volumes/Dysk/` | `C:\` lub `G:\` (Dysk Google) |
 
-Serato wymaga **ścieżek względnych** do roota dysku (np. `Mój dysk\muzyka dj\track.mp3`), nie absolutnych Windows UNC.
+Serato wymaga **ścieżek względnych do roota dysku z literą na Windows** (np. `G:/Mój dysk/muzyka dj/track.mp3`). Samo `Mój dysk/…` sprawia, że Serato szuka pliku na `C:` i nie otwiera go.
 
 **PC backup + Dysk Google:** baza Serato na Win11 ma już aktualne crates/cue, ale ścieżki z Maca (`Users/…/Desktop/…`) nie trafiają w pliki. Muzyka ma **zostać** na Dysku Google (lustrzane / pobrane pliki — ten komputer nie jest głównym). W NJR: **Eksport → Serato DJ → Przepnij ścieżki na Dysk Google**. Nie kopiuje plików. Env `NJR_GOOGLE_DRIVE` albo pole w UI (`G:\Mój dysk`). API: `POST /api/remap-serato-google-drive`. CLI: `python remap_serato_google_drive.py`. Zamknij Serato przed remapem.
 

@@ -290,10 +290,37 @@ def canonical_serato_relative_path(path: str) -> str:
     return collapse_serato_broken_path_prefixes(to_serato_relative_path(path))
 
 
-def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
+def _set_otrk_bmis_false(otrk: bytes) -> bytes:
+    """Zeruje flagę bmis (missing) w rekordzie otrk, jeśli pole już jest."""
+    fp = BytesIO(otrk)
+    out = BytesIO()
+    found = False
+    while True:
+        header = fp.read(8)
+        if len(header) < 8:
+            break
+        name = header[:4].decode("ascii", errors="replace")
+        length = struct.unpack(">I", header[4:8])[0]
+        payload = fp.read(length)
+        if len(payload) < length:
+            break
+        if name == "bmis":
+            payload = struct.pack("?", False)
+            found = True
+        _write_serato_record(out, name, payload)
+    return out.getvalue() if found else otrk
+
+
+def _rewrite_paths_in_container(
+    data: bytes,
+    transform,
+    *,
+    clear_missing: bool = False,
+) -> tuple[bytes, int]:
     """
     Prepisuje pfil/ptrk w kontenerze rekordów Serato (otrk lub top-level).
     Zachowuje pozostałe pola bajtowo. Zwraca (nowe_data, liczba_zmian).
+    clear_missing: po zmianie ścieżki wyzeruj bmis (żółty trójkąt w Serato).
     """
     fp = BytesIO(data)
     out = BytesIO()
@@ -320,8 +347,12 @@ def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
         elif name in ("otrk",) or (name and name[0] in ("o", "r")):
             # zagnieżdżony kontener — recursively for otrk only to be safe
             if name == "otrk":
-                new_payload, c = _rewrite_paths_in_container(payload, transform)
+                new_payload, c = _rewrite_paths_in_container(
+                    payload, transform, clear_missing=clear_missing
+                )
                 changed += c
+                if clear_missing and c:
+                    new_payload = _set_otrk_bmis_false(new_payload)
                 _write_serato_record(out, name, new_payload)
             else:
                 _write_serato_record(out, name, payload)

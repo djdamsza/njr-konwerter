@@ -11,7 +11,7 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 - Env `NJR_PATRIOT_ENGINE` oraz pole w UI (Eksport → Engine DJ) do ręcznego wskazania biblioteki Rane.
 - `GET /api/library-paths` — Desktop Engine, Patriot, VDJ (`Documents\VirtualDJ`), Serato, Dysk Google.
 - Env `NJR_GOOGLE_DRIVE` — folder lustrzanych plików Google (Win backup PC).
-- `POST /api/remap-serato-google-drive` — przepina database V2 / crates / root.sqlite na pliki na Dysku Google **bez kopiowania** muzyki (ścieżki Mac `Users/…` → `Mój dysk/…`).
+- `POST /api/remap-serato-google-drive` — przepina database V2 / crates / root.sqlite na pliki na Dysku Google **bez kopiowania** muzyki. Na Windows zostawia **literę dysku** (`G:/Mój dysk/…`); zeruje flagę missing (`bmis`). Dopasowanie NFC (polskie znaki Mac vs Win).
 - UI: Eksport → Serato DJ → **Przepnij ścieżki na Dysk Google**.
 - CLI: `python remap_serato_google_drive.py` (`--dry-run`, `--google-drive`).
 - `GET /api/diagnose-patriot-library` — diagnostyka duplikatów po Export to Drive.

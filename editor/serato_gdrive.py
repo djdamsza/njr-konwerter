@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,11 @@ def strip_serato_machine_prefix(path: str) -> str:
     return p.lstrip("/")
 
 
+def _fold_key(raw: str) -> str:
+    """Klucz dopasowania: NFC + lower (Mac NFD vs Windows NFC, polskie znaki)."""
+    return unicodedata.normalize("NFC", (raw or "").replace("\\", "/").strip("/")).lower()
+
+
 def _search_keys(path: str) -> list[str]:
     """Klucze od najdłuższego (pełna reszta) do nazwy pliku."""
     stripped = strip_serato_machine_prefix(path)
@@ -60,7 +66,7 @@ def _search_keys(path: str) -> list[str]:
     seen: set[str] = set()
 
     def add(raw: str) -> None:
-        k = (raw or "").replace("\\", "/").strip("/").lower()
+        k = _fold_key(raw)
         if k and k not in seen:
             seen.add(k)
             keys.append(k)
@@ -76,11 +82,30 @@ def _search_keys(path: str) -> list[str]:
 
 
 def absolute_to_serato_portable(abs_path: Path | str) -> str:
-    """Absolutna ścieżka Windows/Mac → portable_id Serato (bez litery dysku)."""
-    s = str(abs_path).replace("\\", "/")
+    """
+    Absolutna ścieżka → wpis Serato.
+    Windows: ZOSTAW literę dysku (G:/Mój dysk/…). Bez niej Serato szuka na C:.
+    macOS: Users/… bez wiodącego /.
+    """
+    s = unicodedata.normalize("NFC", str(abs_path).replace("\\", "/"))
     if len(s) >= 2 and s[1] == ":":
-        s = s[2:]
+        if len(s) == 2:
+            return s + "/"
+        if s[2] != "/":
+            s = s[:2] + "/" + s[2:].lstrip("/")
+        return s
     return canonical_serato_relative_path(s)
+
+
+def _portable_quality(pid: str) -> tuple:
+    """Wyższy = lepszy wpis dla Serato na Win (Users na C: > G: z literą > bez litery)."""
+    pl = (pid or "").replace("\\", "/")
+    has_drive = len(pl) >= 2 and pl[1] == ":"
+    is_users = bool(re.match(r"(?i)^(?:[A-Za-z]:/)?Users/", pl))
+    is_gdrive = bool(
+        re.search(r"(?i)(?:My Drive|Mój dysk|Google Drive|GoogleDrive)", pl)
+    )
+    return (1 if is_users else 0, 1 if has_drive else 0, 1 if is_gdrive else 0)
 
 
 def serato_portable_to_absolute_candidates(path: str) -> list[Path]:
@@ -185,6 +210,24 @@ def resolve_serato_portable_file(path: str) -> Optional[Path]:
     return None
 
 
+def _is_cloud_placeholder(path: Path) -> bool:
+    """Google Drive 'online only' — Serato takiego pliku nie otworzy."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
+        attrs = int(GetFileAttributesW(str(path)))
+        if attrs == 0xFFFFFFFF:
+            return False
+        recall_on_data = 0x00400000
+        recall_on_open = 0x00040000
+        return bool(attrs & (recall_on_data | recall_on_open))
+    except Exception:
+        return False
+
+
 class GoogleDriveAudioIndex:
     """Indeks plików audio na Dysku Google: suffix ścieżki → portable_id Serato."""
 
@@ -192,6 +235,7 @@ class GoogleDriveAudioIndex:
         self.roots = roots
         self.by_suffix: dict[str, list[str]] = {}
         self.files = 0
+        self.placeholders = 0
         for root in roots:
             self._index_root(root)
 
@@ -215,6 +259,8 @@ class GoogleDriveAudioIndex:
                 continue
             portable = absolute_to_serato_portable(f)
             self.files += 1
+            if _is_cloud_placeholder(f):
+                self.placeholders += 1
             rel_from_root = str(f.relative_to(root)).replace("\\", "/")
             for key in _search_keys(rel_from_root) + _search_keys(portable):
                 bucket = self.by_suffix.setdefault(key, [])
@@ -222,19 +268,14 @@ class GoogleDriveAudioIndex:
                     bucket.append(portable)
 
     def lookup(self, serato_path: str) -> Optional[str]:
+        want = _fold_key(Path(serato_path.replace("\\", "/")).name)
         for key in _search_keys(serato_path):
-            hits = self.by_suffix.get(key) or []
-            if len(hits) == 1:
-                return hits[0]
-            if len(hits) > 1:
-                # Preferuj ten sam basename + najdłuższy wspólny ogon
-                base = Path(serato_path.replace("\\", "/")).name.lower()
-                named = [h for h in hits if Path(h).name.lower() == base]
-                if len(named) == 1:
-                    return named[0]
-                if named:
-                    return named[0]
-                return hits[0]
+            hits = list(self.by_suffix.get(key) or [])
+            if not hits:
+                continue
+            named = [h for h in hits if _fold_key(Path(h).name) == want] or hits
+            named.sort(key=_portable_quality, reverse=True)
+            return named[0]
         return None
 
 
@@ -302,11 +343,14 @@ def remap_serato_library_to_google_drive(
         "serato_dir": str(base),
         "google_drive_roots": [str(r) for r in roots],
         "indexed_files": index.files,
+        "cloud_placeholders": index.placeholders,
         "db_rewrites": 0,
         "crate_files": 0,
         "crate_rewrites": 0,
         "unchanged": 0,
         "unmapped": 0,
+        "verified_exist": 0,
+        "verified_missing": 0,
         "redirects_sample": [],
         "backups": [],
         "sqlite": {"skipped": True},
@@ -318,6 +362,16 @@ def remap_serato_library_to_google_drive(
 
     redirects: dict[str, str] = {}
     lookup_cache: dict[str, Optional[str]] = {}
+    verified: dict[str, bool] = {}
+
+    def _note_verified(mapped: str) -> None:
+        if mapped in verified:
+            return
+        abs_file = resolve_serato_portable_file(mapped)
+        ok = bool(abs_file)
+        if abs_file and _is_cloud_placeholder(abs_file):
+            ok = False
+        verified[mapped] = ok
 
     def transform(old: str) -> str:
         if is_serato_tidal_path(old) or "://" in (old or "")[:64]:
@@ -330,16 +384,18 @@ def remap_serato_library_to_google_drive(
         if not mapped:
             stats["unmapped"] += 1
             return old
-        canon_old = canonical_serato_relative_path(old)
-        if mapped == canon_old or mapped == old.replace("\\", "/"):
+        mapped = unicodedata.normalize("NFC", mapped.replace("\\", "/"))
+        _note_verified(mapped)
+        old_n = unicodedata.normalize("NFC", old.replace("\\", "/"))
+        if mapped == old_n or mapped == canonical_serato_relative_path(old):
             stats["unchanged"] += 1
-            return canon_old
+            return mapped
         redirects[old] = mapped
-        redirects[canon_old] = mapped
+        redirects[canonical_serato_relative_path(old)] = mapped
         return mapped
 
     raw = db_file.read_bytes()
-    new_blob, n_db = _rewrite_paths_in_container(raw, transform)
+    new_blob, n_db = _rewrite_paths_in_container(raw, transform, clear_missing=True)
     stats["db_rewrites"] = n_db
     stats["redirects_sample"] = [
         {"from": a, "to": b} for a, b in list(redirects.items())[:8]
@@ -360,13 +416,30 @@ def remap_serato_library_to_google_drive(
             crate_seen.add(key)
             try:
                 craw = cf.read_bytes()
-                cnew, crew = _rewrite_paths_in_container(craw, transform)
+                cnew, crew = _rewrite_paths_in_container(
+                    craw, transform, clear_missing=True
+                )
                 if crew and cnew != craw:
                     crate_updates.append((cf, cnew))
                     stats["crate_files"] += 1
                     stats["crate_rewrites"] += crew
             except OSError:
                 continue
+
+    stats["verified_exist"] = sum(1 for ok in verified.values() if ok)
+    stats["verified_missing"] = sum(1 for ok in verified.values() if not ok)
+    warn: list[str] = []
+    if index.placeholders:
+        warn.append(
+            f"{index.placeholders} plików na Dysku Google to tylko chmura (online only). "
+            "W Google Drive: kliknij prawym → 'Dostępne offline' / Always keep on this device."
+        )
+    if stats["verified_missing"] and stats["verified_exist"] == 0 and n_db:
+        warn.append(
+            "Żadna nowa ścieżka nie otwiera się z tego komputera. "
+            "Sprawdź literę dysku G: i czy pliki są pobrane (nie tylko w chmurze)."
+        )
+    stats["warning"] = " ".join(warn)
 
     sqlite_lib = Path(sqlite_dir) if sqlite_dir else default_serato_sqlite_dir()
     if include_sqlite and dry_run:
