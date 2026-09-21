@@ -2001,6 +2001,64 @@ def api_dedupe_serato_library():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/remap-serato-google-drive', methods=['POST'])
+def api_remap_serato_google_drive():
+    """
+    Przepina ścieżki w database V2 + crates (+ root.sqlite) na pliki
+    już pobrane na Dysk Google. Nie kopiuje muzyki.
+    Body: { seratoDir?, googleDrive?, sqliteDir?, dryRun?, includeSqlite? }
+    Serato musi być zamknięty.
+    """
+    r = _require_export_license()
+    if r:
+        return r
+    data = request.get_json(silent=True) or {}
+    serato_raw = (data.get("seratoDir") or "").strip()
+    serato_dir = Path(serato_raw).expanduser() if serato_raw else (
+        Path.home() / "Music" / "_Serato_"
+    )
+    guard = _sync_guard_json_response(
+        require_serato_closed=True,
+        require_engine_closed=False,
+        check_serato_db_lock=True,
+        serato_dir=serato_dir,
+    )
+    if guard:
+        return guard
+    gdrive = (data.get("googleDrive") or data.get("google_drive") or "").strip()
+    sqlite_raw = (data.get("sqliteDir") or "").strip()
+    dry_run = bool(data.get("dryRun") or data.get("dry_run"))
+    include_sqlite = data.get("includeSqlite")
+    if include_sqlite is None:
+        include_sqlite = data.get("include_sqlite", True)
+    try:
+        from serato_gdrive import remap_serato_library_to_google_drive
+
+        stats = remap_serato_library_to_google_drive(
+            serato_dir,
+            google_drive=gdrive or None,
+            dry_run=dry_run,
+            include_sqlite=bool(include_sqlite),
+            sqlite_dir=Path(sqlite_raw).expanduser() if sqlite_raw else None,
+        )
+        if not stats.get("ok"):
+            return jsonify(stats), 400
+        rew = int(stats.get("db_rewrites") or 0)
+        crates = int(stats.get("crate_files") or 0)
+        sql = stats.get("sqlite") or {}
+        sql_n = int(sql.get("updated") or 0) if isinstance(sql, dict) else 0
+        prefix = "Dry-run: " if dry_run else ""
+        stats["message"] = (
+            f"{prefix}Przepięto {rew} ścieżek w database V2"
+            + (f", {crates} crates" if crates else "")
+            + (f", {sql_n} w root.sqlite" if sql_n else "")
+            + ". Pliki zostają na Dysku Google — bez kopiowania."
+        )
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 _serato_cues_job: dict = {
     "running": False,
     "done": 0,

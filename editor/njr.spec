@@ -47,6 +47,8 @@ hidden_imports = [
     'engine_stems',
     'engine_patriot_sync',
     'library_paths',
+    'serato_gdrive',
+    'serato_library_sqlite',
     'dj_apps_guard',
     'traktor_parser',
     'djxml_parser',

@@ -63,9 +63,12 @@ Przed podmianą `database.xml` zrób kopię (`database.xml.bak`).
 |--|-------|------------|
 | Biblioteka | `~/Music/_Serato_/` | `%USERPROFILE%\Music\_Serato_\` |
 | Baza | m.in. `database V2` | to samo |
-| Root ścieżek przy eksporcie NJR | `/Users/…/` lub `/Volumes/Dysk/` | `C:\` lub `D:\` (litera dysku z muzyką) |
+| Serato 4 Library | `~/Library/Application Support/Serato/Library/root.sqlite` | `%APPDATA%\Serato\Library\root.sqlite` |
+| Root ścieżek przy eksporcie NJR | `/Users/…/` lub `/Volumes/Dysk/` | `C:\` lub `G:\` (Dysk Google) |
 
-Serato wymaga **ścieżek względnych** do roota dysku (np. `Music\Artist\track.mp3`), nie absolutnych Windows UNC.
+Serato wymaga **ścieżek względnych** do roota dysku (np. `Mój dysk\muzyka dj\track.mp3`), nie absolutnych Windows UNC.
+
+**PC backup + Dysk Google:** baza Serato na Win11 ma już aktualne crates/cue, ale ścieżki z Maca (`Users/…/Desktop/…`) nie trafiają w pliki. Muzyka ma **zostać** na Dysku Google (lustrzane / pobrane pliki — ten komputer nie jest głównym). W NJR: **Eksport → Serato DJ → Przepnij ścieżki na Dysk Google**. Nie kopiuje plików. Env `NJR_GOOGLE_DRIVE` albo pole w UI (`G:\Mój dysk`). API: `POST /api/remap-serato-google-drive`. CLI: `python remap_serato_google_drive.py`. Zamknij Serato przed remapem.
 
 ### Engine DJ Desktop
 
@@ -160,10 +163,11 @@ Wybierz **jeden** wariant główny:
 
 #### B) Serato jako źródło
 
-1. Skopiuj cały folder `_Serato_` + muzykę (ta sama struktura względna względem roota dysku).
-2. Na Win ustaw root dysku w eksporcie Serato (litera `D:\` itd.).
-3. NJR: **Sync Serato → Engine** (aplikacje zamknięte).
-4. Gdy Patriot podłączony — NJR może dopisać playlisty na dysk (bez Export to Drive).
+1. Skopiuj folder `_Serato_` (baza + crates). **Muzyki nie kopiuj** na Desktop — zostaje na Dysku Google (Google Drive for desktop, lustrzane / pobrane).
+2. W NJR: **Przepnij ścieżki na Dysk Google** (albo `python remap_serato_google_drive.py`). Ścieżki Mac (`Users/…`) → `Mój dysk/…` / `G:\…`.
+3. Na Win ustaw root dysku w eksporcie Serato jeśli robisz nowy eksport (litera `G:\` itd.).
+4. NJR: **Sync Serato → Engine** (aplikacje zamknięte).
+5. Gdy Patriot podłączony — NJR może dopisać playlisty na dysk (bez Export to Drive).
 
 #### C) VirtualDJ jako źródło
 
@@ -245,7 +249,8 @@ Czyszczenie cache Mac (`clean_engine_disk.py`) na Win11 **nie jest potrzebne** d
 | Objaw | Przyczyna | Co zrobić |
 |-------|-----------|-----------|
 | Sync 409 / „aplikacja uruchomiona” | VDJ/Serato/Engine w tle | Zamknij procesy w Menedżerze zadań |
-| Brakujące pliki po przeniesieniu na Win | Ścieżki Mac w bazie | Wspólny dysk + sync NJR; nie kopiuj ślepo samego `m.db` |
+| Brakujące pliki po przeniesieniu na Win | Ścieżki Mac w bazie | **Przepnij ścieżki na Dysk Google** (Serato) albo wspólny dysk + sync NJR; nie kopiuj ślepo samego `m.db` |
+| Serato szuka plików na Desktop / Users/Mac | Baza z Maca, muzyka na GDrive | NJR remap GDrive; nie kopiuj muzyki na ten PC (backup) |
 | Stemy znikają z Patriota | Export Stems w Sync Manager | Tylko migracja NJR |
 | Podwójna biblioteka na Patriot | Export to Drive | Diagnostyka `GET /api/diagnose-patriot-library`; naprawa przed kolejnym sync |
 | Create stems niedostępne | Brak/niepełne info utworu | W Engine: **Re-import track info** (wcześniej potwierdzone na Macu) |
@@ -268,7 +273,9 @@ Czyszczenie cache Mac (`clean_engine_disk.py`) na Win11 **nie jest potrzebne** d
 | `editor/scripts/migrate_stems_to_patriot.py` | CLI partii stemów |
 | `editor/engine_disk_cleanup.py` | Cache AI **tylko macOS** |
 | `editor/docs/WIN11_STEMY_I_MIGRACJA.md` | Ten przewodnik: Win11, stemy, Patriot |
-| `editor/library_paths.py` | Auto-detekcja Patriota / VDJ / Serato (Win vs Mac) |
+| `editor/library_paths.py` | Auto-detekcja Patriota / VDJ / Serato / Dysku Google (Win vs Mac) |
+| `editor/serato_gdrive.py` | Remap ścieżek Serato → pliki na Dysku Google (bez kopiowania) |
+| `editor/remap_serato_google_drive.py` | CLI remap Serato → GDrive |
 
 ---
 

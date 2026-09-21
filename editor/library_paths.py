@@ -92,6 +92,121 @@ def default_serato_dir() -> Path:
     return Path.home() / "Music" / "_Serato_"
 
 
+def default_serato_sqlite_dir() -> Path:
+    """Serato 4+ Library (root.sqlite) — macOS vs Windows."""
+    home = Path.home()
+    if platform.system() == "Darwin":
+        return home / "Library" / "Application Support" / "Serato" / "Library"
+    if platform.system() == "Windows":
+        roaming = (
+            Path(os.environ.get("APPDATA", home / "AppData" / "Roaming"))
+            / "Serato"
+            / "Library"
+        )
+        local = (
+            Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+            / "Serato"
+            / "Library"
+        )
+        if (roaming / "root.sqlite").is_file():
+            return roaming
+        if (local / "root.sqlite").is_file():
+            return local
+        return roaming
+    return home / ".serato" / "Library"
+
+
+_GDRIVE_DIR_NAMES = ("My Drive", "Mój dysk", "Google Drive", "GoogleDrive")
+_GDRIVE_LABEL_MARKERS = ("google drive", "googledrive", "my drive", "mój dysk")
+
+
+def _looks_like_google_drive(name: str) -> bool:
+    lowered = (name or "").strip().lower()
+    return any(marker in lowered for marker in _GDRIVE_LABEL_MARKERS)
+
+
+def google_drive_roots() -> list[Path]:
+    """
+    Foldery Dysku Google (pobrane / lustrzane pliki), bez kopiowania na Desktop.
+    Nadpisanie: NJR_GOOGLE_DRIVE (jeden katalog albo lista oddzielona ``;``).
+    """
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        try:
+            if not path.is_dir():
+                return
+        except OSError:
+            return
+        resolved = _safe_resolve(path)
+        key = str(resolved).replace("\\", "/").lower()
+        if key in seen:
+            return
+        seen.add(key)
+        found.append(resolved)
+
+    env = os.environ.get("NJR_GOOGLE_DRIVE", "").strip()
+    if env:
+        parts = [p.strip() for p in env.split(";") if p.strip()] or [env]
+        for raw in parts:
+            add(Path(raw).expanduser())
+
+    home = Path.home()
+    for name in _GDRIVE_DIR_NAMES:
+        add(home / name)
+
+    cloud = home / "Library" / "CloudStorage"
+    if cloud.is_dir():
+        try:
+            entries = list(cloud.iterdir())
+        except OSError:
+            entries = []
+        for vol in entries:
+            if not _looks_like_google_drive(vol.name):
+                continue
+            add(vol)
+            for child in _GDRIVE_DIR_NAMES:
+                add(vol / child)
+
+    if platform.system() == "Windows":
+        for letter, label in _windows_volumes():
+            root = Path(f"{letter}:/")
+            if _looks_like_google_drive(label) or _looks_like_google_drive(letter):
+                add(root)
+            for child in _GDRIVE_DIR_NAMES:
+                add(root / child)
+
+    if platform.system() == "Darwin":
+        volumes = Path("/Volumes")
+        if volumes.is_dir():
+            try:
+                entries = list(volumes.iterdir())
+            except OSError:
+                entries = []
+            for vol in entries:
+                if _looks_like_google_drive(vol.name):
+                    add(vol)
+                    for child in _GDRIVE_DIR_NAMES:
+                        add(vol / child)
+
+    # Preferuj „My Drive” / „Mój dysk” nad korzeniem litery dysku
+    found.sort(
+        key=lambda p: (
+            0 if _looks_like_google_drive(p.name) else 1,
+            len(str(p)),
+        )
+    )
+    return found
+
+
+def default_google_drive_root() -> Path | None:
+    roots = google_drive_roots()
+    return roots[0] if roots else None
+
+
 def _volume_looks_like_patriot(name: str) -> bool:
     lowered = (name or "").strip().lower()
     return any(marker in lowered for marker in PATRIOT_VOLUME_MARKERS)
@@ -256,6 +371,7 @@ def runtime_library_paths() -> dict:
     patriot = default_patriot_engine()
     vdj_base = default_vdj_base()
     serato = default_serato_dir()
+    gdrive_roots = [str(p) for p in google_drive_roots()]
     candidates = [str(p) for p in list_patriot_engine_candidates(require_database=True)]
     env_patriot = os.environ.get("NJR_PATRIOT_ENGINE", "").strip()
     return {
@@ -272,6 +388,9 @@ def runtime_library_paths() -> dict:
         "vdj_database_exists": (vdj_base / "database.xml").is_file(),
         "serato_dir": str(serato),
         "serato_exists": serato.is_dir(),
+        "serato_sqlite_dir": str(default_serato_sqlite_dir()),
+        "google_drive_roots": gdrive_roots,
+        "google_drive": gdrive_roots[0] if gdrive_roots else "",
         "close_engine_hint": close_engine_hint(),
         "close_all_dj_hint": close_all_dj_hint(),
         "stems_notes": (

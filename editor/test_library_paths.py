@@ -85,6 +85,9 @@ class TestPatriotDetection(unittest.TestCase):
             "patriot_mounted",
             "vdj_database",
             "serato_dir",
+            "serato_sqlite_dir",
+            "google_drive",
+            "google_drive_roots",
             "close_engine_hint",
             "close_all_dj_hint",
         ):
@@ -119,6 +122,8 @@ class TestLibraryPathsApi(unittest.TestCase):
         d = r.get_json()
         self.assertIn("patriot_engine", d)
         self.assertIn("engine_desktop", d)
+        self.assertIn("google_drive", d)
+        self.assertIn("serato_sqlite_dir", d)
         self.assertIn("version", d)
 
     def test_api_diagnose_patriot_missing_drive(self):

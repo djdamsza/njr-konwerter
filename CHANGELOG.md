@@ -9,7 +9,11 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 ### Windows 11 — stemy i Patriot
 - Auto-detekcja dysku Patriot (`E:\Engine Library` itd.) po etykiecie woluminu i obecności `Database2/m.db` — bez twardej ścieżki Mac `/Volumes/Patriot`.
 - Env `NJR_PATRIOT_ENGINE` oraz pole w UI (Eksport → Engine DJ) do ręcznego wskazania biblioteki Rane.
-- `GET /api/library-paths` — Desktop Engine, Patriot, VDJ (`Documents\VirtualDJ`), Serato.
+- `GET /api/library-paths` — Desktop Engine, Patriot, VDJ (`Documents\VirtualDJ`), Serato, Dysk Google.
+- Env `NJR_GOOGLE_DRIVE` — folder lustrzanych plików Google (Win backup PC).
+- `POST /api/remap-serato-google-drive` — przepina database V2 / crates / root.sqlite na pliki na Dysku Google **bez kopiowania** muzyki (ścieżki Mac `Users/…` → `Mój dysk/…`).
+- UI: Eksport → Serato DJ → **Przepnij ścieżki na Dysk Google**.
+- CLI: `python remap_serato_google_drive.py` (`--dry-run`, `--google-drive`).
 - `GET /api/diagnose-patriot-library` — diagnostyka duplikatów po Export to Drive.
 - Sync VDJ/Serato → Engine dopisuje playlisty na Patriot, gdy dysk jest podłączony (wyłącz: `syncPatriot=0`).
 - Komunikaty zamykania aplikacji: Menedżer zadań na Windows, Cmd+Q na Macu.

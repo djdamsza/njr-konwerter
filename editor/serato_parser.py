@@ -754,8 +754,9 @@ def normalize_and_dedupe_serato_library(
     """
     1) Przepisz database V2 + .crate na ścieżki relatywne (Users/…).
     2) Usuń klony /Users vs Users.
-    3) (purge_stale) Zmapuj stare ścieżki (Inne komputery/G:/Volumes/osx/Mój dysk)
-       na Desktop; usuń martwe duble po nazwie pliku; wyrzuć osierocone missing.
+    3) (purge_stale) Zmapuj stare ścieżki (Inne komputery / Volumes)
+       na Desktop gdy brak Dysku Google; usuń martwe duble po nazwie pliku;
+       wyrzuć osierocone missing. Ścieżek Mój dysk / My Drive nie rusza.
     Robi kopię .bak database V2. Serato musi być zamknięty.
     """
     from datetime import datetime
@@ -833,13 +834,9 @@ def serato_path_exists_on_disk(path: str) -> bool:
         return True
     if "://" in p[:64] or p.startswith("clouddrive:"):
         return False
-    if len(p) >= 2 and p[1] == ":":
-        return False
-    if p.startswith("/"):
-        return Path(p).is_file()
-    if p.startswith("Users/") or p.startswith("Volumes/"):
-        return Path("/" + p).is_file()
-    return False
+    from serato_gdrive import serato_path_exists_on_disk as _gdrive_exists
+
+    return _gdrive_exists(path)
 
 
 def apply_serato_path_replace(
@@ -1016,8 +1013,8 @@ def filter_track_paths_for_serato(
 
 def map_stale_serato_path_to_desktop(path: str, desktop: Optional[Path] = None) -> Optional[str]:
     """
-    Stare lokalizacje (Inne komputery / G: / Volumes/osx / Mój dysk)
-    → Users/…/Desktop/… jeśli plik tam jest.
+    Stare lokalizacje (Inne komputery / Volumes) → Users/…/Desktop/…
+    jeśli plik tam jest. Ścieżek Dysku Google (Mój dysk / My Drive) nie rusza.
     """
     p = (path or "").strip().replace("\\", "/")
     if not p or serato_path_exists_on_disk(p):
@@ -1028,8 +1025,7 @@ def map_stale_serato_path_to_desktop(path: str, desktop: Optional[Path] = None) 
         r"(?i)^(?:G:/)?Inne komputery/[^/]+/(.*)$",
         r"(?i)^Volumes/osx/Inne komputery/[^/]+/(.*)$",
         r"(?i)^Volumes/[^/]+/Inne komputery/[^/]+/(.*)$",
-        r"(?i)^Volumes/osx/Mój dysk/(.*)$",
-        r"(?i)^Mój dysk/(.*)$",
+        # Mój dysk / My Drive zostają na Dysku Google — nie przepinamy na Desktop.
     ):
         m = re.match(pat, p)
         if m:

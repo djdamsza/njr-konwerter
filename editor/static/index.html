@@ -1416,9 +1416,17 @@
           <p>
             Eksport crates (i opcjonalnie cue) do archiwum <code>_Serato_</code>.
             Folder Serato wykrywany jest automatycznie (<code>~/Music/_Serato_/</code>).
+            Na Win11 (PC backup): baza Serato zostaje, ścieżki wskazują pliki na Dysku Google — bez kopiowania muzyki na Desktop.
           </p>
+          <p class="path-status" id="seratoGdriveStatus">Szukam Dysku Google…</p>
+          <div class="patriot-path-row">
+            <label for="googleDrivePath">Dysk Google (muzyka)</label>
+            <input type="text" id="googleDrivePath" placeholder="G:\Mój dysk" autocomplete="off">
+            <button type="button" id="pickGoogleDriveBtn" class="export-btn-njr">Wybierz folder</button>
+          </div>
           <div class="export-actions">
             <button type="button" id="exportSeratoBtn" class="export-btn-serato export-requires-license">Pobierz eksport Serato (.zip)</button>
+            <button type="button" id="remapSeratoGdriveBtn" class="export-btn-serato export-requires-license">Przepnij ścieżki na Dysk Google</button>
           </div>
           <p class="export-hint" id="seratoExportHint">Szukam biblioteki Serato…</p>
         </div>
@@ -1571,6 +1579,17 @@
         const input = document.getElementById('patriotEnginePath');
         if (input && d.patriot_engine && !input.value) input.value = d.patriot_engine;
         renderEnginePathStatus(d);
+        const gInput = document.getElementById('googleDrivePath');
+        if (gInput && d.google_drive && !gInput.value) gInput.value = d.google_drive;
+        const gEl = document.getElementById('seratoGdriveStatus');
+        if (gEl) {
+          const roots = d.google_drive_roots || [];
+          if (roots.length) {
+            gEl.innerHTML = 'Dysk Google: <code>' + roots[0] + '</code> <span class="ok">pliki zostają tutaj</span>';
+          } else {
+            gEl.innerHTML = 'Dysk Google: <span class="warn">nie wykryto — wskaż folder lustrzanych plików (G:\\Mój dysk)</span>';
+          }
+        }
         const ver = document.getElementById('version-footer');
         if (ver && d.version) ver.textContent = 'NJR Konwerter v' + d.version;
       } catch (_) {}
@@ -2410,6 +2429,71 @@
           if (input) input.value = d.path;
           window.njrLibraryPaths.patriot_engine = d.path;
         } catch (err) { setStatus('Wybór folderu: ' + err.message, 'error'); }
+      };
+    }
+    const pickGoogleDriveBtn = document.getElementById('pickGoogleDriveBtn');
+    if (pickGoogleDriveBtn) {
+      pickGoogleDriveBtn.onclick = async () => {
+        try {
+          const r = await fetch(API + '/pick-folder');
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.path) throw new Error(d.error || 'Nie wybrano folderu');
+          const input = document.getElementById('googleDrivePath');
+          if (input) input.value = d.path;
+          window.njrLibraryPaths.google_drive = d.path;
+        } catch (err) { setStatus('Wybór Dysku Google: ' + err.message, 'error'); }
+      };
+    }
+    const remapSeratoGdriveBtn = document.getElementById('remapSeratoGdriveBtn');
+    if (remapSeratoGdriveBtn) {
+      remapSeratoGdriveBtn.onclick = async () => {
+        const paths = window.njrLibraryPaths || {};
+        const gdrive = (document.getElementById('googleDrivePath')?.value || '').trim()
+          || paths.google_drive || '';
+        const closeHint = paths.close_all_dj_hint || 'Zamknij Serato DJ';
+        if (!confirm(
+          'Przepięcie ścieżek Serato na Dysk Google\n\n'
+          + 'Baza Serato zostaje. Zmieniają się tylko ścieżki w database V2, crates i root.sqlite.\n'
+          + 'Pliki muzyki NIE są kopiowane — zostają na Dysku Google (ten PC = backup).\n\n'
+          + 'Folder: ' + (gdrive || '(auto-detekcja)') + '\n'
+          + 'Serato: ' + (paths.serato_dir || '~/Music/_Serato_') + '\n\n'
+          + closeHint + '.\n\nOK aby kontynuować.'
+        )) return;
+        try {
+          setStatus('Przepinam ścieżki Serato na Dysk Google…', '');
+          await runLongJob({
+            title: 'Serato → Dysk Google',
+            detail: 'Indeks plików i zapis database V2 / crates…',
+            button: remapSeratoGdriveBtn,
+            run: async () => {
+              const body = {};
+              if (gdrive) body.googleDrive = gdrive;
+              if (paths.serato_dir) body.seratoDir = paths.serato_dir;
+              const r = await fetch(API + '/remap-serato-google-drive', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!r.ok || d.error || d.ok === false) {
+                throw new Error(d.error || d.message || r.statusText);
+              }
+              const msg = d.message || 'Przepięto ścieżki na Dysk Google.';
+              const sample = (d.redirects_sample || []).slice(0, 3).map(
+                (x) => (x.from || '') + ' → ' + (x.to || '')
+              ).join('\n');
+              setStatus(msg + ' (indeks: ' + (d.indexed_files || 0) + ' plików)', 'loaded');
+              showJobDonePopup({
+                title: 'Serato → Dysk Google — gotowe',
+                message: msg,
+                detail: sample || undefined,
+              });
+            },
+          });
+        } catch (err) {
+          setStatus('Błąd przepięcia Serato: ' + err.message, 'error');
+          showJobDonePopup({ title: 'Serato → Dysk Google — błąd', message: err.message, type: 'error' });
+        }
       };
     }
     const engineStemsBatchInput = document.getElementById('engineStemsBatchSize');
