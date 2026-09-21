@@ -69,6 +69,25 @@ class TestSeratoTcomRating(unittest.TestCase):
         self.assertEqual(t.year, 2020)
 
 
+class TestResolveSeratoLibraryDir(unittest.TestCase):
+    def test_parent_nested_and_file(self, tmp_path=None):
+        import tempfile
+        from serato_parser import load_serato_folder, resolve_serato_library_dir
+        with tempfile.TemporaryDirectory() as td:
+            music = Path(td)
+            serato = music / "_Serato_"
+            serato.mkdir()
+            db_file = serato / "database V2"
+            db_file.write_bytes(_db(_otrk("/Users/a/t.mp3")))
+            (serato / "Subcrates").mkdir()
+            self.assertEqual(resolve_serato_library_dir(music), serato)
+            self.assertEqual(resolve_serato_library_dir(serato), serato)
+            self.assertEqual(resolve_serato_library_dir(db_file), serato)
+            for p in (music, serato, db_file):
+                db = load_serato_folder(p)
+                self.assertEqual(len(db.tracks), 1, msg=str(p))
+
+
 class TestSeratoPathIdentity(unittest.TestCase):
     def test_abs_and_rel_same_key(self):
         a = "/Users/test/Desktop/a.mp3"

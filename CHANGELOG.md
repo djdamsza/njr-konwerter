@@ -4,6 +4,16 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.0.13 (2026-09-21)
+
+### Otwieranie bazy Serato
+- Dialog **Otwórz bazę** pokazuje wszystkie pliki (w tym `database V2` bez rozszerzenia), nie tylko ZIP.
+- Przycisk **Otwórz folder Serato** — `_Serato_` albo katalog nadrzędny (np. `Music`).
+- Ścieżka do pliku, folderu `_Serato_` i ZIP-a z zagnieżdżonym `_Serato_` ładuje utwory + crate’y.
+- Natywny dialog obsługuje też VDJ/RB XML, Engine `m.db`, Traktor, DJXML i `.njr` (nie tylko Serato/ZIP).
+
+---
+
 ## 1.0.12 (2026-07-30)
 
 ### Sync playlist po podmianie utworów

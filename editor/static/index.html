@@ -566,8 +566,9 @@
     <main class="main-content">
       <div class="card-panel active" id="card-import">
   <div class="toolbar" id="importToolbar">
-    <input type="file" id="universalInput" accept=".zip,.xml,.djxml,.m.db,.nml,.db,.njr,*" style="display: none;" title="VDJ, Rekordbox, Serato, DJXML, Engine DJ, Traktor, zachowany postęp (.njr)">
-    <button id="importUniversalBtn" title="Otwórz dowolną bazę DJ – VDJ, RB, Serato, DJXML, Engine DJ, Traktor">Otwórz bazę</button>
+    <input type="file" id="universalInput" accept="*/*" style="display: none;" title="VDJ, Rekordbox, Serato (database V2), DJXML, Engine DJ, Traktor, ZIP, zachowany postęp (.njr)">
+    <button id="importUniversalBtn" title="Otwórz dowolną bazę DJ – VDJ, RB, Serato database V2, DJXML, Engine DJ, Traktor">Otwórz bazę</button>
+    <button id="importSeratoFolderBtn" type="button" title="Wskaż folder _Serato_ albo Music z _Serato_">Otwórz folder Serato</button>
     <span class="status" id="status">Nie załadowano</span>
     <span class="muted" id="saveReminder" style="font-size: 12px; margin-left: 8px; display: none;">Zmiany w pamięci – użyj „Eksport” na dole strony.</span>
   </div>
@@ -2342,18 +2343,49 @@
     }
     (async () => { try { await refreshLicenseStatus(); } catch (_) {} })();
 
-    document.getElementById('importUniversalBtn').onclick = () => document.getElementById('universalInput').click();
-
-    document.getElementById('universalInput').onchange = async (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
+    document.getElementById('importUniversalBtn').onclick = async () => {
       try {
-        setStatus('Importowanie…', '');
-        const fd = new FormData();
-        fd.append('file', f, f.name);
-        const r = await fetch(API + '/load-universal', { method: 'POST', body: fd });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.error || r.statusText);
+        const picked = await fetchJson(API + '/pick-open');
+        if (picked && picked.path) {
+          await loadLibraryFromPath(picked.path);
+          return;
+        }
+      } catch (err) {
+        const msg = (err && err.message) ? String(err.message) : '';
+        if (/nie wybrano/i.test(msg)) return;
+        if (msg && !/404|not found|failed to fetch/i.test(msg)) {
+          setStatus('Błąd: ' + msg, 'error');
+          return;
+        }
+      }
+      document.getElementById('universalInput').click();
+    };
+    const seratoFolderBtn = document.getElementById('importSeratoFolderBtn');
+    if (seratoFolderBtn) {
+      seratoFolderBtn.onclick = async () => {
+        try {
+          const d = await fetchJson(API + '/pick-folder');
+          if (!d.path) throw new Error('Nie wybrano folderu');
+          await loadLibraryFromPath(d.path);
+        } catch (err) {
+          setStatus('Błąd: ' + err.message, 'error');
+        }
+      };
+    }
+
+    async function loadLibraryFromPath(path) {
+      setStatus('Importowanie…', '');
+      const r = await fetch(API + '/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      await applyImportedDatabase(d);
+    }
+
+    async function applyImportedDatabase(d) {
         rbBetaActive = false;
         document.getElementById('rbBetaTools').style.display = 'none';
         const msg = d.message || `Załadowano ${d.count} utworów (${d.source || '?'})`;
@@ -2400,6 +2432,19 @@
         await doSearch();
         refreshUndoButton();
         refreshTrashBadge();
+    }
+
+    document.getElementById('universalInput').onchange = async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      try {
+        setStatus('Importowanie…', '');
+        const fd = new FormData();
+        fd.append('file', f, f.name);
+        const r = await fetch(API + '/load-universal', { method: 'POST', body: fd });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        await applyImportedDatabase(d);
       } catch (err) {
         setStatus('Błąd: ' + err.message, 'error');
       }

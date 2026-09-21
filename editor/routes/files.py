@@ -8,7 +8,7 @@ from flask import Blueprint, jsonify, request
 
 import app_state as st
 from constants import AUDIO_EXTENSIONS
-from native_dialogs import pick_folder_native
+from native_dialogs import pick_folder_native, pick_open_path_native
 from vdjfolder import normalize_path
 
 bp = Blueprint('files', __name__)
@@ -20,6 +20,14 @@ def api_pick_folder():
     if path:
         return jsonify({'path': path})
     return jsonify({'error': 'Nie wybrano folderu lub brak obsługi okna dialogowego'}), 400
+
+
+@bp.route('/api/pick-open', methods=['GET'])
+def api_pick_open():
+    path = pick_open_path_native()
+    if path:
+        return jsonify({'path': path})
+    return jsonify({'error': 'Nie wybrano pliku'}), 400
 
 
 @bp.route('/api/database-folders', methods=['GET'])

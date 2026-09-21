@@ -203,14 +203,41 @@ def load_serato_crate(content: bytes, crate_name: str, drive_root: Optional[str]
     return Playlist(name=crate_name, track_ids=paths)
 
 
+def is_serato_database_filename(name: str) -> bool:
+    n = (name or "").lower().strip()
+    return n in ("database v2", "databasev2") or "database v2" in n
+
+
+def looks_like_serato_database_blob(content: bytes) -> bool:
+    if not content or len(content) < 8:
+        return False
+    tag = content[:4]
+    return tag in (b"vrsn", b"otrk")
+
+
+def resolve_serato_library_dir(path: Path) -> Optional[Path]:
+    """Folder z plikiem database V2: sam _Serato_, rodzic z _Serato_, albo plik database V2."""
+    p = Path(path)
+    if p.is_file() and is_serato_database_filename(p.name):
+        return p.parent
+    if not p.is_dir():
+        return None
+    for candidate in (p, p / "_Serato_"):
+        if (candidate / "database V2").is_file() or (candidate / "DatabaseV2").is_file():
+            return candidate
+    return None
+
+
 def load_serato_folder(serato_path: Path, drive_root: Optional[str] = None) -> UnifiedDatabase:
     """
     Ładuje pełną bibliotekę Serato z folderu _Serato_.
-    serato_path: ścieżka do folderu _Serato_ (lub folderu nadrzędnego – szukamy _Serato_/database V2).
+    serato_path: folder _Serato_, folder nadrzędny (Music) albo plik database V2.
     drive_root: root dysku (dla ścieżek względnych w DatabaseV2).
     """
-    if not serato_path.is_dir():
-        serato_path = serato_path / "_Serato_"
+    resolved = resolve_serato_library_dir(Path(serato_path))
+    if resolved is None:
+        return UnifiedDatabase(tracks=[], playlists=[], source="serato")
+    serato_path = resolved
     db_file = serato_path / "database V2"
     if not db_file.exists():
         db_file = serato_path / "DatabaseV2"

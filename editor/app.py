@@ -88,6 +88,9 @@ from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
 from serato_parser import (
     load_serato_database_v2,
     load_serato_folder,
+    resolve_serato_library_dir,
+    is_serato_database_filename,
+    looks_like_serato_database_blob,
     save_serato_database_v2,
     save_serato_crate,
     iter_serato_crate_files,
@@ -266,6 +269,234 @@ def _load_from_zip(zip_path_or_file) -> tuple[bytes, dict[str, str], dict[str, b
     return db_content, vdjfiles, extra_files
 
 
+def _commit_unified_load(db, source: str, message: str, *, path: Optional[str] = None) -> dict:
+    st.songs = unified_to_vdj_songs(db)
+    st.unified = db
+    st.version = "1.0" if source == "djxml" else ""
+    st.db_path = None
+    st.vdjfolders = {}
+    st.extra_files = {}
+    st.source = source
+    out = {
+        "ok": True,
+        "count": len(st.songs),
+        "playlists": len(db.playlists or []),
+        "source": source,
+        "message": message,
+    }
+    if path:
+        out["path"] = path
+        out["loadedVia"] = "path"
+    return out
+
+
+def _commit_serato_load(db, path: Optional[str] = None) -> dict:
+    return _commit_unified_load(db, "serato", "Załadowano Serato DJ (database V2)", path=path)
+
+
+def _commit_vdj_load(
+    *,
+    songs: list,
+    version: str,
+    vdjfolders: dict,
+    extra: dict,
+    path: Optional[str] = None,
+    db_path=None,
+    message: str = "Załadowano VirtualDJ (database.xml)",
+) -> dict:
+    st.songs = songs
+    st.version = version
+    st.vdjfolders = vdjfolders
+    st.extra_files = extra
+    st.source = "vdj"
+    st.unified = None
+    st.db_path = db_path
+    out = {
+        "ok": True,
+        "count": len(st.songs),
+        "version": st.version,
+        "source": "vdj",
+        "vdjfolders": len(st.vdjfolders),
+        "message": message,
+    }
+    if path:
+        out["path"] = path
+        out["loadedVia"] = "path"
+    return out
+
+
+def _zip_contains_serato(zip_path_or_file) -> bool:
+    try:
+        if hasattr(zip_path_or_file, "seek"):
+            zip_path_or_file.seek(0)
+        with zipfile.ZipFile(zip_path_or_file, "r") as z:
+            names = z.namelist()
+        return any("_serato_" in n.lower() and "database v2" in n.lower() for n in names)
+    except Exception:
+        return False
+
+
+def _extract_serato_from_zip(zip_path_or_file, drive_root: Optional[str] = None):
+    import tempfile
+    if hasattr(zip_path_or_file, "seek"):
+        zip_path_or_file.seek(0)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_path_or_file, "r") as z:
+            names = z.namelist()
+            serato_db = next(
+                (n for n in names if "_serato_" in n.lower() and "database v2" in n.lower()),
+                None,
+            )
+            if not serato_db:
+                raise ValueError("ZIP nie zawiera Serato database V2")
+            z.extractall(tmpdir)
+        folder = Path(tmpdir) / Path(serato_db).parent
+        return load_serato_folder(folder, drive_root=drive_root)
+
+
+def _load_njr_bytes(content: bytes) -> dict:
+    import base64
+    data = _decode_njr(content)
+    st.songs = data.get("songs", [])
+    st.vdjfolders = data.get("vdjfolders", {})
+    st.extra_files = {}
+    for k, v in data.get("extra_files", {}).items():
+        try:
+            st.extra_files[k] = base64.b64decode(v) if isinstance(v, str) else bytes(v)
+        except Exception:
+            pass
+    st.version = data.get("version", "")
+    st.source = data.get("source", "vdj")
+    st.db_path = None
+    st.unified = None
+    playlists_raw = data.get("playlists") or []
+    if playlists_raw:
+        tracks = vdj_songs_to_unified(st.songs).tracks if st.songs else []
+        st.unified = UnifiedDatabase(
+            tracks=tracks,
+            playlists=[
+                Playlist(
+                    name=str(p.get("name") or "lista"),
+                    track_ids=list(p.get("track_ids") or []),
+                )
+                for p in playlists_raw
+                if isinstance(p, dict)
+            ],
+            source=st.source,
+        )
+    return {
+        "ok": True,
+        "count": len(st.songs),
+        "source": st.source,
+        "vdjfolders": len(st.vdjfolders),
+        "playlists": len(playlists_raw),
+        "message": "Załadowano zachowany postęp (.njr)",
+    }
+
+
+def _load_from_path(
+    p: Path,
+    *,
+    drive_root: Optional[str] = None,
+    library_base: Optional[str] = None,
+) -> dict:
+    """Otwiera bibliotekę DJ ze ścieżki (plik lub folder _Serato_)."""
+    p = Path(p).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(f"Plik nie istnieje: {p}")
+
+    serato_base = resolve_serato_library_dir(p)
+    if serato_base is not None:
+        db = load_serato_folder(serato_base, drive_root=drive_root)
+        return _commit_serato_load(db, str(p))
+
+    if p.is_dir():
+        raise ValueError("Folder nie zawiera biblioteki Serato (_Serato_/database V2)")
+
+    ext = p.suffix.lower()
+    name = p.name.lower()
+
+    if ext == ".crate":
+        raise ValueError("Wskaż plik database V2 albo folder _Serato_ (nie pojedynczy .crate).")
+
+    if ext == ".njr" or name.endswith(".njr"):
+        out = _load_njr_bytes(p.read_bytes())
+        out["path"] = str(p)
+        out["loadedVia"] = "path"
+        return out
+
+    if ext == ".zip":
+        if _zip_contains_serato(p):
+            db = _extract_serato_from_zip(p, drive_root)
+            out = _commit_serato_load(db, str(p))
+            out["message"] = "Załadowano Serato DJ (ZIP z _Serato_)"
+            return out
+        db_content, vdjfiles, extra = _load_from_zip(p)
+        songs, version = _load_from_content(db_content)
+        return _commit_vdj_load(
+            songs=songs,
+            version=version,
+            vdjfolders=vdjfiles,
+            extra=extra,
+            path=str(p),
+            message="Załadowano backup VDJ (ZIP)",
+        )
+
+    if name.endswith("m.db"):
+        db = load_engine_db(p, library_base)
+        return _commit_unified_load(db, "engine", "Załadowano Engine DJ (m.db)", path=str(p))
+
+    if ext == ".nml" or "collection" in name:
+        db = load_traktor_nml(p)
+        return _commit_unified_load(db, "traktor", "Załadowano Traktor (collection.nml)", path=str(p))
+
+    if ext == ".djxml":
+        db = load_djxml(p.read_bytes())
+        return _commit_unified_load(db, "djxml", "Załadowano DJXML", path=str(p))
+
+    if ext == ".xml":
+        try:
+            db = load_rb_xml(p)
+            return _commit_unified_load(db, "rb", "Załadowano Rekordbox (XML)", path=str(p))
+        except Exception:
+            pass
+        songs, version = load_database(p)
+        base = p.parent
+        scanned = scan_vdjfolders(base)
+        vdjfolders = {
+            str(fp.relative_to(base)).replace("\\", "/"): content
+            for fp, content in scanned.items()
+        }
+        return _commit_vdj_load(
+            songs=songs,
+            version=version,
+            vdjfolders=vdjfolders,
+            extra={},
+            path=str(p),
+            db_path=p,
+        )
+
+    if looks_like_serato_database_blob(p.read_bytes()[:32] if p.stat().st_size >= 32 else p.read_bytes()):
+        db = load_serato_database_v2(p.read_bytes(), drive_root=drive_root)
+        return _commit_serato_load(db, str(p))
+
+    songs, version = load_database(p)
+    base = p.parent
+    scanned = scan_vdjfolders(base)
+    vdjfolders = {
+        str(fp.relative_to(base)).replace("\\", "/"): content
+        for fp, content in scanned.items()
+    }
+    return _commit_vdj_load(
+        songs=songs,
+        version=version,
+        vdjfolders=vdjfolders,
+        extra={},
+        path=str(p),
+        db_path=p,
+    )
+
+
 @app.errorhandler(ValueError)
 def handle_value_error(e):
     """Zwraca 400 z JSON zamiast 500 przy braku załadowanej bazy."""
@@ -274,7 +505,7 @@ def handle_value_error(e):
 
 @app.route('/api/load', methods=['POST'])
 def api_load():
-    """Ładuje database.xml z podanej ścieżki (lub ZIP – backup VDJ)."""
+    """Ładuje bazę DJ ze ścieżki: VDJ/RB XML, ZIP, Serato (database V2 / folder), Engine, Traktor, DJXML, .njr."""
     _clear_undo_stack()
     data = request.get_json() or {}
     path = data.get('path', '').strip()
@@ -284,51 +515,13 @@ def api_load():
     if not p.exists():
         return jsonify({'error': f'Plik nie istnieje: {p}'}), 404
     try:
-        if p.is_dir():
-            serato_dir = p / "_Serato_"
-            db_v2 = serato_dir / "database V2"
-            if not db_v2.exists():
-                db_v2 = serato_dir / "DatabaseV2"
-            if serato_dir.is_dir() and db_v2.exists():
-                drive_root = (data.get("driveRoot") or "").strip() or None
-                db = load_serato_folder(p, drive_root=drive_root)
-                st.songs = unified_to_vdj_songs(db)
-                st.unified = db
-                st.version = ""
-                st.db_path = None
-                st.vdjfolders = {}
-                st.extra_files = {}
-                st.source = "serato"
-                return jsonify({
-                    "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                    "path": str(p), "loadedVia": "path", "source": "serato",
-                })
-            raise ValueError("Folder nie zawiera biblioteki Serato (_Serato_/database V2)")
-        if p.suffix.lower() == '.zip':
-            db_content, vdjfiles, extra = _load_from_zip(p)
-            st.songs, st.version = _load_from_content(db_content)
-            st.db_path = None
-            st.vdjfolders = vdjfiles
-            st.extra_files = extra
-        else:
-            st.songs, st.version = load_database(p)
-            st.db_path = p
-            # Skanuj folder w poszukiwaniu .vdjfolder (gdy ładowanie z folderu, nie ZIP)
-            base = p.parent
-            scanned = scan_vdjfolders(base)
-            st.vdjfolders = {str(fp.relative_to(base)).replace("\\", "/"): content for fp, content in scanned.items()}
-            st.extra_files = {}
-        st.source = 'vdj'
-        st.unified = None
-        return jsonify({
-            'ok': True,
-            'count': len(st.songs),
-            'version': st.version,
-            'path': str(p),
-            'loadedVia': 'path',
-            'source': 'vdj',
-            'vdjfolders': len(st.vdjfolders),
-        })
+        drive_root = (data.get("driveRoot") or "").strip() or None
+        library_base = (data.get("libraryBase") or "").strip() or None
+        return jsonify(_load_from_path(p, drive_root=drive_root, library_base=library_base))
+    except FileNotFoundError as e:
+        return jsonify({'error': str(e)}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -405,63 +598,34 @@ def api_load_universal():
     ext = Path(fn).suffix.lower() if fn else ""
     try:
         if ext == ".njr" or fn.endswith(".njr"):
-            # Zachowany postęp (format aplikacji – tylko tu można odczytać)
-            import base64
-            data = _decode_njr(content)
-            st.songs = data.get("songs", [])
-            st.vdjfolders = data.get("vdjfolders", {})
-            st.extra_files = {}
-            for k, v in data.get("extra_files", {}).items():
-                try:
-                    st.extra_files[k] = base64.b64decode(v) if isinstance(v, str) else bytes(v)
-                except Exception:
-                    pass
-            st.version = data.get("version", "")
-            st.source = data.get("source", "vdj")
-            st.db_path = None
-            st.unified = None
+            return jsonify(_load_njr_bytes(content))
+        if ext == ".crate":
             return jsonify({
-                "ok": True,
-                "count": len(st.songs),
-                "source": st.source,
-                "vdjfolders": len(st.vdjfolders),
-                "message": "Załadowano zachowany postęp (.njr)",
-            })
-        if ext == ".zip" or "vdj" in fn:
-            with zipfile.ZipFile(BytesIO(content), "r") as z:
-                names = z.namelist()
-            serato_db = next((n for n in names if "_serato_" in n.lower() and "database v2" in n.lower()), None)
-            if serato_db:
-                import tempfile
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    with zipfile.ZipFile(BytesIO(content), "r") as z:
-                        z.extractall(tmpdir)
-                    drive_root = (request.form.get("driveRoot") or "").strip() or None
-                    serato_folder = Path(tmpdir) / Path(serato_db).parent
-                    db = load_serato_folder(serato_folder, drive_root=drive_root)
-                    st.songs = unified_to_vdj_songs(db)
-                    st.unified = db
-                    st.version = ""
-                    st.db_path = None
-                    st.vdjfolders = {}
-                    st.extra_files = {}
-                    st.source = "serato"
-                    return jsonify({
-                        "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                        "source": "serato", "message": "Załadowano Serato DJ (ZIP z _Serato_)",
-                    })
+                "error": "Wskaż plik database V2 albo folder _Serato_ (nie pojedynczy .crate).",
+            }), 400
+        if ext not in {".zip", ".xml", ".nml", ".njr", ".djxml", ".db"} and (
+            is_serato_database_filename(Path(fn).name)
+            or looks_like_serato_database_blob(content)
+        ):
+            drive_root = (request.form.get("driveRoot") or "").strip() or None
+            db = load_serato_database_v2(content, drive_root=drive_root)
+            return jsonify(_commit_serato_load(db))
+        if ext == ".zip":
+            if _zip_contains_serato(BytesIO(content)):
+                drive_root = (request.form.get("driveRoot") or "").strip() or None
+                db = _extract_serato_from_zip(BytesIO(content), drive_root)
+                out = _commit_serato_load(db)
+                out["message"] = "Załadowano Serato DJ (ZIP z _Serato_)"
+                return jsonify(out)
             db_content, vdjfiles, extra = _load_from_zip(BytesIO(content))
-            st.songs, st.version = _load_from_content(db_content)
-            st.db_path = None
-            st.vdjfolders = vdjfiles
-            st.extra_files = extra
-            st.source = "vdj"
-            st.unified = None
-            return jsonify({
-                "ok": True, "count": len(st.songs), "version": st.version,
-                "source": "vdj", "vdjfolders": len(st.vdjfolders),
-                "message": "Załadowano backup VDJ (ZIP)",
-            })
+            songs, version = _load_from_content(db_content)
+            return jsonify(_commit_vdj_load(
+                songs=songs,
+                version=version,
+                vdjfolders=vdjfiles,
+                extra=extra,
+                message="Załadowano backup VDJ (ZIP)",
+            ))
         if ext == ".m.db" or fn.endswith("m.db"):
             import tempfile
             with tempfile.NamedTemporaryFile(suffix=".m.db", delete=False) as tmp:
@@ -503,21 +667,6 @@ def api_load_universal():
                 })
             finally:
                 tmp_path.unlink(missing_ok=True)
-        fn_lower = fn.lower().strip()
-        if "database v2" in fn_lower or "databasev2" in fn_lower or fn_lower == "database v2":
-            drive_root = (request.form.get("driveRoot") or "").strip() or None
-            db = load_serato_database_v2(content, drive_root=drive_root)
-            st.songs = unified_to_vdj_songs(db)
-            st.unified = db
-            st.version = ""
-            st.db_path = None
-            st.vdjfolders = {}
-            st.extra_files = {}
-            st.source = "serato"
-            return jsonify({
-                "ok": True, "count": len(st.songs), "playlists": len(db.playlists),
-                "source": "serato", "message": "Załadowano Serato DJ (database V2)",
-            })
         if ext == ".djxml":
             db = load_djxml(content)
             st.songs = unified_to_vdj_songs(db)
@@ -688,6 +837,11 @@ def api_save_progress():
         'extra_files': {k: base64.b64encode(v).decode('ascii') for k, v in st.extra_files.items()},
         'version': st.version,
         'source': st.source,
+        'playlists': [
+            {'name': pl.name, 'track_ids': list(pl.track_ids or [])}
+            for pl in ((st.unified.playlists or []) if st.unified else [])
+            if not getattr(pl, 'is_folder', False)
+        ],
     }
     encoded = _encode_njr(data)
     ts = datetime.now().strftime('%Y-%m-%d_%H%M')
