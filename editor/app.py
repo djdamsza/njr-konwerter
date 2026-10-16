@@ -83,6 +83,7 @@ from engine_libdjinterop import (
     validate_engine_schema,
 )
 from dj_apps_guard import sync_guard_blockers
+from serato_sqlite_read import is_serato_sqlite_source, load_serato_sqlite_from_path
 from engine_patriot_sync import sync_metadata_and_playlists_to_patriot
 from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
 from serato_parser import (
@@ -404,6 +405,12 @@ def _load_from_path(
     p = Path(p).expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(f"Plik nie istnieje: {p}")
+
+    if is_serato_sqlite_source(p):
+        db, info = load_serato_sqlite_from_path(p)
+        out = _commit_serato_load(db, str(p))
+        out["message"] = info["message"]
+        return out
 
     serato_base = resolve_serato_library_dir(p)
     if serato_base is not None:
