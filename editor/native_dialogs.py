@@ -62,7 +62,7 @@ def pick_open_path_native() -> Optional[str]:
         if sys_name == 'Darwin':
             r = subprocess.run(
                 ['osascript', '-e',
-                 'return POSIX path of (choose file with prompt "Otwórz bazę DJ (ZIP, XML, m.db, nml, database V2)")'],
+                 'return POSIX path of (choose file with prompt "Otwórz bazę DJ. Serato: wystarczy jeden z trzech ZIP-ów master/root/tidal z tej samej kopii")'],
                 capture_output=True, text=True, timeout=120
             )
             if r.returncode == 0 and r.stdout.strip():
