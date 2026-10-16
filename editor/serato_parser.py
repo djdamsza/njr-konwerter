@@ -1868,6 +1868,27 @@ def serato_flat_playlists_to_tree(
     return [build((name,)) for name in roots]
 
 
+def serato_playlists_for_export(playlists: list) -> list:
+    """Drzewo crate'ów do XML Rekordbox.
+
+    database V2 trzyma płaskie nazwy „Folder%%Lista”. SQLite ma już dzieci
+    i utwory — składanie po „%%” kasuje te listy i w Rekordboxie zostają puste.
+    """
+    raw = list(playlists or [])
+
+    def has_percent(nodes: list) -> bool:
+        for pl in nodes or []:
+            if "%%" in (getattr(pl, "name", "") or ""):
+                return True
+            if has_percent(getattr(pl, "children", None) or []):
+                return True
+        return False
+
+    if has_percent(raw):
+        return serato_flat_playlists_to_tree(raw)
+    return raw
+
+
 def prepare_serato_unified_for_engine(
     serato_dir: Optional[Path] = None,
     *,

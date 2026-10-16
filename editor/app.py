@@ -105,11 +105,11 @@ from serato_parser import (
     remove_vdj_smart_crates,
     remove_vdj_subcrates,
     prepare_serato_unified_for_engine,
-    serato_flat_playlists_to_tree,
+    serato_playlists_for_export,
 )
 from serato_markers import write_serato_markers2_batch
 import threading
-from rb_generator import generate_rb_xml, generate_rb_playlists_only_xml
+from rb_generator import _artist_for_rb, generate_rb_xml, generate_rb_playlists_only_xml
 from rb_masterdb_generator import unified_to_master_db
 from djxml_generator import generate_djxml
 from djxml_parser import load_djxml
@@ -738,16 +738,22 @@ def _write_rekordbox_live(info: dict) -> dict:
     xml_path = downloads / "njr-rekordbox.xml"
     db = _unified_db_for_export(playlist_tree=True)
     xml_path.write_bytes(generate_rb_xml(db))
+    lists = list(iter_playlist_entries(db.playlists))
+    with_tracks = sum(1 for _name, pl in lists if pl.track_ids)
+    with_artist = sum(1 for track in db.tracks if _artist_for_rb(track))
     return {
         'path': str(xml_path),
         'message': (
-            f"Zapisałem plik w Pobranych: {xml_path}. "
-            "W rekordboxie: ustawienia (zębatka, prawy górny róg) → zakładka Advanced → "
-            "Database → rekordbox xml → Imported Library → Browse i wskaż njr-rekordbox.xml z Pobranych. "
-            "Opis formatu: https://rekordbox.com/en/support/developer/ "
-            "Jeśli na liście po lewej nie ma rekordbox xml: View → Layout → rekordbox xml. "
-            "Przeciągnij All Tracks na Collection. Gdy zapyta, czy wczytać informacje z tagu pliku, wybierz Nie. "
-            "Potem przeciągnij playlisty na Playlists."
+            f"Zapisałem {xml_path}. "
+            f"Utwory: {len(db.tracks)}, playlisty z utworami: {with_tracks}, "
+            f"wykonawca wpisany z bazy albo nazwy pliku: {with_artist}. "
+            "Rekordbox nie uzupełnia utworów, które już siedzą w kolekcji. "
+            "Zębatka → Advanced → Database → rekordbox xml → Imported Library → "
+            "Browse → njr-rekordbox.xml z Pobranych. "
+            "W tym widoku zaznacz All Tracks, prawy przycisk, Import to Collection. "
+            "Gdy zapyta, czy wczytać informacje z tagu pliku, wybierz Nie — "
+            "inaczej pusty tag artysty z pliku zetrze wykonawcę z XML. "
+            "Na końcu przeciągnij playlisty na Playlists."
         ),
     }
 
@@ -2666,8 +2672,7 @@ def _unified_db_for_export(
             Playlist(name="VDJ", track_ids=[], is_folder=True, children=children)
         ]
     elif st.source == 'serato' and playlist_tree and st.unified:
-        tree = serato_flat_playlists_to_tree(st.unified.playlists or [])
-        children = list(tree or [])
+        children = list(serato_playlists_for_export(st.unified.playlists or []))
         if include_all_tracks:
             children = [_playlist_all_exportable_tracks(db)] + children
         db.playlists = [

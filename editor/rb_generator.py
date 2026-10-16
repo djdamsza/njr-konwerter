@@ -4,6 +4,7 @@ Tworzy rbxml.xml z UnifiedDatabase do importu w RB.
 """
 import os
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from pathlib import Path
@@ -80,40 +81,113 @@ def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
     ):
         return f"file://localhost{path}"
     # Lokalny plik – ścieżka absolutna
+    # Rekordbox zostawia przecinek i nawiasy, koduje spację (%20) i & (%26).
+    safe = "/(),-._~!*'"
     if path.startswith("/"):
-        return "file://localhost" + quote(path, safe="/")
+        return "file://localhost" + quote(path, safe=safe)
     # Windows C:\...
     if len(path) > 1 and path[1] == ":":
-        return "file://localhost/" + quote(path, safe="/")
-    return "file://localhost/" + quote(path, safe="/")
+        return "file://localhost/" + quote(path, safe=safe)
+    return "file://localhost/" + quote(path, safe=safe)
 
 
 _JUNK_ARTIST = re.compile(
     r"(tomp3|myfreemp3|free\.download|\bwww\b|\.(com|cc|vip|net|pl)\b)",
     re.IGNORECASE,
 )
+_ARTIST_SEPS = (" - ", " – ", " — ", " _ ")
 
 
-def _squash(text: str) -> str:
-    return " ".join((text or "").split()).casefold()
+def _fold_name(text: str) -> str:
+    """Porównanie tytułu z nazwą pliku: bez ogonków, apostrofów i podkreśleń."""
+    raw = unicodedata.normalize("NFKD", text or "")
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = raw.replace("ł", "l").replace("Ł", "l")
+    raw = raw.casefold()
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return " ".join(raw.split())
 
 
-def _artist_for_rb(track: Track) -> str:
-    """Gdy w bazie nie ma wykonawcy, weź go z nazwy pliku „Wykonawca - Tytuł”."""
+def _clean_artist(text: str) -> str:
+    artist = " ".join((text or "").replace("_", " ").split())
+    if not artist or _JUNK_ARTIST.search(artist):
+        return ""
+    return artist
+
+
+def _artist_from_filename(track: Track) -> str:
+    stem = Path(track.path or "").stem.strip()
+    title = (track.title or "").strip()
+    if not stem:
+        return ""
+    folded_title = _fold_name(title)
+    for sep in _ARTIST_SEPS:
+        if sep not in stem:
+            continue
+        left, right = stem.split(sep, 1)
+        artist = _clean_artist(left)
+        if not artist or not right.strip():
+            continue
+        folded_right = _fold_name(right)
+        if not folded_title or folded_right == folded_title or folded_title in folded_right or folded_right in folded_title:
+            return artist
+    display = re.sub(r"[_\-–—]+", " ", stem)
+    words = display.split()
+    folded_words = [_fold_name(word) for word in words]
+    folded_words = [word for word in folded_words if word]
+    title_words = folded_title.split()
+    if (
+        len(title_words) >= 2
+        and len(folded_words) > len(title_words)
+        and folded_words[-len(title_words) :] == title_words
+    ):
+        # Słowa po złożeniu mogą mieć inną liczbę niż surowe (nawias znika).
+        # Bierzemy tyle początkowych słów, ile zostaje po odjęciu tytułu.
+        keep = len(folded_words) - len(title_words)
+        return _clean_artist(" ".join(words[:keep]))
+    if folded_title and folded_title == _fold_name(stem):
+        for sep in _ARTIST_SEPS:
+            if sep not in stem:
+                continue
+            left, right = stem.split(sep, 1)
+            artist = _clean_artist(left)
+            if artist and right.strip():
+                return artist
+    return ""
+
+
+def _text_tags(path: str) -> dict[str, str]:
+    """Artist/album z tagu pliku, gdy kolumny Serato są puste."""
+    if not path or "://" in path:
+        return {}
+    try:
+        if not Path(path).is_file():
+            return {}
+        from mutagen import File
+
+        audio = File(path, easy=True)
+        if not audio:
+            return {}
+        found: dict[str, str] = {}
+        for key in ("artist", "album"):
+            values = audio.get(key) or []
+            text = str(values[0]).strip() if values else ""
+            if text:
+                found[key] = text
+        return found
+    except Exception:
+        return {}
+
+
+def _artist_for_rb(track: Track, file_artist: str = "") -> str:
+    """Wykonawca: kolumna bazy, potem tag pliku, potem nazwa „Wykonawca - Tytuł”."""
     artist = (track.artist or "").strip()
     if artist:
         return artist
-    stem = Path(track.path).stem
-    if " - " not in stem:
-        return ""
-    left, right = stem.split(" - ", 1)
-    left, right = left.strip(), right.strip()
-    title = (track.title or "").strip()
-    if not left or not right or _JUNK_ARTIST.search(left):
-        return ""
-    if title and _squash(right) != _squash(title) and _squash(title) not in _squash(right):
-        return ""
-    return left
+    from_file = _clean_artist(file_artist)
+    if from_file:
+        return from_file
+    return _artist_from_filename(track)
 
 
 def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] = None) -> ET.Element:
@@ -134,16 +208,17 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     # Size, TotalTime, BitRate, SampleRate – RB wymaga z pliku (win.xml: drag-drop ma te wartości, import z 0 ma czerwone)
     size, duration_sec, bitrate, sample_rate = _read_file_meta(track.path)
     total_time = int(duration_sec) if duration_sec else (int(track.duration) if track.duration else 0)
+    file_tags = _text_tags(track.path) if not (track.artist or "").strip() or not (track.album or "").strip() else {}
 
     # Comments = tagi z # (RB My Tags w eksporcie często w Comments)
-    comments = " ".join(t for t in track.tags if t) if track.tags else ""
+    comments = " ".join(t for t in track.tags if t) if track.tags else (track.comment or "")
 
     attrib = {
         "TrackID": track_id,
         "Name": track.title or Path(track.path).stem,
-        "Artist": _artist_for_rb(track),
+        "Artist": _artist_for_rb(track, file_tags.get("artist", "")),
         "Composer": "",
-        "Album": track.album,
+        "Album": (track.album or "").strip() or file_tags.get("album", ""),
         "Grouping": "",
         "Genre": track.genre,
         "Kind": kind,

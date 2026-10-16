@@ -225,6 +225,60 @@ class TestSeratoSqliteRead(unittest.TestCase):
         self.assertEqual(_artist_for_rb(junk), "")
         kept = Track(path="/x/a.mp3", title="Song", artist="DJ")
         self.assertEqual(_artist_for_rb(kept), "DJ")
+        polish = Track(
+            path="/Users/dj/Music/SLAWEK UNIATOWSKI - Kazdemu wolno kochac (Album Version).mp3",
+            title="Każdemu wolno kochać (Album Version)",
+            artist="",
+        )
+        self.assertEqual(_artist_for_rb(polish), "SLAWEK UNIATOWSKI")
+        emdash = Track(
+            path="/Users/dj/Music/Adele — Rolling in the deep (Ayur Tsyrenov DFM extended remix).mp3",
+            title="Rolling in the deep (Ayur Tsyrenov DFM extended remix)",
+            artist="",
+        )
+        self.assertEqual(_artist_for_rb(emdash), "Adele")
+        underscored = Track(
+            path="/Users/dj/Music/Sean_Paul_ft_Alexis_Jordan-Got_2_Luv_U_(Radio_mix).mp3",
+            title="Got 2 Luv U (Radio mix)",
+            artist="",
+        )
+        self.assertEqual(_artist_for_rb(underscored), "Sean Paul ft Alexis Jordan")
+        from_tag = Track(path="/x/song.mp3", title="Song", artist="")
+        self.assertEqual(_artist_for_rb(from_tag, file_artist="Tag Artist"), "Tag Artist")
+
+    def test_nested_sqlite_crates_keep_tracks_in_rekordbox_xml(self):
+        from rb_generator import generate_rb_xml
+        from serato_parser import serato_playlists_for_export
+        from unified_model import Playlist, Track, UnifiedDatabase
+
+        leaf = Playlist(name="wesele", track_ids=["/Users/dj/Music/a.mp3"], is_folder=False)
+        folder = Playlist(name="imprezy", track_ids=[], is_folder=True, children=[leaf])
+        tree = serato_playlists_for_export([folder])
+        self.assertEqual(tree[0].children[0].track_ids, ["/Users/dj/Music/a.mp3"])
+        flat = serato_playlists_for_export(
+            [Playlist(name="imprezy%%wesele", track_ids=["/Users/dj/Music/a.mp3"])]
+        )
+        self.assertEqual(flat[0].name, "imprezy")
+        db = UnifiedDatabase(
+            tracks=[Track(path="/Users/dj/Music/a.mp3", title="Song", artist="")],
+            playlists=tree,
+        )
+        xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
+        self.assertIn('Name="wesele"', xml)
+        self.assertIn('Entries="1"', xml)
+        self.assertIn('<TRACK Key="file://localhost/Users/dj/Music/a.mp3"', xml)
+
+    def test_location_matches_rekordbox_export(self):
+        from rb_generator import _path_to_location
+
+        loc = _path_to_location(
+            "/Users/test/Downloads/DAWID KWIATKOWSKI, MARGARET - Pozniej (Radio Edit).mp3"
+        )
+        self.assertEqual(
+            loc,
+            "file://localhost/Users/test/Downloads/DAWID%20KWIATKOWSKI,%20MARGARET%20-%20Pozniej%20(Radio%20Edit).mp3",
+        )
+        self.assertIn("%26", _path_to_location("/Users/test/Music/A & B.mp3"))
 
     def test_missing_sibling_is_reported(self):
         import tempfile
