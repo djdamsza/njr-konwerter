@@ -136,3 +136,43 @@ def load_traktor_nml(nml_path: Path) -> UnifiedDatabase:
             if pl_tracks:
                 playlists.append(Playlist(name=name, track_ids=pl_tracks))
     return UnifiedDatabase(tracks=tracks, playlists=playlists, source="traktor")
+
+
+def save_traktor_nml(db: UnifiedDatabase) -> bytes:
+    """Zapis collection.nml: utwory i płaskie playlisty. Przed zapisem na dysk zrób kopię oryginału."""
+    root = ET.Element("NML", VERSION="19")
+    collection = ET.SubElement(root, "COLLECTION", ENTRIES=str(len(db.tracks)))
+    for track in db.tracks:
+        entry = ET.SubElement(collection, "ENTRY")
+        parent = str(Path(track.path).parent).replace("\\", "/")
+        loc = ET.SubElement(entry, "LOCATION")
+        ET.SubElement(loc, "VOLUME", NAME="")
+        ET.SubElement(loc, "DIR", PATH=parent)
+        ET.SubElement(loc, "FILE", NAME=Path(track.path).name)
+        ET.SubElement(
+            entry,
+            "INFO",
+            TITLE=track.title or "",
+            ARTIST=track.artist or "",
+            ALBUM=track.album or "",
+            GENRE=track.genre or "",
+            KEY=track.key or "",
+            BPM=f"{track.bpm:.2f}" if track.bpm else "0",
+        )
+    playlists = ET.SubElement(root, "PLAYLISTS")
+    folder = ET.SubElement(playlists, "NODE", TYPE="FOLDER", NAME="$ROOT")
+    sub = ET.SubElement(folder, "SUBNODES", COUNT=str(len(db.playlists)))
+    for pl in db.playlists:
+        if pl.is_folder:
+            continue
+        node = ET.SubElement(sub, "NODE", TYPE="PLAYLIST", NAME=pl.name or "lista")
+        body = ET.SubElement(node, "PLAYLIST", ENTRIES=str(len(pl.track_ids)), TYPE="LIST")
+        for key in pl.track_ids:
+            row = ET.SubElement(body, "ENTRY")
+            ET.SubElement(row, "PRIMARYKEY", TYPE="TRACK", KEY=key)
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    from io import BytesIO
+    buf = BytesIO()
+    tree.write(buf, encoding="utf-8", xml_declaration=True)
+    return buf.getvalue()

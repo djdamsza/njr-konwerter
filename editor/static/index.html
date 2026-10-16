@@ -526,7 +526,7 @@
     <div>
       <h1>NJR konwerter / edytor</h1>
       <p class="muted" style="font-size: 12px; margin: 0 0 8px;">
-        Otwórz bazę DJ – VDJ, Rekordbox, Serato, DJXML, Engine DJ, Traktor. Edytuj tagi i playlisty. Eksport na dole strony.
+        Pobierz bazę programu. Konwerter sam znajduje ją na dysku i robi kopię. Eksport zapisuje z powrotem w to samo miejsce.
       </p>
     </div>
     <button id="undoBtn" type="button" title="Cofnij ostatnią operację" disabled style="padding: 8px 16px; margin-top: 4px;">Cofnij</button>
@@ -565,12 +565,26 @@
 
     <main class="main-content">
       <div class="card-panel active" id="card-import">
-  <div class="toolbar" id="importToolbar">
-    <input type="file" id="universalInput" accept="*/*" style="display: none;" title="VDJ, Rekordbox, Serato (database V2), DJXML, Engine DJ, Traktor, ZIP, zachowany postęp (.njr)">
-    <button id="importUniversalBtn" title="Otwórz dowolną bazę DJ. Serato 4: wskaż jeden ZIP master/root/tidal z tej samej kopii — reszta dołączy się sama">Otwórz bazę</button>
-    <button id="importSeratoFolderBtn" type="button" title="Wskaż folder _Serato_ albo Music z _Serato_">Otwórz folder Serato</button>
-    <span class="status" id="status">Nie załadowano</span>
-    <span class="muted" id="saveReminder" style="font-size: 12px; margin-left: 8px; display: none;">Zmiany w pamięci – użyj „Eksport” na dole strony.</span>
+  <div class="toolbar" id="importToolbar" style="flex-direction: column; align-items: stretch; gap: 12px;">
+    <p style="font-size: 13px; color: var(--muted); margin: 0;">
+      Wybierz program. NJR znajduje jego aktualną bazę, kopiuje oryginał i otwiera go do pracy.
+      Zmiany w konwerterze nie ruszają tej kopii.
+    </p>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+      <button type="button" class="system-import" data-system="serato">Serato</button>
+      <button type="button" class="system-import" data-system="vdj">VirtualDJ</button>
+      <button type="button" class="system-import" data-system="engine">Engine DJ</button>
+      <button type="button" class="system-import" data-system="rekordbox">Rekordbox</button>
+      <button type="button" class="system-import" data-system="traktor">Traktor</button>
+    </div>
+    <p id="importLiveNote" style="font-size: 12px; color: var(--muted); margin: 0; min-height: 1.2em;"></p>
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+      <input type="file" id="universalInput" accept="*/*" style="display: none;" title="Plik bazy, gdy automatyczne szukanie nie pasuje">
+      <button id="importUniversalBtn" type="button" title="Gdy program nie znajdzie bazy sam">Wskaż plik ręcznie</button>
+      <button id="importSeratoFolderBtn" type="button" title="Folder _Serato_ albo Library/Backups">Wskaż folder</button>
+      <span class="status" id="status">Nie załadowano</span>
+      <span class="muted" id="saveReminder" style="font-size: 12px; margin-left: 8px; display: none;">Zmiany są w pamięci konwertera. Eksport zapisze je w folderze programu.</span>
+    </div>
   </div>
 
   <div class="db-stats" id="dbStats" style="display: none;">
@@ -1350,11 +1364,21 @@
 
   <div class="card-panel" id="card-export">
     <div class="merge-panel" id="exportSection" style="border: 2px solid var(--accent);">
-      <h3 style="margin: 0 0 8px;">Zapisz / Eksport</h3>
+      <h3 style="margin: 0 0 8px;">Eksport</h3>
       <p style="font-size: 13px; color: var(--muted); margin: 0 0 16px;">
-        Najpierw zapisz postęp pracy. Potem wybierz system, do którego chcesz przenieść bibliotekę.
+        Zapis idzie w to miejsce, z którego NJR pobiera bazę tego programu.
+        Pod spodem jest przywrócenie ostatniej kopii.
       </p>
-      <div class="export-grid">
+      <div class="export-grid" id="liveExportGrid">
+        <div class="export-card"><h4>Serato</h4><p class="export-hint" id="where-serato"></p><div class="export-actions"><button type="button" class="system-export export-btn-serato" data-system="serato">Eksportuj do Serato</button></div><div class="export-actions"><button type="button" class="system-restore" data-system="serato">Przywróć backup</button></div></div>
+        <div class="export-card"><h4>VirtualDJ</h4><p class="export-hint" id="where-vdj"></p><div class="export-actions"><button type="button" class="system-export export-btn-vdj" data-system="vdj">Eksportuj do VirtualDJ</button></div><div class="export-actions"><button type="button" class="system-restore" data-system="vdj">Przywróć backup</button></div></div>
+        <div class="export-card"><h4>Engine DJ</h4><p class="export-hint" id="where-engine"></p><div class="export-actions"><button type="button" class="system-export export-btn-engine" data-system="engine">Eksportuj do Engine</button></div><div class="export-actions"><button type="button" class="system-restore" data-system="engine">Przywróć backup</button></div></div>
+        <div class="export-card"><h4>Rekordbox</h4><p class="export-hint" id="where-rekordbox"></p><div class="export-actions"><button type="button" class="system-export" data-system="rekordbox">Eksportuj XML do Rekordbox</button></div><div class="export-actions"><button type="button" class="system-restore" data-system="rekordbox">Przywróć backup</button></div></div>
+        <div class="export-card"><h4>Traktor</h4><p class="export-hint" id="where-traktor"></p><div class="export-actions"><button type="button" class="system-export" data-system="traktor">Eksportuj do Traktora</button></div><div class="export-actions"><button type="button" class="system-restore" data-system="traktor">Przywróć backup</button></div></div>
+      </div>
+      <details class="export-advanced" style="margin-top: 18px;">
+        <summary>Pobierz plik ręcznie (ZIP)</summary>
+      <div class="export-grid" style="margin-top: 12px;">
 
         <div class="export-card">
           <h4>Zapisz postęp</h4>
@@ -1431,6 +1455,7 @@
         </div>
 
       </div>
+      </details>
       <!-- Ukryte pola / stare API — zachowane dla kompatybilności JS, niewidoczne w UI -->
       <input type="hidden" id="seratoDriveRoot" value="/">
       <input type="checkbox" id="seratoWriteCues" checked style="display:none">
@@ -2344,6 +2369,80 @@
       };
     }
     (async () => { try { await refreshLicenseStatus(); } catch (_) {} })();
+
+    async function refreshLiveLibraries() {
+      try {
+        const d = await fetchJson(API + '/dj-libraries');
+        (d.libraries || []).forEach(row => {
+          const where = document.getElementById('where-' + row.system);
+          if (where) {
+            where.textContent = row.found
+              ? (row.path + (row.note ? ' — ' + row.note : ''))
+              : (row.note || 'Nie znaleziono bazy');
+          }
+          document.querySelectorAll('.system-restore[data-system="' + row.system + '"]').forEach(btn => {
+            btn.disabled = !row.hasBackup;
+          });
+        });
+      } catch (_) {}
+    }
+    refreshLiveLibraries();
+
+    async function postLive(url, system) {
+      const r = await fetch(API + url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ system }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error) throw new Error(d.error || r.statusText);
+      return d;
+    }
+    document.querySelectorAll('.system-import').forEach(btn => {
+      btn.onclick = async () => {
+        const system = btn.dataset.system;
+        setStatus('Szukam bazy i robię kopię…', '');
+        try {
+          const d = await postLive('/import-live', system);
+          await applyImportedDatabase(d);
+          const note = document.getElementById('importLiveNote');
+          if (note) note.textContent = d.message || '';
+          showJobDonePopup({ title: 'Baza pobrana', message: d.message || 'Gotowe' });
+          refreshLiveLibraries();
+        } catch (err) {
+          setStatus(err.message, 'error');
+          showJobDonePopup({ title: 'Nie pobrałem bazy', message: err.message, type: 'error' });
+        }
+      };
+    });
+    document.querySelectorAll('.system-export').forEach(btn => {
+      btn.onclick = async () => {
+        setStatus('Zapisuję w folderze programu…', '');
+        try {
+          const d = await postLive('/export-live', btn.dataset.system);
+          setStatus(d.message || 'Zapisane', 'loaded');
+          showJobDonePopup({ title: 'Eksport zapisany', message: d.message || 'Gotowe' });
+          refreshLiveLibraries();
+        } catch (err) {
+          setStatus(err.message, 'error');
+          showJobDonePopup({ title: 'Eksport przerwany', message: err.message, type: 'error' });
+        }
+      };
+    });
+    document.querySelectorAll('.system-restore').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Przywrócić ostatnią kopię tego programu? Aktualna baza na dysku zostanie nadpisana.')) return;
+        setStatus('Przywracam kopię…', '');
+        try {
+          const d = await postLive('/restore-live', btn.dataset.system);
+          setStatus(d.message || 'Przywrócono', 'loaded');
+          showJobDonePopup({ title: 'Kopia przywrócona', message: d.message || 'Gotowe' });
+        } catch (err) {
+          setStatus(err.message, 'error');
+          showJobDonePopup({ title: 'Nie przywróciłem kopii', message: err.message, type: 'error' });
+        }
+      };
+    });
 
     document.getElementById('importUniversalBtn').onclick = async () => {
       try {
