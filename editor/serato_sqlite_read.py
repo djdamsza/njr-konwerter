@@ -15,7 +15,9 @@ szukamy pozostałych z tej samej kopii i składamy jedną bibliotekę.
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
+import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +36,7 @@ _ROLES = ("master", "root", "tidal")
 _ROOT_NAME = "serato library root"
 # Serato zapisuje trzy ZIP-y po kolei, często o sekundę od siebie.
 _BACKUP_CLUSTER_SEC = 180
+_snap_dirs: list[tempfile.TemporaryDirectory] = []
 
 
 def is_serato_sqlite_source(path: Path) -> bool:
@@ -57,7 +60,25 @@ def load_serato_sqlite_from_path(path: Path) -> tuple[UnifiedDatabase, dict]:
 
     with TemporaryDirectory(prefix="njr-serato-sqlite-") as tmp:
         roles, stamp, opened_extra = _resolve_role_files(p, Path(tmp))
-        db = _read_roles(roles)
+        fallback_note = ""
+        try:
+            db = _read_roles(roles)
+        except (sqlite3.Error, OSError) as exc:
+            backup_dir = _backup_dir_near(p)
+            if stamp or backup_dir is None:
+                raise ValueError(_open_failure_message(p, exc)) from exc
+            listed = _list_backups(backup_dir)
+            if not listed:
+                raise ValueError(_open_failure_message(p, exc)) from exc
+            newest = max(listed, key=lambda item: item[2])
+            grouped = _cluster_around(newest[1])
+            roles = _unzip_group(grouped, Path(tmp) / "fallback")
+            try:
+                db = _read_roles(roles)
+            except (sqlite3.Error, OSError) as exc2:
+                raise ValueError(_open_failure_message(p, exc2)) from exc2
+            stamp = _stamp_of(newest[1])
+            fallback_note = " Żywej bazy nie dało się otworzyć, wczytałem ostatnią kopię z Backups."
         found = [name for name in _ROLES if name in roles]
         missing = [name for name in _ROLES if name not in roles]
         parts = " + ".join(f"{name}.sqlite" for name in found)
@@ -74,7 +95,7 @@ def load_serato_sqlite_from_path(path: Path) -> tuple[UnifiedDatabase, dict]:
                 miss += " (zostają utwory, bez drzewa playlist z master)"
         message = (
             f"Załadowano Serato ({parts}{stamp_bit}{extra}) — "
-            f"{len(db.tracks)} utworów, {len(db.playlists)} list{miss}"
+            f"{len(db.tracks)} utworów, {len(db.playlists)} list{miss}{fallback_note}"
         )
         info = {
             "message": message,
@@ -225,11 +246,83 @@ def _extract_sqlite(zip_path: Path, dest: Path) -> Path:
     return extracted
 
 
+def _backup_dir_near(path: Path) -> Optional[Path]:
+    folder = path if path.is_dir() else path.parent
+    backup = folder / "Backups"
+    return backup if backup.is_dir() else None
+
+
+def _open_failure_message(path: Path, exc: BaseException) -> str:
+    from mac_access import offer_library_access
+
+    folder = path if path.is_dir() else path.parent
+    raw = str(exc)
+    low = raw.lower()
+    if "unable to open" in low or "permission" in low or "operation not permitted" in low:
+        offer_library_access(folder, "Serato")
+        return (
+            f"Nie mogę otworzyć bazy Serato w {folder}. Zamknij Serato (Cmd+Q). "
+            "Jeśli macOS nie pyta o zgodę, włącz Pełny dostęp do dysku dla Terminala "
+            "albo aplikacji, z której uruchamiasz NJR "
+            "(Ustawienia systemowe → Prywatność i ochrona) i pobierz bazę ponownie. "
+            f"Szczegół: {raw}"
+        )
+    if "not a database" in low:
+        return f"Plik w {folder} nie jest zwykłą bazą SQLite. Szczegół: {raw}"
+    return f"Nie mogę odczytać bazy Serato w {folder}: {raw}"
+
+
+def _snapshot_sqlite(path: Path) -> Path:
+    """Kopia pliku razem z -wal/-shm. Odczyt żywej bazy Serato pada, gdy plik jest w trybie WAL."""
+    tmp = tempfile.TemporaryDirectory(prefix="njr-serato-snap-")
+    _snap_dirs.append(tmp)
+    dest = Path(tmp.name) / path.name
+    shutil.copy2(path, dest)
+    for suffix in ("-wal", "-shm"):
+        side = Path(str(path) + suffix)
+        if side.is_file():
+            shutil.copy2(side, Path(str(dest) + suffix))
+    return dest
+
+
+def _cleanup_snaps() -> None:
+    while _snap_dirs:
+        _snap_dirs.pop().cleanup()
+
+
 def _connect_ro(path: Path) -> sqlite3.Connection:
-    uri = "file:" + quote(str(path)) + "?mode=ro"
-    con = sqlite3.connect(uri, uri=True)
-    con.row_factory = sqlite3.Row
-    return con
+    last: Optional[BaseException] = None
+    candidates: list[Path] = []
+    try:
+        candidates.append(_snapshot_sqlite(path))
+    except OSError as exc:
+        last = exc
+    candidates.append(path)
+    for candidate in candidates:
+        try:
+            con = sqlite3.connect(str(candidate))
+            con.row_factory = sqlite3.Row
+            try:
+                con.execute("PRAGMA query_only=ON")
+            except sqlite3.Error:
+                pass
+            con.execute("SELECT name FROM sqlite_master LIMIT 1")
+            return con
+        except sqlite3.Error as exc:
+            last = exc
+    quoted = quote(str(path), safe="/")
+    for uri in (
+        f"file:{quoted}?mode=ro&immutable=1",
+        f"file:{quoted}?mode=ro",
+    ):
+        try:
+            con = sqlite3.connect(uri, uri=True)
+            con.row_factory = sqlite3.Row
+            con.execute("SELECT name FROM sqlite_master LIMIT 1")
+            return con
+        except sqlite3.Error as exc:
+            last = exc
+    raise sqlite3.OperationalError(str(last) if last else "unable to open database file")
 
 
 def _tables(con: sqlite3.Connection) -> set[str]:
@@ -257,6 +350,7 @@ def _read_roles(roles: dict[str, Path]) -> UnifiedDatabase:
     finally:
         for con in connections.values():
             con.close()
+        _cleanup_snaps()
 
 
 def _assemble(

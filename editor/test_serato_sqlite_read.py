@@ -109,6 +109,18 @@ def _library(tmp: Path) -> None:
 
 
 class TestSeratoSqliteRead(unittest.TestCase):
+    def test_folder_with_spaces_opens(self):
+        import tempfile
+
+        from serato_sqlite_read import load_serato_sqlite_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "Application Support" / "Serato" / "Library"
+            folder.mkdir(parents=True)
+            _library(folder)
+            db, _info = load_serato_sqlite_from_path(folder)
+            self.assertTrue(any(t.path.endswith("a.mp3") for t in db.tracks))
+
     def test_live_folder_merges_three_databases(self):
         import tempfile
 
