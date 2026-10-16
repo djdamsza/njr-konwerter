@@ -1,0 +1,11 @@
+{
+  "name": "NJR Konwerter",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "njr-server",
+      "command": "cd editor && source .venv/bin/activate && NJR_NO_BROWSER=1 python launcher.py"
+    }
+  ],
+  "ports": [5050]
+}
