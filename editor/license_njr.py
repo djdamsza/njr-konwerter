@@ -1,9 +1,9 @@
 """
-Licencjonowanie NJR Konwerter — tryb open source.
+Licencjonowanie NJR Konwerter — tryb tymczasowy, bez blokady.
 
-Eksport i pełna funkcjonalność są dostępne bez klucza.
-Moduł zostaje dla kompatybilności API (`/api/license/*`); w przyszłości
-można tu przywrócić opcjonalne licencje komercyjne.
+Przed publikacją: darmowa obowiązkowa rejestracja, zakładka Moje konto,
+tokeny kupowane w sklepie Stripe. Pakiety ilościowe jeszcze nieustalone.
+Szczegóły: editor/docs/LICENCJA_PRZED_PUBLIKACJA.md
 """
 
 from __future__ import annotations
