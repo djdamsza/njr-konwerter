@@ -543,36 +543,125 @@ def _full_path(portable: str, role: str, connection_uri: str) -> str:
     return "/" + portable.lstrip("/")
 
 
+def _space_asset_asset_id(con: sqlite3.Connection, space_asset_id: int) -> Optional[int]:
+    if "space_asset" not in _tables(con):
+        return None
+    row = con.execute(
+        "SELECT asset_id FROM space_asset WHERE id=?",
+        (space_asset_id,),
+    ).fetchone()
+    if row is None or row["asset_id"] is None:
+        return None
+    return int(row["asset_id"])
+
+
+def _track_from_space_asset(
+    con: sqlite3.Connection,
+    assets: dict[int, Track],
+    space_asset_id: int,
+) -> Optional[Track]:
+    """space_asset.id → asset, albo wprost asset id, zależnie od bazy."""
+    asset_id = _space_asset_asset_id(con, space_asset_id)
+    if asset_id is not None:
+        hit = assets.get(asset_id)
+        if hit is not None:
+            return hit
+    return assets.get(space_asset_id)
+
+
+def _resolve_membership_track(
+    master: sqlite3.Connection,
+    peripherals: dict[int, tuple[sqlite3.Connection, dict[int, Track]]],
+    preferred: Optional[tuple[sqlite3.Connection, dict[int, Track]]],
+    space_asset_id: int,
+) -> Optional[Track]:
+    """space_asset_id z master.container_asset → utwór w bazie dysku.
+
+    Najpierw baza wskazana przez location_container.location_id.
+    Potem space_asset w masterze (asset_id bywa wspólne z root/tidal).
+    Na końcu pozostałe bazy, tylko gdy location nie jest znane.
+    """
+    if preferred is not None:
+        hit = _track_from_space_asset(preferred[0], preferred[1], space_asset_id)
+        if hit is not None:
+            return hit
+    asset_id = _space_asset_asset_id(master, space_asset_id)
+    pools: list[dict[int, Track]] = []
+    if preferred is not None:
+        pools.append(preferred[1])
+    pools.extend(assets for _loc, (_con, assets) in peripherals.items())
+    if asset_id is not None:
+        for assets in pools:
+            hit = assets.get(asset_id)
+            if hit is not None:
+                return hit
+    if preferred is None:
+        for _loc, (con, assets) in peripherals.items():
+            hit = _track_from_space_asset(con, assets, space_asset_id)
+            if hit is not None:
+                return hit
+    return None
+
+
 def _tracks_in_container(
     con: sqlite3.Connection,
     container_id: int,
     assets: dict[int, Track],
 ) -> list[Track]:
+    """Utwory listy w root.sqlite / tidal.sqlite.
+
+    Ten projekt zapisuje container_asset(container_id, space_asset_id),
+    a space_asset.id wskazuje asset. Część baz trzyma w space_asset_id od razu asset id.
+    """
     if "container_asset" not in _tables(con):
         return []
     cols = set(_cols(con, "container_asset"))
+    if "container_id" not in cols:
+        return []
     order = " ORDER BY ca.list_order" if "list_order" in cols else ""
+    queries: list[str] = []
     if "space_asset_id" in cols and "space_asset" in _tables(con):
-        query = (
+        queries.append(
             "SELECT sa.asset_id AS asset_id FROM container_asset ca "
             "JOIN space_asset sa ON sa.id = ca.space_asset_id "
             f"WHERE ca.container_id=?{order}"
         )
-    elif "asset_id" in cols:
-        query = f"SELECT ca.asset_id AS asset_id FROM container_asset ca WHERE ca.container_id=?{order}"
-    else:
-        return []
+    if "asset_id" in cols:
+        queries.append(
+            f"SELECT ca.asset_id AS asset_id FROM container_asset ca WHERE ca.container_id=?{order}"
+        )
     out: list[Track] = []
     seen: set[str] = set()
-    for row in con.execute(query, (container_id,)):
-        track = assets.get(int(row["asset_id"]))
+
+    def take(asset_id) -> None:
+        if asset_id is None:
+            return
+        track = assets.get(int(asset_id))
+        if track is None and "space_asset_id" in cols:
+            track = _track_from_space_asset(con, assets, int(asset_id))
         if track is None:
-            continue
+            return
         key = normalize_path(track.path)
-        if key in seen:
-            continue
+        if not key or key in seen:
+            return
         seen.add(key)
         out.append(track)
+
+    for query in queries:
+        rows = con.execute(query, (container_id,)).fetchall()
+        if not rows:
+            continue
+        for row in rows:
+            take(row["asset_id"])
+        if out:
+            return out
+    if "space_asset_id" in cols:
+        rows = con.execute(
+            f"SELECT ca.space_asset_id AS asset_id FROM container_asset ca WHERE ca.container_id=?{order}",
+            (container_id,),
+        ).fetchall()
+        for row in rows:
+            take(row["asset_id"])
     return out
 
 
@@ -605,6 +694,47 @@ def _richest_playlist_tree(candidates: list[list[Playlist]]) -> list[Playlist]:
     return best
 
 
+def _attach_unique_same_name_crate(
+    master: sqlite3.Connection,
+    container_id: int,
+    peripherals: dict[int, tuple[sqlite3.Connection, dict[int, Track]]],
+    add,
+) -> None:
+    """Gdy master ma nazwę crate, a external_container_id nie wskazuje utworów.
+
+    Bierzemy utwory tylko wtedy, gdy dokładnie jedna lista o tej nazwie w root/tidal
+    faktycznie je ma. Dwie listy o tej samej nazwie zostawiamy, żeby ich nie pomieszać.
+    """
+    if "container" not in _tables(master):
+        return
+    row = master.execute(
+        "SELECT name FROM container WHERE id=?",
+        (container_id,),
+    ).fetchone()
+    name = str(row["name"] or "").strip() if row is not None else ""
+    if not name or name.casefold() == _ROOT_NAME:
+        return
+    matches: list[list[Track]] = []
+    for _loc, (con, assets) in peripherals.items():
+        if "container" not in _tables(con):
+            continue
+        cols = set(_cols(con, "container"))
+        if "id" not in cols or "name" not in cols:
+            continue
+        ids = con.execute(
+            "SELECT id FROM container WHERE name=? COLLATE NOCASE",
+            (name,),
+        ).fetchall()
+        for cid in ids:
+            tracks = _tracks_in_container(con, int(cid["id"]), assets)
+            if tracks:
+                matches.append(tracks)
+    if len(matches) != 1:
+        return
+    for track in matches[0]:
+        add(track)
+
+
 def _playlists_from_master(
     master: sqlite3.Connection,
     peripherals: dict[int, tuple[sqlite3.Connection, dict[int, Track]]],
@@ -612,25 +742,82 @@ def _playlists_from_master(
     restrict_space: bool = True,
 ) -> list[Playlist]:
     def tracks_of(container_id: int) -> list[Track]:
-        if "location_container" not in _tables(master):
-            return []
         found: list[Track] = []
         seen: set[str] = set()
-        rows = master.execute(
-            "SELECT location_id, external_container_id FROM location_container WHERE container_id=?",
-            (container_id,),
-        ).fetchall()
+
+        def add(track: Optional[Track]) -> None:
+            if track is None:
+                return
+            key = normalize_path(track.path)
+            if not key or key in seen:
+                return
+            seen.add(key)
+            found.append(track)
+
+        rows = []
+        if "location_container" in _tables(master):
+            rows = master.execute(
+                "SELECT id, location_id, external_container_id FROM location_container WHERE container_id=?",
+                (container_id,),
+            ).fetchall()
+        lc_ids: list[int] = []
+        lc_location: dict[int, int] = {}
         for row in rows:
+            lc_id = int(row["id"])
+            lc_ids.append(lc_id)
+            lc_location[lc_id] = int(row["location_id"])
             peri = peripherals.get(int(row["location_id"]))
             ext_id = row["external_container_id"]
             if peri is None or ext_id is None:
                 continue
             for track in _tracks_in_container(peri[0], int(ext_id), peri[1]):
-                key = normalize_path(track.path)
-                if key in seen:
+                add(track)
+        # master.sqlite trzyma skład listy w container_asset, nie w root.container_id.
+        # Kolumna to location_container_id (serato_library_sqlite.repair_master_sqlite_foreign_keys)
+        # albo container_id wskazujący kontener mastera. external_container_id bywa puste.
+        ca_cols = set(_cols(master, "container_asset"))
+        if "space_asset_id" in ca_cols and lc_ids and "location_container_id" in ca_cols:
+            marks = ",".join("?" * len(lc_ids))
+            linked = master.execute(
+                "SELECT location_container_id, space_asset_id FROM container_asset "
+                f"WHERE location_container_id IN ({marks})",
+                lc_ids,
+            ).fetchall()
+            for row in linked:
+                if row["space_asset_id"] is None:
                     continue
-                seen.add(key)
-                found.append(track)
+                loc_id = lc_location.get(int(row["location_container_id"]))
+                peri = peripherals.get(loc_id) if loc_id is not None else None
+                add(
+                    _resolve_membership_track(
+                        master, peripherals, peri, int(row["space_asset_id"])
+                    )
+                )
+        if "space_asset_id" in ca_cols and "container_id" in ca_cols:
+            select_loc = (
+                ", location_container_id"
+                if "location_container_id" in ca_cols
+                else ""
+            )
+            linked = master.execute(
+                "SELECT space_asset_id"
+                f"{select_loc} FROM container_asset WHERE container_id=?",
+                (container_id,),
+            ).fetchall()
+            for row in linked:
+                if row["space_asset_id"] is None:
+                    continue
+                loc_id = None
+                if "location_container_id" in row.keys() and row["location_container_id"] is not None:
+                    loc_id = lc_location.get(int(row["location_container_id"]))
+                peri = peripherals.get(loc_id) if loc_id is not None else None
+                add(
+                    _resolve_membership_track(
+                        master, peripherals, peri, int(row["space_asset_id"])
+                    )
+                )
+        if not found:
+            _attach_unique_same_name_crate(master, container_id, peripherals, add)
         return found
 
     return _playlist_tree(master, tracks_of, restrict_space=restrict_space)

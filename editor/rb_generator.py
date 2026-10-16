@@ -296,11 +296,16 @@ def _playlist_to_node(pl: Playlist, path_to_location: dict[str, str]) -> ET.Elem
     Rekordbox przy imporcie nadaje własne TrackID, więc KeyType=0 (numer) gubi utwory.
     """
     if pl.is_folder:
+        children = list(pl.children or [])
+        if pl.track_ids:
+            children = [
+                Playlist(name=pl.name, track_ids=list(pl.track_ids), is_folder=False)
+            ] + children
         node = ET.Element(
             "NODE",
-            {"Type": "0", "Name": pl.name, "Count": str(len(pl.children))},
+            {"Type": "0", "Name": pl.name, "Count": str(len(children))},
         )
-        for child in pl.children:
+        for child in children:
             node.append(_playlist_to_node(child, path_to_location))
         return node
     keys = []

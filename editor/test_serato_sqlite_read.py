@@ -427,6 +427,215 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertTrue(tree)
             self.assertEqual(tree[0].name, "c1")
 
+    def test_master_crate_tracks_via_location_container_id(self):
+        """Skład listy jest w master.container_asset, external_container_id jest puste."""
+        import tempfile
+
+        from rb_generator import generate_rb_xml
+        from serato_sqlite_read import load_serato_sqlite_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            root = folder / "root.sqlite"
+            master = folder / "master.sqlite"
+            _write(root, _ASSET + """
+                INSERT INTO asset VALUES
+                    (1, 'Users/dj/Music/a.mp3', 'a.mp3', '', 'Song', '', '', '8A', 128, 200, 200000, 0.8, '', '2020', 1);
+                INSERT INTO space_asset VALUES (5, 1, 1);
+                INSERT INTO container VALUES (10, 0, 'wesele', 1, 1, 1);
+            """)
+            _write(master, """
+                CREATE TABLE space (id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO space VALUES (5, 'Serato Library');
+                CREATE TABLE container (
+                    id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT,
+                    type INTEGER, list_order INTEGER, space_id INTEGER
+                );
+                INSERT INTO container VALUES
+                    (1, 0, 'Serato Library root', 0, 0, 5),
+                    (2, 1, 'MyLists', 0, 1, 5),
+                    (3, 2, 'wesele', 1, 1, 5);
+                CREATE TABLE location (id INTEGER PRIMARY KEY, path TEXT);
+                INSERT INTO location VALUES (1, '');
+                CREATE TABLE connection (location_id INTEGER PRIMARY KEY, database_uri TEXT);
+                CREATE TABLE location_container (
+                    id INTEGER PRIMARY KEY, container_id INTEGER,
+                    location_id INTEGER, external_container_id INTEGER
+                );
+                INSERT INTO location_container VALUES (50, 3, 1, NULL);
+                CREATE TABLE container_asset (
+                    id INTEGER PRIMARY KEY,
+                    location_container_id INTEGER,
+                    space_asset_id INTEGER
+                );
+                INSERT INTO container_asset VALUES (1, 50, 5);
+            """)
+            con = sqlite3.connect(str(master))
+            con.execute("INSERT INTO connection VALUES (1, ?)", (str(root),))
+            con.commit()
+            con.close()
+            db, _info = load_serato_sqlite_from_path(folder)
+            crate = db.playlists[0].children[0]
+            self.assertEqual(crate.name, "wesele")
+            self.assertEqual(crate.track_ids, ["/Users/dj/Music/a.mp3"])
+            xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
+            self.assertIn('KeyType="1"', xml)
+            self.assertIn('Entries="1"', xml)
+            self.assertIn(
+                'Key="file://localhost/Users/dj/Music/a.mp3"',
+                xml,
+            )
+            self.assertIn(
+                'Location="file://localhost/Users/dj/Music/a.mp3"',
+                xml,
+            )
+
+    def test_master_crate_tracks_via_container_id(self):
+        import tempfile
+
+        from serato_sqlite_read import load_serato_sqlite_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            root = folder / "root.sqlite"
+            master = folder / "master.sqlite"
+            _write(root, _ASSET + """
+                INSERT INTO asset VALUES
+                    (1, 'Users/dj/Music/a.mp3', 'a.mp3', '', 'Song', '', '', '', 0, 0, 0, NULL, '', '', 0);
+                INSERT INTO space_asset VALUES (5, 1, 1);
+            """)
+            _write(master, """
+                CREATE TABLE space (id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO space VALUES (5, 'Serato Library');
+                CREATE TABLE container (
+                    id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT,
+                    type INTEGER, list_order INTEGER, space_id INTEGER
+                );
+                INSERT INTO container VALUES
+                    (1, 0, 'Serato Library root', 0, 0, 5),
+                    (3, 1, 'przedszkole 2022', 1, 1, 5);
+                CREATE TABLE location (id INTEGER PRIMARY KEY, path TEXT);
+                INSERT INTO location VALUES (1, '');
+                CREATE TABLE connection (location_id INTEGER PRIMARY KEY, database_uri TEXT);
+                CREATE TABLE location_container (
+                    id INTEGER PRIMARY KEY, container_id INTEGER,
+                    location_id INTEGER, external_container_id INTEGER
+                );
+                INSERT INTO location_container VALUES (50, 3, 1, NULL);
+                CREATE TABLE container_asset (
+                    id INTEGER PRIMARY KEY,
+                    container_id INTEGER,
+                    location_container_id INTEGER,
+                    space_asset_id INTEGER
+                );
+                INSERT INTO container_asset VALUES (1, 3, NULL, 5);
+            """)
+            con = sqlite3.connect(str(master))
+            con.execute("INSERT INTO connection VALUES (1, ?)", (str(root),))
+            con.commit()
+            con.close()
+            db, _info = load_serato_sqlite_from_path(folder)
+            self.assertEqual(db.playlists[0].name, "przedszkole 2022")
+            self.assertEqual(db.playlists[0].track_ids, ["/Users/dj/Music/a.mp3"])
+
+    def test_same_name_crate_used_only_when_unique(self):
+        import tempfile
+
+        from serato_sqlite_read import load_serato_sqlite_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            root = folder / "root.sqlite"
+            tidal = folder / "tidal.sqlite"
+            master = folder / "master.sqlite"
+            _write(root, _ASSET + """
+                INSERT INTO asset VALUES
+                    (1, 'Users/dj/Music/a.mp3', 'a.mp3', '', 'Song', '', '', '', 0, 0, 0, NULL, '', '', 0);
+                INSERT INTO space_asset VALUES (5, 1, 1);
+                INSERT INTO container VALUES (10, 0, 'sylwester', 1, 1, 1);
+                INSERT INTO container_asset VALUES (1, 10, 5, 1);
+            """)
+            _write(tidal, _ASSET + """
+                INSERT INTO asset VALUES
+                    (7, 'streaming://tidal/99', 'streaming://tidal/99', '', 'Tide', '', '', '', 0, 0, 0, NULL, '', '', 0);
+                INSERT INTO space_asset VALUES (8, 7, 1);
+                INSERT INTO container VALUES (20, 0, 'sylwester', 1, 1, 1);
+                INSERT INTO container_asset VALUES (1, 20, 8, 1);
+            """)
+            _write(master, """
+                CREATE TABLE space (id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO space VALUES (5, 'Serato Library');
+                CREATE TABLE container (
+                    id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT,
+                    type INTEGER, list_order INTEGER, space_id INTEGER
+                );
+                INSERT INTO container VALUES
+                    (1, 0, 'Serato Library root', 0, 0, 5),
+                    (3, 1, 'sylwester', 1, 1, 5);
+                CREATE TABLE location (id INTEGER PRIMARY KEY, path TEXT);
+                INSERT INTO location VALUES (1, ''), (2, '');
+                CREATE TABLE connection (location_id INTEGER PRIMARY KEY, database_uri TEXT);
+                CREATE TABLE location_container (
+                    id INTEGER PRIMARY KEY, container_id INTEGER,
+                    location_id INTEGER, external_container_id INTEGER
+                );
+                INSERT INTO location_container VALUES (50, 3, 1, NULL);
+            """)
+            con = sqlite3.connect(str(master))
+            con.execute(
+                "INSERT INTO connection VALUES (1, ?), (2, ?)",
+                (str(root), str(tidal)),
+            )
+            con.commit()
+            con.close()
+            db, _info = load_serato_sqlite_from_path(folder)
+            # Dwie listy „sylwester” — nie zgadujemy, która należy do mastera.
+            # Wygrywa drzewo root albo tidal, które utwory ma.
+            lists = []
+            stack = list(db.playlists)
+            while stack:
+                pl = stack.pop()
+                stack.extend(pl.children or [])
+                if pl.name == "sylwester" and pl.track_ids:
+                    lists.append(set(pl.track_ids))
+            self.assertTrue(lists)
+            for tracks in lists:
+                self.assertTrue(
+                    tracks == {"/Users/dj/Music/a.mp3"}
+                    or tracks == {"streaming://tidal/99"}
+                )
+                self.assertNotEqual(
+                    tracks,
+                    {"/Users/dj/Music/a.mp3", "streaming://tidal/99"},
+                )
+
+    def test_folder_crate_with_tracks_stays_in_xml(self):
+        from rb_generator import generate_rb_xml
+        from serato_parser import serato_flat_playlists_to_tree
+        from unified_model import Playlist, Track, UnifiedDatabase
+
+        tree = serato_flat_playlists_to_tree([
+            Playlist(name="przedszkole 2022", track_ids=["/Users/dj/Music/a.mp3"]),
+            Playlist(name="przedszkole 2022%%country", track_ids=["/Users/dj/Music/b.mp3"]),
+        ])
+        folder = tree[0]
+        self.assertTrue(folder.is_folder)
+        own = next(pl for pl in folder.children if pl.name == "przedszkole 2022")
+        self.assertEqual(own.track_ids, ["/Users/dj/Music/a.mp3"])
+        child = next(pl for pl in folder.children if pl.name == "country")
+        self.assertEqual(child.track_ids, ["/Users/dj/Music/b.mp3"])
+        db = UnifiedDatabase(
+            tracks=[
+                Track(path="/Users/dj/Music/a.mp3", title="A", artist="DJ"),
+                Track(path="/Users/dj/Music/b.mp3", title="B", artist="DJ"),
+            ],
+            playlists=tree,
+        )
+        xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
+        self.assertEqual(xml.count('KeyType="1"'), 2)
+        self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', xml)
+        self.assertIn('Key="file://localhost/Users/dj/Music/b.mp3"', xml)
+
     def test_missing_sibling_is_reported(self):
         import tempfile
 

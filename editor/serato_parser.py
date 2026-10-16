@@ -1860,6 +1860,11 @@ def serato_flat_playlists_to_tree(
         for name in child_names:
             children.append(build(parts + (name,)))
         tracks = nodes.get(parts) or []
+        if children and tracks:
+            children = [
+                Playlist(name=parts[-1], track_ids=list(tracks), is_folder=False)
+            ] + children
+            tracks = []
         return Playlist(
             name=parts[-1] if parts else "Serato",
             track_ids=list(tracks),
