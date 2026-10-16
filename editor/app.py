@@ -113,7 +113,7 @@ from rb_generator import generate_rb_xml, generate_rb_playlists_only_xml
 from rb_masterdb_generator import unified_to_master_db
 from djxml_generator import generate_djxml
 from djxml_parser import load_djxml
-from unified_model import Playlist, Track, UnifiedDatabase
+from unified_model import Playlist, Track, UnifiedDatabase, count_playlist_entries, iter_playlist_entries
 from tag_writer import write_tags_batch
 
 import sys
@@ -283,7 +283,7 @@ def _commit_unified_load(db, source: str, message: str, *, path: Optional[str] =
     out = {
         "ok": True,
         "count": len(st.songs),
-        "playlists": len(db.playlists or []),
+        "playlists": count_playlist_entries(db.playlists or []),
         "source": source,
         "message": message,
     }
@@ -4320,6 +4320,9 @@ def api_playlists():
                 })
             except ET.ParseError:
                 pass
+    if not items and st.unified and st.unified.playlists:
+        for label, _pl in iter_playlist_entries(st.unified.playlists):
+            items.append({"name": label, "relPath": label, "type": "playlist"})
     return jsonify({'playlists': sorted(items, key=lambda x: x['name'].lower())})
 
 
@@ -4384,6 +4387,22 @@ def api_playlist_tracks():
                                 tracks.append(rec)
             except ET.ParseError:
                 pass
+            break
+    if rel_path_found is None and st.unified and st.unified.playlists:
+        for label, pl in iter_playlist_entries(st.unified.playlists):
+            if label != name:
+                continue
+            rel_path_found = label
+            for path in pl.track_ids or []:
+                np = normalize_path(path)
+                idx = path_to_idx.get(np)
+                if idx is None:
+                    continue
+                s = st.songs[idx]
+                rec = {'idx': idx, **s}
+                _enrich_song_for_display(rec, None)
+                _enrich_songs_with_lists([rec])
+                tracks.append(rec)
             break
     if rel_path_found is None:
         return jsonify({'error': 'Nie znaleziono playlisty', 'tracks': []}), 404

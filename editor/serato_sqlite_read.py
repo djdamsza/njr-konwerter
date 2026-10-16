@@ -25,7 +25,7 @@ from tempfile import TemporaryDirectory
 from typing import Optional
 from urllib.parse import quote
 
-from unified_model import Playlist, Track, UnifiedDatabase
+from unified_model import Playlist, Track, UnifiedDatabase, count_playlist_entries
 from vdjfolder import normalize_path
 
 _BACKUP_RE = re.compile(
@@ -95,7 +95,7 @@ def load_serato_sqlite_from_path(path: Path) -> tuple[UnifiedDatabase, dict]:
                 miss += " (zostają utwory, bez drzewa playlist z master)"
         message = (
             f"Załadowano Serato ({parts}{stamp_bit}{extra}) — "
-            f"{len(db.tracks)} utworów, {len(db.playlists)} list{miss}{fallback_note}"
+            f"{len(db.tracks)} utworów, {count_playlist_entries(db.playlists)} list{miss}{fallback_note}"
         )
         info = {
             "message": message,

@@ -108,6 +108,24 @@ def _library(tmp: Path) -> None:
     con.close()
 
 
+class TestPlaylistCount(unittest.TestCase):
+    def test_nested_crates_count_as_playlists(self):
+        from unified_model import Playlist, count_playlist_entries, iter_playlist_entries
+
+        tree = [
+            Playlist(name="Folder", track_ids=[], is_folder=True, children=[
+                Playlist(name="Folder", track_ids=["/a.mp3"]),
+                Playlist(name="Crate", track_ids=["/b.mp3"]),
+                Playlist(name="Deeper", track_ids=[], is_folder=True, children=[
+                    Playlist(name="Inside", track_ids=["/c.mp3"]),
+                ]),
+            ]),
+        ]
+        self.assertEqual(count_playlist_entries(tree), 3)
+        labels = [label for label, _pl in iter_playlist_entries(tree)]
+        self.assertEqual(labels, ["Folder", "Folder / Crate", "Folder / Deeper / Inside"])
+
+
 class TestSeratoSqliteRead(unittest.TestCase):
     def test_folder_with_spaces_opens(self):
         import tempfile
@@ -149,6 +167,9 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertEqual(song.artist, "DJ")
             self.assertEqual(song.bpm, 128)
             self.assertEqual(song.rating, 204)
+            from unified_model import count_playlist_entries
+            self.assertEqual(count_playlist_entries(db.playlists), 1)
+            self.assertIn("1 list", info["message"])
 
     def test_one_backup_zip_pulls_the_other_two(self):
         import tempfile
