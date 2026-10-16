@@ -581,19 +581,16 @@ def _playlist_score(playlists: list[Playlist]) -> tuple[int, int, int]:
     lists = 0
     tracks = 0
     folders = 0
-
-    def walk(nodes: list[Playlist]) -> None:
-        nonlocal lists, tracks, folders
-        for pl in nodes or []:
-            children = list(pl.children or [])
-            if pl.is_folder or children:
-                folders += 1
-                walk(children)
-            if pl.track_ids and not pl.is_folder:
-                lists += 1
-                tracks += len(pl.track_ids)
-
-    walk(playlists)
+    stack = list(playlists or [])
+    while stack:
+        pl = stack.pop()
+        children = list(pl.children or [])
+        if pl.is_folder or children:
+            folders += 1
+            stack.extend(children)
+        if pl.track_ids and not pl.is_folder:
+            lists += 1
+            tracks += len(pl.track_ids)
     return (tracks, lists, folders)
 
 
@@ -659,32 +656,69 @@ def _playlist_tree(con: sqlite3.Connection, tracks_of, *, restrict_space: bool =
         f"FROM container {where} ORDER BY {order}, id",
         params,
     ).fetchall()
-    by_parent: dict[int, list[sqlite3.Row]] = {}
     ids = {int(r["id"]) for r in rows}
+    parent_of: dict[int, int] = {}
+    row_by_id: dict[int, sqlite3.Row] = {}
     for row in rows:
+        cid = int(row["id"])
+        row_by_id[cid] = row
         parent = int(row["parent_id"] or 0)
-        if parent not in ids:
+        if parent not in ids or parent == cid:
             parent = 0
-        by_parent.setdefault(parent, []).append(row)
+        parent_of[cid] = parent
+    # Pętla parent_id (A→B→A) albo łańcuch głębszy niż limit Pythona wywalało wczytanie.
+    state: set[int] = set()
+    for start in list(parent_of):
+        path: list[int] = []
+        cur = start
+        while parent_of.get(cur, 0) and cur not in state:
+            if cur in path:
+                parent_of[cur] = 0
+                break
+            path.append(cur)
+            cur = parent_of.get(cur, 0)
+        state.update(path)
 
-    def build(parent_id: int) -> list[Playlist]:
-        result: list[Playlist] = []
-        for row in by_parent.get(parent_id, []):
+    by_parent: dict[int, list[sqlite3.Row]] = {}
+    for cid, row in row_by_id.items():
+        by_parent.setdefault(parent_of.get(cid, 0), []).append(row)
+
+    depth = {0: 0}
+    queue = [0]
+    while queue:
+        pid = queue.pop(0)
+        for row in by_parent.get(pid, []):
             cid = int(row["id"])
-            name = str(row["name"] or "").strip() or "lista"
-            children = build(cid)
-            tracks = tracks_of(cid)
-            track_ids = [normalize_path(t.path) for t in tracks]
-            if name.casefold() == _ROOT_NAME and parent_id == 0:
-                result.extend(children)
+            if cid in depth:
                 continue
-            if children and track_ids:
-                children = [Playlist(name=name, track_ids=track_ids, is_folder=False)] + children
-                result.append(Playlist(name=name, track_ids=[], is_folder=True, children=children))
-            elif children:
-                result.append(Playlist(name=name, track_ids=[], is_folder=True, children=children))
-            else:
-                result.append(Playlist(name=name, track_ids=track_ids, is_folder=False))
-        return result
+            depth[cid] = depth[pid] + 1
+            queue.append(cid)
+    max_depth = max(depth.values(), default=0)
 
-    return build(0)
+    def make(cid: int, parent_id: int, child_nodes: list[Playlist]) -> list[Playlist]:
+        row = row_by_id[cid]
+        name = str(row["name"] or "").strip() or "lista"
+        track_ids = [normalize_path(t.path) for t in tracks_of(cid)]
+        if name.casefold() == _ROOT_NAME and parent_id == 0:
+            hoisted = list(child_nodes)
+            if track_ids:
+                hoisted.append(Playlist(name=name, track_ids=track_ids, is_folder=False))
+            return hoisted
+        if child_nodes and track_ids:
+            child_nodes = [Playlist(name=name, track_ids=track_ids, is_folder=False)] + child_nodes
+            return [Playlist(name=name, track_ids=[], is_folder=True, children=child_nodes)]
+        if child_nodes:
+            return [Playlist(name=name, track_ids=[], is_folder=True, children=child_nodes)]
+        return [Playlist(name=name, track_ids=track_ids, is_folder=False)]
+
+    children_of: dict[int, list[Playlist]] = {}
+    for level in range(max_depth, -1, -1):
+        for pid, dep in list(depth.items()):
+            if dep != level:
+                continue
+            built: list[Playlist] = []
+            for row in by_parent.get(pid, []):
+                cid = int(row["id"])
+                built.extend(make(cid, pid, children_of.get(cid, [])))
+            children_of[pid] = built
+    return children_of.get(0, [])

@@ -1842,6 +1842,12 @@ def serato_flat_playlists_to_tree(
                     seen.add(t)
 
     def build(parts: tuple[str, ...]) -> Playlist:
+        if len(parts) > 40:
+            return Playlist(
+                name=parts[-1] if parts else "Serato",
+                track_ids=list(nodes.get(parts) or []),
+                is_folder=False,
+            )
         children: list = []
         child_names = sorted(
             {

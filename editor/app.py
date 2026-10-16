@@ -750,13 +750,9 @@ def _write_rekordbox_live(info: dict) -> dict:
             f"Zapisałem {xml_path}. "
             f"Utwory: {len(db.tracks)}, playlisty z utworami: {with_tracks}, "
             f"wykonawca wpisany z bazy albo nazwy pliku: {with_artist}. "
-            "Rekordbox nie uzupełnia utworów, które już siedzą w kolekcji. "
-            "Zębatka → Advanced → Database → rekordbox xml → Imported Library → "
-            "Browse → njr-rekordbox.xml z Pobranych. "
-            "W tym widoku zaznacz All Tracks, prawy przycisk, Import to Collection. "
-            "Gdy zapyta, czy wczytać informacje z tagu pliku, wybierz Nie — "
-            "inaczej pusty tag artysty z pliku zetrze wykonawcę z XML. "
-            "Na końcu przeciągnij playlisty na Playlists."
+            "W rekordboxie wklej tę ścieżkę w pole XML. Program wczyta plik sam, bez pytań. "
+            "Utwory, które już są w kolekcji, Rekordbox zostawia bez zmian. "
+            "Żeby artysta i playlisty weszły na nowo, usuń te utwory z kolekcji i wklej ścieżkę jeszcze raz."
         ),
     }
 

@@ -203,8 +203,10 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertIn("file://localhost/Users/dj/Music/a.mp3", xml)
             self.assertIn("file://localhosttidal:tracks:99", xml)
             self.assertIn('Name="wesele"', xml)
-            self.assertIn('KeyType="1"', xml)
-            self.assertIn('<TRACK Key="file://localhost/Users/dj/Music/a.mp3"', xml.replace("\n", ""))
+            self.assertIn('KeyType="0"', xml)
+            flat = xml.replace("\n", "")
+            self.assertIn('Entries="2"', flat)
+            self.assertRegex(flat, r'<TRACK Key="\d+"')
             self.assertIn("<COLLECTION Entries=\"3\"", xml)
 
     def test_artist_taken_from_filename_when_missing(self):
@@ -266,7 +268,8 @@ class TestSeratoSqliteRead(unittest.TestCase):
         xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
         self.assertIn('Name="wesele"', xml)
         self.assertIn('Entries="1"', xml)
-        self.assertIn('<TRACK Key="file://localhost/Users/dj/Music/a.mp3"', xml)
+        self.assertIn('KeyType="0"', xml)
+        self.assertRegex(xml, r'<TRACK Key="\d+"')
 
     def test_location_matches_rekordbox_export(self):
         from rb_generator import _path_to_location
@@ -276,7 +279,7 @@ class TestSeratoSqliteRead(unittest.TestCase):
         )
         self.assertEqual(
             loc,
-            "file://localhost/Users/test/Downloads/DAWID%20KWIATKOWSKI,%20MARGARET%20-%20Pozniej%20(Radio%20Edit).mp3",
+            "file://localhost/Users/test/Downloads/DAWID%20KWIATKOWSKI%2C%20MARGARET%20-%20Pozniej%20%28Radio%20Edit%29.mp3",
         )
         self.assertIn("%26", _path_to_location("/Users/test/Music/A & B.mp3"))
 
@@ -357,8 +360,62 @@ class TestSeratoSqliteRead(unittest.TestCase):
             xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
             self.assertIn('Type="0"', xml)
             self.assertIn('Name="sylwester"', xml)
+            self.assertIn('KeyType="0"', xml)
             self.assertIn('Entries="1"', xml)
-            self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', xml)
+            self.assertRegex(xml, r'<TRACK Key="\d+"')
+
+    def test_cyclic_containers_do_not_recurse(self):
+        import sqlite3
+        import tempfile
+
+        from serato_sqlite_read import _playlist_tree
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "root.sqlite"
+            con = sqlite3.connect(str(path))
+            con.row_factory = sqlite3.Row
+            con.executescript(
+                """
+                CREATE TABLE container (
+                    id INTEGER PRIMARY KEY,
+                    parent_id INTEGER,
+                    name TEXT,
+                    type INTEGER,
+                    list_order INTEGER
+                );
+                INSERT INTO container VALUES
+                    (1, 2, 'automix', 1, 1),
+                    (2, 1, 'sylwester', 1, 2);
+                """
+            )
+            con.commit()
+            tree = _playlist_tree(con, lambda _cid: [])
+            con.close()
+            self.assertEqual(len(tree), 1)
+            self.assertEqual({tree[0].name, tree[0].children[0].name}, {"automix", "sylwester"})
+
+    def test_long_parent_chain_does_not_recurse(self):
+        import sqlite3
+        import tempfile
+
+        from serato_sqlite_read import _playlist_tree
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "root.sqlite"
+            con = sqlite3.connect(str(path))
+            con.row_factory = sqlite3.Row
+            con.execute(
+                "CREATE TABLE container (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT)"
+            )
+            con.executemany(
+                "INSERT INTO container VALUES (?, ?, ?)",
+                [(i, i - 1, f"c{i}") for i in range(1, 1201)],
+            )
+            con.commit()
+            tree = _playlist_tree(con, lambda _cid: [])
+            con.close()
+            self.assertTrue(tree)
+            self.assertEqual(tree[0].name, "c1")
 
     def test_missing_sibling_is_reported(self):
         import tempfile
