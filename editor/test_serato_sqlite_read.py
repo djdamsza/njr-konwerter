@@ -150,15 +150,21 @@ class TestSeratoSqliteRead(unittest.TestCase):
             src.mkdir()
             backups.mkdir()
             _library(src)
-            stamp = "20261016_075713+0200"
-            for role in ("master", "root", "tidal"):
+            # Serato dopisuje kolejne ZIP-y o sekundę później.
+            stamps = {
+                "master": "20261016_075711+0200",
+                "root": "20261016_075712+0200",
+                "tidal": "20261016_075713+0200",
+            }
+            for role, stamp in stamps.items():
                 zip_path = backups / f"{role}.sqlite-backup-{stamp}.zip"
                 with zipfile.ZipFile(zip_path, "w") as zf:
                     zf.write(src / f"{role}.sqlite", arcname=f"{role}.sqlite")
             db, info = load_serato_sqlite_from_path(
-                backups / f"master.sqlite-backup-{stamp}.zip"
+                backups / f"master.sqlite-backup-{stamps['master']}.zip"
             )
-            self.assertEqual(info["stamp"], stamp)
+            self.assertEqual(info["stamp"], stamps["master"])
+            self.assertEqual(info["roles"], ["master", "root", "tidal"])
             self.assertEqual(len(db.tracks), 3)
             xml = generate_rb_xml(db).decode("utf-8")
             self.assertIn("file://localhost/Users/dj/Music/a.mp3", xml)
