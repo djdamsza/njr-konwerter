@@ -3,6 +3,7 @@ Generator XML Rekordbox (File → Import).
 Tworzy rbxml.xml z UnifiedDatabase do importu w RB.
 """
 import os
+import re
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from pathlib import Path
@@ -87,6 +88,34 @@ def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
     return "file://localhost/" + quote(path, safe="/")
 
 
+_JUNK_ARTIST = re.compile(
+    r"(tomp3|myfreemp3|free\.download|\bwww\b|\.(com|cc|vip|net|pl)\b)",
+    re.IGNORECASE,
+)
+
+
+def _squash(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def _artist_for_rb(track: Track) -> str:
+    """Gdy w bazie nie ma wykonawcy, weź go z nazwy pliku „Wykonawca - Tytuł”."""
+    artist = (track.artist or "").strip()
+    if artist:
+        return artist
+    stem = Path(track.path).stem
+    if " - " not in stem:
+        return ""
+    left, right = stem.split(" - ", 1)
+    left, right = left.strip(), right.strip()
+    title = (track.title or "").strip()
+    if not left or not right or _JUNK_ARTIST.search(left):
+        return ""
+    if title and _squash(right) != _squash(title) and _squash(title) not in _squash(right):
+        return ""
+    return left
+
+
 def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] = None) -> ET.Element:
     """Tworzy element TRACK w formacie RB XML."""
     loc = _path_to_location(track.path, path_replace)
@@ -112,7 +141,7 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     attrib = {
         "TrackID": track_id,
         "Name": track.title or Path(track.path).stem,
-        "Artist": track.artist,
+        "Artist": _artist_for_rb(track),
         "Composer": "",
         "Album": track.album,
         "Grouping": "",
@@ -181,30 +210,26 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     return tr
 
 
-def _playlist_to_node(pl: Playlist, path_to_id: dict[str, str]) -> ET.Element:
-    """Rekurencyjnie buduje NODE dla playlisty/folderu."""
+def _playlist_to_node(pl: Playlist, path_to_location: dict[str, str]) -> ET.Element:
+    """Rekurencyjnie buduje NODE. KeyType=1: Key to Location, bo Rekordbox nadaje własne TrackID."""
     if pl.is_folder:
         count = len(pl.children)
         node = ET.Element("NODE", {"Type": "0", "Name": pl.name, "Count": str(count)})
         for child in pl.children:
-            node.append(_playlist_to_node(child, path_to_id))
+            node.append(_playlist_to_node(child, path_to_location))
         return node
-    else:
-        entries = 0
-        track_elems = []
-        for path in pl.track_ids:
-            # path jest znormalizowany (z vdjfolders_to_playlists)
-            tid = path_to_id.get(path)
-            if tid:
-                track_elems.append(ET.Element("TRACK", {"Key": tid}))
-                entries += 1
-        node = ET.Element(
-            "NODE",
-            {"Name": pl.name, "Type": "1", "KeyType": "0", "Entries": str(entries)},
-        )
-        for te in track_elems:
-            node.append(te)
-        return node
+    track_elems = []
+    for path in pl.track_ids:
+        loc = path_to_location.get(normalize_path(path)) or path_to_location.get(path)
+        if loc:
+            track_elems.append(ET.Element("TRACK", {"Key": loc}))
+    node = ET.Element(
+        "NODE",
+        {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(track_elems))},
+    )
+    for te in track_elems:
+        node.append(te)
+    return node
 
 
 def generate_rb_playlists_only_xml(
@@ -289,12 +314,15 @@ def generate_rb_xml(db: UnifiedDatabase, path_replace: Optional[dict] = None) ->
 
     # Mapowanie path -> TrackID (znormalizowane ścieżki – dopasowanie do playlist z vdjfolder)
     path_to_id = {}
+    path_to_location = {}
     next_id = 100000000
     for t in db.tracks:
         tid = t.source_id or str(next_id)
         if not t.source_id:
             next_id += 1
-        path_to_id[normalize_path(t.path)] = tid
+        key = normalize_path(t.path)
+        path_to_id[key] = tid
+        path_to_location[key] = _path_to_location(t.path, path_replace)
 
     # COLLECTION
     coll = ET.SubElement(root, "COLLECTION", Entries=str(len(db.tracks)))
@@ -306,7 +334,7 @@ def generate_rb_xml(db: UnifiedDatabase, path_replace: Optional[dict] = None) ->
     plists = ET.SubElement(root, "PLAYLISTS")
     root_node = ET.SubElement(plists, "NODE", Type="0", Name="ROOT", Count=str(len(db.playlists)))
     for pl in db.playlists:
-        root_node.append(_playlist_to_node(pl, path_to_id))
+        root_node.append(_playlist_to_node(pl, path_to_location))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ", level=0)

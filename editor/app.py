@@ -733,22 +733,21 @@ def _write_engine_live(info: dict) -> dict:
 
 
 def _write_rekordbox_live(info: dict) -> dict:
-    folder = Path(info['exportDir'] or '')
-    if not folder:
-        folder = Path(info['path'])
-        if folder.suffix:
-            folder = folder.parent
-    if not folder.is_dir():
-        raise ValueError(info['note'] or f'Brak folderu rekordbox: {folder}')
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    xml_path = downloads / "njr-rekordbox.xml"
     db = _unified_db_for_export(playlist_tree=True)
-    xml_path = folder / 'njr-rekordbox.xml'
     xml_path.write_bytes(generate_rb_xml(db))
     return {
         'path': str(xml_path),
         'message': (
-            f"Zapisałem {xml_path}. Rekordbox nie dostaje zapisu do master.db. "
-            "W rekordboxie włącz widok rekordbox xml, w Advanced → Database → Imported Library "
-            "wskaż ten plik i przeciągnij playlisty na Collection."
+            f"Zapisałem plik w Pobranych: {xml_path}. "
+            "W rekordboxie: ustawienia (zębatka, prawy górny róg) → zakładka Advanced → "
+            "Database → rekordbox xml → Imported Library → Browse i wskaż njr-rekordbox.xml z Pobranych. "
+            "Opis formatu: https://rekordbox.com/en/support/developer/ "
+            "Jeśli na liście po lewej nie ma rekordbox xml: View → Layout → rekordbox xml. "
+            "Przeciągnij All Tracks na Collection. Gdy zapyta, czy wczytać informacje z tagu pliku, wybierz Nie. "
+            "Potem przeciągnij playlisty na Playlists."
         ),
     }
 

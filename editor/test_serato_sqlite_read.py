@@ -203,7 +203,28 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertIn("file://localhost/Users/dj/Music/a.mp3", xml)
             self.assertIn("file://localhosttidal:tracks:99", xml)
             self.assertIn('Name="wesele"', xml)
+            self.assertIn('KeyType="1"', xml)
+            self.assertIn('<TRACK Key="file://localhost/Users/dj/Music/a.mp3"', xml.replace("\n", ""))
             self.assertIn("<COLLECTION Entries=\"3\"", xml)
+
+    def test_artist_taken_from_filename_when_missing(self):
+        from rb_generator import _artist_for_rb
+        from unified_model import Track
+
+        filled = Track(
+            path="/Users/dj/Music/RICHARD GREY - Welcome To My House.mp3",
+            title="Welcome To My House",
+            artist="",
+        )
+        self.assertEqual(_artist_for_rb(filled), "RICHARD GREY")
+        junk = Track(
+            path="/Users/dj/Music/tomp3.cc - IN GRID Tu Es Foutu.mp3",
+            title="IN GRID Tu Es Foutu",
+            artist="",
+        )
+        self.assertEqual(_artist_for_rb(junk), "")
+        kept = Track(path="/x/a.mp3", title="Song", artist="DJ")
+        self.assertEqual(_artist_for_rb(kept), "DJ")
 
     def test_missing_sibling_is_reported(self):
         import tempfile
