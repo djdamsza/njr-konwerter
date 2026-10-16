@@ -1842,6 +1842,12 @@ def serato_flat_playlists_to_tree(
                     seen.add(t)
 
     def build(parts: tuple[str, ...]) -> Playlist:
+        if len(parts) > 40:
+            return Playlist(
+                name=parts[-1] if parts else "Serato",
+                track_ids=list(nodes.get(parts) or []),
+                is_folder=False,
+            )
         children: list = []
         child_names = sorted(
             {
@@ -1854,6 +1860,11 @@ def serato_flat_playlists_to_tree(
         for name in child_names:
             children.append(build(parts + (name,)))
         tracks = nodes.get(parts) or []
+        if children and tracks:
+            children = [
+                Playlist(name=parts[-1], track_ids=list(tracks), is_folder=False)
+            ] + children
+            tracks = []
         return Playlist(
             name=parts[-1] if parts else "Serato",
             track_ids=list(tracks),
@@ -1866,6 +1877,148 @@ def serato_flat_playlists_to_tree(
         key=lambda s: s.lower(),
     )
     return [build((name,)) for name in roots]
+
+
+def serato_playlists_for_export(playlists: list) -> list:
+    """Drzewo crate'ów do XML Rekordbox.
+
+    database V2 trzyma płaskie nazwy „Folder%%Lista”. SQLite ma już dzieci
+    i utwory — składanie po „%%” kasuje te listy i w Rekordboxie zostają puste.
+    """
+    raw = list(playlists or [])
+
+    def has_percent(nodes: list) -> bool:
+        for pl in nodes or []:
+            if "%%" in (getattr(pl, "name", "") or ""):
+                return True
+            if has_percent(getattr(pl, "children", None) or []):
+                return True
+        return False
+
+    if has_percent(raw):
+        return serato_flat_playlists_to_tree(raw)
+    return raw
+
+
+def _playlist_membership_score(playlists: list) -> tuple[int, int]:
+    from unified_model import iter_playlist_entries
+
+    lists = 0
+    tracks = 0
+    for _label, pl in iter_playlist_entries(playlists):
+        count = len(pl.track_ids or [])
+        if count:
+            lists += 1
+            tracks += count
+    return (tracks, lists)
+
+
+def serato_subcrate_roots() -> list[tuple[Path, str]]:
+    """Foldery _Serato_ z Subcrates i root dysku, do którego odnoszą się ścieżki."""
+    found: list[tuple[Path, str]] = []
+    home = Path.home() / "Music" / "_Serato_"
+    if (home / "Subcrates").is_dir():
+        found.append((home, "/"))
+    volumes = Path("/Volumes")
+    if volumes.is_dir():
+        for vol in volumes.iterdir():
+            if not vol.is_dir():
+                continue
+            if vol.name in {"Macintosh HD", "Macintosh HD - Data"}:
+                continue
+            base = vol / "_Serato_"
+            if (base / "Subcrates").is_dir():
+                found.append((base, str(vol)))
+    return found
+
+
+def load_flat_subcrates(base: Path, drive_root: str) -> list:
+    """Płaskie playlisty z nazwami Folder%%Lista, tak jak pliki .crate."""
+    sub = base / "Subcrates"
+    if not sub.is_dir():
+        return []
+    out = []
+    for crate in sorted(sub.glob("*.crate")):
+        try:
+            playlist = load_serato_crate(crate.read_bytes(), crate.stem, drive_root=drive_root)
+        except Exception:
+            continue
+        out.append(playlist)
+    return out
+
+
+def _retarget_playlist_paths(playlists: list, tracks: list) -> None:
+    """Ścieżki z .crate dopina do utworów z bazy, żeby Key w XML był tym samym Location."""
+    from vdjfolder import normalize_path
+
+    tails: dict[str, Optional[str]] = {}
+
+    def add(key: str, path: str) -> None:
+        if not key:
+            return
+        folded = key.casefold()
+        previous = tails.get(folded, path)
+        tails[folded] = path if previous == path else None
+
+    for track in tracks or []:
+        raw = normalize_path(track.path)
+        if not raw:
+            continue
+        add(raw, raw)
+        add(raw.lstrip("/"), raw)
+        parts = [part for part in raw.split("/") if part]
+        for index in range(len(parts)):
+            add("/".join(parts[index:]), raw)
+
+    def resolve(path: str) -> str:
+        key = normalize_path(path)
+        if not key:
+            return ""
+        for candidate in (key, key.lstrip("/")):
+            hit = tails.get(candidate.casefold())
+            if hit:
+                return hit
+        return ""
+
+    def walk(nodes: list) -> None:
+        for pl in nodes or []:
+            kept: list[str] = []
+            seen: set[str] = set()
+            for path in pl.track_ids or []:
+                hit = resolve(path)
+                if hit and hit not in seen:
+                    seen.add(hit)
+                    kept.append(hit)
+            pl.track_ids = kept
+            walk(pl.children or [])
+
+    walk(playlists)
+
+
+def overlay_disk_subcrates(
+    db: UnifiedDatabase,
+    roots: Optional[list] = None,
+) -> tuple[UnifiedDatabase, str]:
+    """Gdy SQLite ma puste listy, weź drzewo z plików Subcrates.
+
+    Serato 4 trzyma w master.sqlite często tylko wierzch (automix, sylwester…).
+    Setki list i ich utwory są w ~/Music/_Serato_/Subcrates jako Folder%%Lista.crate.
+    """
+    current = _playlist_membership_score(db.playlists or [])
+    flat = []
+    for base, drive_root in (roots if roots is not None else serato_subcrate_roots()):
+        flat.extend(load_flat_subcrates(Path(base), drive_root))
+    if not flat:
+        return db, ""
+    tree = serato_flat_playlists_to_tree(flat)
+    _retarget_playlist_paths(tree, db.tracks or [])
+    score = _playlist_membership_score(tree)
+    if score <= current or score[0] == 0:
+        return db, ""
+    db.playlists = tree
+    return db, (
+        f" Drzewo wzięte z Subcrates: {score[1]} list z utworami, {score[0]} pozycji."
+    )
 
 
 def prepare_serato_unified_for_engine(

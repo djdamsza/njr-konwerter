@@ -60,6 +60,7 @@ from vdjfolder import (
     vdjfolders_to_playlist_tree,
     normalize_path,
     scan_vdjfolders,
+    create_vdjfolder_playlist,
     filter_vdjfolders_for_export,
     song_matches_filter,
 )
@@ -83,11 +84,14 @@ from engine_libdjinterop import (
     validate_engine_schema,
 )
 from dj_apps_guard import sync_guard_blockers
+from serato_sqlite_read import is_serato_sqlite_source, load_serato_sqlite_from_path
+from dj_libraries import create_backup, locate, locate_all, restore_backup, running_message
 from engine_patriot_sync import sync_metadata_and_playlists_to_patriot
 from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
 from serato_parser import (
     load_serato_database_v2,
     load_serato_folder,
+    overlay_disk_subcrates,
     resolve_serato_library_dir,
     is_serato_database_filename,
     looks_like_serato_database_blob,
@@ -102,15 +106,15 @@ from serato_parser import (
     remove_vdj_smart_crates,
     remove_vdj_subcrates,
     prepare_serato_unified_for_engine,
-    serato_flat_playlists_to_tree,
+    serato_playlists_for_export,
 )
 from serato_markers import write_serato_markers2_batch
 import threading
-from rb_generator import generate_rb_xml, generate_rb_playlists_only_xml
+from rb_generator import _artist_for_rb, generate_rb_xml, generate_rb_playlists_only_xml
 from rb_masterdb_generator import unified_to_master_db
 from djxml_generator import generate_djxml
 from djxml_parser import load_djxml
-from unified_model import Playlist, Track, UnifiedDatabase
+from unified_model import Playlist, Track, UnifiedDatabase, count_playlist_entries, iter_playlist_entries
 from tag_writer import write_tags_batch
 
 import sys
@@ -280,7 +284,7 @@ def _commit_unified_load(db, source: str, message: str, *, path: Optional[str] =
     out = {
         "ok": True,
         "count": len(st.songs),
-        "playlists": len(db.playlists or []),
+        "playlists": count_playlist_entries(db.playlists or []),
         "source": source,
         "message": message,
     }
@@ -405,6 +409,14 @@ def _load_from_path(
     if not p.exists():
         raise FileNotFoundError(f"Plik nie istnieje: {p}")
 
+    if is_serato_sqlite_source(p):
+        db, info = load_serato_sqlite_from_path(p)
+        db, crate_note = overlay_disk_subcrates(db)
+        out = _commit_serato_load(db, str(p))
+        out["message"] = info["message"] + crate_note
+        out["playlists"] = count_playlist_entries(db.playlists or [])
+        return out
+
     serato_base = resolve_serato_library_dir(p)
     if serato_base is not None:
         db = load_serato_folder(serato_base, drive_root=drive_root)
@@ -524,6 +536,239 @@ def api_load():
         return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/dj-libraries', methods=['GET'])
+def api_dj_libraries():
+    """Gdzie leży bieżąca baza każdego programu i czy jest kopia do przywrócenia."""
+    return jsonify({'libraries': locate_all()})
+
+
+@app.route('/api/import-live', methods=['POST'])
+def api_import_live():
+    """Znajdź bazę programu, zrób kopię oryginału i wczytaj ją do edycji."""
+    _clear_undo_stack()
+    data = request.get_json() or {}
+    system = (data.get('system') or '').strip().lower()
+    try:
+        blocked = running_message(system)
+        if blocked:
+            return jsonify({'error': blocked}), 409
+        info = locate(system)
+        if not info['importable']:
+            return jsonify({'error': info['note'] or f"Nie znaleziono bazy {info['label']}."}), 404
+        backup = create_backup(system)
+        loaded = _load_from_path(Path(info['path']))
+        loaded['backup'] = backup
+        loaded['message'] = (
+            f"Pobrałem bazę {info['label']} ({loaded.get('count', 0)} utworów). "
+            f"Kopia bezpieczeństwa oryginału: {backup['dir']}. "
+            "Pracujemy na tej kopii w konwerterze. Przywróć backup cofa pliki na dysku."
+        )
+        return jsonify(loaded)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/export-live', methods=['POST'])
+def api_export_live():
+    """Zapisz edytowaną bibliotekę w miejsce, z którego ten program czyta bazę."""
+    r = _require_export_license()
+    if r:
+        return r
+    _ensure_loaded()
+    data = request.get_json() or {}
+    system = (data.get('system') or '').strip().lower()
+    try:
+        blocked = running_message(system)
+        if blocked:
+            return jsonify({'error': blocked}), 409
+        info = locate(system)
+        backup = None
+        if info['backupFiles']:
+            backup = create_backup(system)
+        written = _write_live_library(system, info)
+        message = written['message']
+        if backup:
+            message += f" Poprzednia baza jest w kopii: {backup['dir']}."
+        return jsonify({'ok': True, 'message': message, 'backup': backup, 'path': written.get('path', '')})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/restore-live', methods=['POST'])
+def api_restore_live():
+    """Wgraj ostatnią kopię bezpieczeństwa na miejsce oryginalnej bazy tego programu."""
+    data = request.get_json() or {}
+    system = (data.get('system') or '').strip().lower()
+    try:
+        result = restore_backup(system)
+        return jsonify({
+            'ok': True,
+            'message': (
+                f"Przywrócono bazę {result['label']} z kopii {result['stamp']}. "
+                "Otwórz ten program i sprawdź bibliotekę."
+            ),
+            'restored': result['restored'],
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+def _write_live_library(system: str, info: dict) -> dict:
+    if system == 'vdj':
+        return _write_vdj_live(info)
+    if system == 'serato':
+        return _write_serato_live()
+    if system == 'engine':
+        return _write_engine_live(info)
+    if system == 'rekordbox':
+        return _write_rekordbox_live(info)
+    if system == 'traktor':
+        return _write_traktor_live(info)
+    raise ValueError(f'Nieznany system: {system}')
+
+
+def _write_vdj_live(info: dict) -> dict:
+    target = Path(info['path'])
+    if target.suffix.lower() != '.xml':
+        raise ValueError(info['note'] or 'Nie znaleziono database.xml VirtualDJ.')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    save_database(target, st.songs, st.version or '1.0')
+    written = _write_vdj_playlists(target.parent)
+    return {
+        'path': str(target),
+        'message': (
+            f"Zapisano VirtualDJ: {target}. List: {written}. "
+            "Uruchom VirtualDJ — utwory i listy są w jego folderze."
+        ),
+    }
+
+
+def _write_vdj_playlists(folder: Path) -> int:
+    db = _unified_db_for_export(playlist_tree=True)
+    root = folder / 'MyLists'
+    root.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    def dump(playlists, dest: Path) -> None:
+        nonlocal count
+        for pl in playlists or []:
+            name = _safe_library_name(pl.name)
+            if pl.is_folder:
+                dump(pl.children, dest / f'{name}.subfolders')
+                continue
+            dest.mkdir(parents=True, exist_ok=True)
+            xml = create_vdjfolder_playlist(list(pl.track_ids or []), name)
+            (dest / f'{name}.vdjfolder').write_text(xml, encoding='utf-8')
+            count += 1
+
+    dump(db.playlists or [], root)
+    return count
+
+
+def _safe_library_name(name: str) -> str:
+    import re
+    cleaned = re.sub(r'[\\/:*?"<>|]', '-', (name or '').strip()) or 'lista'
+    return cleaned[:80]
+
+
+def _write_serato_live() -> dict:
+    base = Path.home() / 'Music' / '_Serato_'
+    sub = base / 'Subcrates'
+    sub.mkdir(parents=True, exist_ok=True)
+    db_bytes = save_serato_database_v2(st.songs, '/', path_style='relative')
+    (base / 'database V2').write_bytes(db_bytes)
+    db = _unified_db_for_export(playlist_tree=True, include_all_tracks=True)
+    crates = 0
+    for stem, track_ids in iter_serato_crate_files(db.playlists or []):
+        content = save_serato_crate(
+            track_ids,
+            stem,
+            '/',
+            path_style='relative',
+            existing_files_only=False,
+        )
+        safe_stem = stem.replace('/', '%%')
+        (sub / f'{safe_stem}.crate').write_bytes(content)
+        crates += 1
+    return {
+        'path': str(base),
+        'message': (
+            f"Zapisano Serato w {base}: database V2 i {crates} crate’ów. "
+            "Plików master.sqlite / root.sqlite / tidal.sqlite nie nadpisuję — "
+            "bezpośredni zapis tych trzech baz psuje bibliotekę. "
+            "Zamknij Serato przed zapisem i otwórz je po nim. "
+            "Jeśli crate’ów nie widać, użyj Przywróć backup."
+        ),
+    }
+
+
+def _write_engine_live(info: dict) -> dict:
+    if not info['importable']:
+        raise ValueError(info['note'] or 'Nie znaleziono biblioteki Engine DJ.')
+    target = default_engine_desktop_library()
+    db = _unified_db_for_export(playlist_tree=True)
+    export_doc = unified_to_engine_export_doc(
+        db,
+        engine_dir=target,
+        merge_mode=True,
+        replace_playlist_tracks=True,
+        prune_tracks_not_in_source=False,
+        engine_music_layout=True,
+    )
+    if not export_doc.get('tracks'):
+        raise ValueError('Brak utworów, które Engine przyjmie (puste ścieżki albo sam streaming).')
+    stats = run_engine_desktop_merge(export_doc, target)
+    added = stats.get('tracks_added', 0)
+    return {
+        'path': str(target),
+        'message': f"Zapisano bibliotekę Engine DJ w {target}. Dodane utwory: {added}.",
+    }
+
+
+def _write_rekordbox_live(info: dict) -> dict:
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(parents=True, exist_ok=True)
+    xml_path = downloads / "njr-rekordbox.xml"
+    db = _unified_db_for_export(playlist_tree=True)
+    xml_path.write_bytes(generate_rb_xml(db))
+    lists = list(iter_playlist_entries(db.playlists))
+    with_tracks = sum(1 for _name, pl in lists if pl.track_ids)
+    with_artist = sum(1 for track in db.tracks if _artist_for_rb(track))
+    return {
+        'path': str(xml_path),
+        'message': (
+            f"Zapisałem {xml_path}. "
+            f"Utwory: {len(db.tracks)}, playlisty z utworami: {with_tracks}, "
+            f"wykonawca wpisany z bazy albo nazwy pliku: {with_artist}. "
+            "W rekordboxie wklej tę ścieżkę w pole XML. Program wczyta plik sam, bez pytań. "
+            "Utwory, które już są w kolekcji, Rekordbox zostawia bez zmian. "
+            "Żeby artysta i playlisty weszły na nowo, usuń te utwory z kolekcji i wklej ścieżkę jeszcze raz."
+        ),
+    }
+
+
+def _write_traktor_live(info: dict) -> dict:
+    from traktor_parser import save_traktor_nml
+
+    target = Path(info['path'])
+    if target.suffix.lower() != '.nml':
+        raise ValueError(info['note'] or 'Nie znaleziono collection.nml Traktora.')
+    db = _unified_db_for_export(playlist_tree=False)
+    target.write_bytes(save_traktor_nml(db))
+    return {
+        'path': str(target),
+        'message': f"Zapisano Traktor: {target}. Otwórz Traktora i sprawdź kolekcję.",
+    }
 
 
 @app.route('/api/load-file', methods=['POST'])
@@ -1709,7 +1954,14 @@ def _suggest_engine_library_root(paths: list) -> dict:
             continue
         clean_paths.append(fp)
         parts = [p for p in fp.split('/') if p]
-        if fp.startswith('/Users/') and len(parts) >= 3:
+        if len(fp) >= 2 and fp[1] == ':' and len(parts) >= 2:
+            # C:/Users/Name  lub  D:/Muzyka
+            candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:2]))
+            if len(parts) >= 3:
+                candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:3]))
+            if len(parts) >= 4:
+                candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:4]))
+        elif fp.startswith('/Users/') and len(parts) >= 3:
             candidate_roots.add('/' + '/'.join(parts[:3]))
             if len(parts) >= 4:
                 candidate_roots.add('/' + '/'.join(parts[:4]))
@@ -1729,7 +1981,11 @@ def _suggest_engine_library_root(paths: list) -> dict:
         prefix_counts: Counter[str] = Counter()
         for fp in clean_paths:
             parts = [p for p in fp.split('/') if p]
-            if fp.startswith('/Users/') and len(parts) >= 3:
+            if len(fp) >= 2 and fp[1] == ':' and len(parts) >= 2:
+                prefix_counts[parts[0] + '/' + '/'.join(parts[1:2])] += 1
+                if len(parts) >= 3:
+                    prefix_counts[parts[0] + '/' + '/'.join(parts[1:3])] += 1
+            elif fp.startswith('/Users/') and len(parts) >= 3:
                 prefix_counts['/' + '/'.join(parts[:3])] += 1
             elif fp.startswith('/Volumes/') and len(parts) >= 2:
                 prefix_counts['/Volumes/' + parts[1]] += 1
@@ -1811,7 +2067,7 @@ def _serato_path_replace_auto() -> Optional[dict[str, str]]:
     """Auto: stary prefix /Users/inne/ → bieżący home, gdy plik istnieje pod nową ścieżką."""
     from collections import Counter
     home = Path.home()
-    current = f"/Users/{home.name}"
+    current = home.as_posix()
     stale: Counter[str] = Counter()
     for s in st.songs or []:
         fp = (s.get("FilePath") or "").strip().replace("\\", "/")
@@ -2415,8 +2671,7 @@ def _unified_db_for_export(
             Playlist(name="VDJ", track_ids=[], is_folder=True, children=children)
         ]
     elif st.source == 'serato' and playlist_tree and st.unified:
-        tree = serato_flat_playlists_to_tree(st.unified.playlists or [])
-        children = list(tree or [])
+        children = list(serato_playlists_for_export(st.unified.playlists or []))
         if include_all_tracks:
             children = [_playlist_all_exportable_tracks(db)] + children
         db.playlists = [
@@ -3328,7 +3583,7 @@ def api_engine_stems_prepare_batch():
     from engine_stems import DEFAULT_PATRIOT_ENGINE, prepare_stems_batch_playlist
 
     data = request.get_json(silent=True) or {}
-    batch = int(data.get('batchSize') or request.args.get('batchSize') or 20)
+    batch = int(data.get('batchSize') or request.args.get('batchSize') or 120)
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
     pat_raw = (
         data.get('patriotEngine') or request.args.get('patriotEngine') or ''
@@ -3983,6 +4238,45 @@ def api_relocate_apply():
     })
 
 
+@app.route('/api/replace-path-prefix', methods=['POST'])
+def api_replace_path_prefix():
+    """
+    Zamiana prefiksu ścieżek w sesji (np. Mac → Windows).
+    Body: { "pathFrom": "/Users/stare", "pathTo": "C:/Users/nowe" }
+    """
+    _ensure_loaded()
+    data = request.get_json(silent=True) or {}
+    path_from = (data.get('pathFrom') or '').strip().replace('\\', '/').rstrip('/')
+    path_to = (data.get('pathTo') or '').strip().replace('\\', '/').rstrip('/')
+    if not path_from or not path_to or path_from == path_to:
+        return jsonify({'error': 'Podaj różne pathFrom i pathTo (np. /Users/mac → C:/Users/win)'}), 400
+    _push_undo_state()
+    from vdjfolder import normalize_path
+    replacements = []
+    updated = 0
+    for i, s in enumerate(st.songs):
+        fp = (s.get('FilePath') or '').replace('\\', '/')
+        if fp == path_from or fp.startswith(path_from + '/'):
+            new_path = path_to + fp[len(path_from):]
+            replacements.append({'oldPath': fp, 'newPath': new_path, 'oldIdx': i})
+            s['FilePath'] = normalize_path(new_path)
+            updated += 1
+    if st.unified and st.unified.tracks:
+        for t in st.unified.tracks:
+            fp = (t.path or '').replace('\\', '/')
+            if fp == path_from or fp.startswith(path_from + '/'):
+                t.path = path_to + fp[len(path_from):]
+    sync_stats = _sync_vdjfolder_paths(replacements) if replacements else {'folders_changed': 0, 'refs_updated': 0}
+    return jsonify({
+        'ok': True,
+        'updated': updated,
+        'pathFrom': path_from,
+        'pathTo': path_to,
+        'count': len(st.songs),
+        'vdjfolders_sync': sync_stats,
+    })
+
+
 @app.route('/api/problematic-missing', methods=['GET'])
 def api_problematic_missing():
     """Brakujące pliki – rekordy w bazie, plik nie istnieje na dysku."""
@@ -4029,6 +4323,9 @@ def api_playlists():
                 })
             except ET.ParseError:
                 pass
+    if not items and st.unified and st.unified.playlists:
+        for label, _pl in iter_playlist_entries(st.unified.playlists):
+            items.append({"name": label, "relPath": label, "type": "playlist"})
     return jsonify({'playlists': sorted(items, key=lambda x: x['name'].lower())})
 
 
@@ -4093,6 +4390,22 @@ def api_playlist_tracks():
                                 tracks.append(rec)
             except ET.ParseError:
                 pass
+            break
+    if rel_path_found is None and st.unified and st.unified.playlists:
+        for label, pl in iter_playlist_entries(st.unified.playlists):
+            if label != name:
+                continue
+            rel_path_found = label
+            for path in pl.track_ids or []:
+                np = normalize_path(path)
+                idx = path_to_idx.get(np)
+                if idx is None:
+                    continue
+                s = st.songs[idx]
+                rec = {'idx': idx, **s}
+                _enrich_song_for_display(rec, None)
+                _enrich_songs_with_lists([rec])
+                tracks.append(rec)
             break
     if rel_path_found is None:
         return jsonify({'error': 'Nie znaleziono playlisty', 'tracks': []}), 404
