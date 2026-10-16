@@ -599,9 +599,11 @@
     <div id="missingResult" style="font-size: 13px; margin-top: 8px; max-height: 400px; overflow-y: auto;"></div>
     <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
       <h4 style="margin: 0 0 8px;">Relokacja – połącz rekordy z nowymi lokalizacjami</h4>
-      <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px;">Wskaż folder, w którym mogą być pliki (np. nowa lokalizacja muzyki). Możesz dodać kilka folderów.</p>
+      <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px;">Wskaż folder z muzyką. Na Windows wklej ścieżkę (np. <code>D:\Muzyka</code> albo <code>C:\Users\Nazwa\Desktop</code>) — nie musisz używać okna systemowego. Możesz dodać kilka folderów.</p>
       <div id="relocatePathsList" style="font-size: 12px; margin-bottom: 8px; min-height: 24px;"></div>
-      <div class="merge-row">
+      <div class="merge-row" style="flex-wrap: wrap; gap: 8px;">
+        <input type="text" id="relocatePathInput" placeholder="D:\Muzyka" style="flex: 1; min-width: 220px; padding: 8px 10px;">
+        <button type="button" id="relocateAddPathBtn">Dodaj ścieżkę</button>
         <button id="relocatePickFolderBtn">Wybierz folder</button>
         <button id="relocateScanBtn">Przeszukaj foldery</button>
         <button id="relocateApplyBtn" class="danger" disabled>Zastosuj relokację</button>
@@ -1451,7 +1453,7 @@
       <button type="button" id="engineStemsPrepareBtn" style="display:none"></button>
       <button type="button" id="engineStemsMigrateBtn" style="display:none"></button>
       <button type="button" id="writeTagsBtn" style="display:none"></button>
-      <input type="number" id="engineStemsBatchSize" value="15" style="display:none">
+      <input type="number" id="engineStemsBatchSize" value="100" style="display:none">
       <button type="button" id="seratoBrowseBtn" style="display:none"></button>
     </div>
   </div>
@@ -2269,8 +2271,8 @@
     const engineStemsPrepareBtn = document.getElementById('engineStemsPrepareBtn');
     const engineStemsMigrateBtn = document.getElementById('engineStemsMigrateBtn');
     function engineStemsBatchSize() {
-      const n = parseInt(engineStemsBatchInput?.value || '15', 10);
-      return Number.isFinite(n) && n > 0 ? n : 15;
+      const n = parseInt(engineStemsBatchInput?.value || '100', 10);
+      return Number.isFinite(n) && n > 0 ? n : 100;
     }
     if (engineStemsStatusBtn) {
       engineStemsStatusBtn.onclick = async () => {
@@ -2641,20 +2643,51 @@
         btn.onclick = () => { relocateSearchPaths.splice(+btn.dataset.relocateRemove, 1); renderRelocatePaths(); };
       });
     }
+    function addRelocatePath(raw) {
+      let p = (raw || '').trim();
+      if (!p) return false;
+      p = p.replace(/\\/g, '/').replace(/\/$/, '');
+      if (p && !relocateSearchPaths.includes(p)) relocateSearchPaths.push(p);
+      renderRelocatePaths();
+      return true;
+    }
+    document.getElementById('relocateAddPathBtn').onclick = async () => {
+      const input = document.getElementById('relocatePathInput');
+      const raw = (input?.value || '').trim();
+      if (!raw) {
+        setStatus('Wklej ścieżkę folderu (np. D:\\Muzyka)', 'error');
+        return;
+      }
+      try {
+        const d = await fetchJson(API + '/pick-folder', {
+          method: 'POST',
+          body: JSON.stringify({ path: raw }),
+        });
+        if (d.path) addRelocatePath(d.path);
+        if (input) input.value = '';
+        setStatus('Dodano folder', 'loaded');
+      } catch (e) {
+        setStatus('Błąd: ' + e.message, 'error');
+      }
+    };
+    document.getElementById('relocatePathInput')?.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        document.getElementById('relocateAddPathBtn').click();
+      }
+    });
     document.getElementById('relocatePickFolderBtn').onclick = async () => {
       setStatus('Otwieranie okna wyboru folderu…', 'loading');
       try {
         const d = await fetchJson(API + '/pick-folder');
         if (d.path) {
-          const p = (d.path || '').replace(/\\/g, '/').replace(/\/$/, '');
-          if (p && !relocateSearchPaths.includes(p)) relocateSearchPaths.push(p);
-          renderRelocatePaths();
+          addRelocatePath(d.path);
           setStatus('Wybrano folder', 'loaded');
         } else {
           setStatus(d.error || 'Nie wybrano folderu', 'error');
         }
       } catch (e) {
-        setStatus('Błąd: ' + e.message, 'error');
+        setStatus('Błąd: ' + e.message + ' — wklej ścieżkę ręcznie (np. D:\\Muzyka)', 'error');
       }
     };
     renderRelocatePaths();

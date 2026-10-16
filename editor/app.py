@@ -1709,7 +1709,14 @@ def _suggest_engine_library_root(paths: list) -> dict:
             continue
         clean_paths.append(fp)
         parts = [p for p in fp.split('/') if p]
-        if fp.startswith('/Users/') and len(parts) >= 3:
+        if len(fp) >= 2 and fp[1] == ':' and len(parts) >= 2:
+            # C:/Users/Name  lub  D:/Muzyka
+            candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:2]))
+            if len(parts) >= 3:
+                candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:3]))
+            if len(parts) >= 4:
+                candidate_roots.add(parts[0] + '/' + '/'.join(parts[1:4]))
+        elif fp.startswith('/Users/') and len(parts) >= 3:
             candidate_roots.add('/' + '/'.join(parts[:3]))
             if len(parts) >= 4:
                 candidate_roots.add('/' + '/'.join(parts[:4]))
@@ -1729,7 +1736,11 @@ def _suggest_engine_library_root(paths: list) -> dict:
         prefix_counts: Counter[str] = Counter()
         for fp in clean_paths:
             parts = [p for p in fp.split('/') if p]
-            if fp.startswith('/Users/') and len(parts) >= 3:
+            if len(fp) >= 2 and fp[1] == ':' and len(parts) >= 2:
+                prefix_counts[parts[0] + '/' + '/'.join(parts[1:2])] += 1
+                if len(parts) >= 3:
+                    prefix_counts[parts[0] + '/' + '/'.join(parts[1:3])] += 1
+            elif fp.startswith('/Users/') and len(parts) >= 3:
                 prefix_counts['/' + '/'.join(parts[:3])] += 1
             elif fp.startswith('/Volumes/') and len(parts) >= 2:
                 prefix_counts['/Volumes/' + parts[1]] += 1
@@ -1811,7 +1822,7 @@ def _serato_path_replace_auto() -> Optional[dict[str, str]]:
     """Auto: stary prefix /Users/inne/ → bieżący home, gdy plik istnieje pod nową ścieżką."""
     from collections import Counter
     home = Path.home()
-    current = f"/Users/{home.name}"
+    current = home.as_posix()
     stale: Counter[str] = Counter()
     for s in st.songs or []:
         fp = (s.get("FilePath") or "").strip().replace("\\", "/")
@@ -3328,7 +3339,7 @@ def api_engine_stems_prepare_batch():
     from engine_stems import DEFAULT_PATRIOT_ENGINE, prepare_stems_batch_playlist
 
     data = request.get_json(silent=True) or {}
-    batch = int(data.get('batchSize') or request.args.get('batchSize') or 20)
+    batch = int(data.get('batchSize') or request.args.get('batchSize') or 120)
     mac_raw = (data.get('macEngine') or request.args.get('macEngine') or '').strip()
     pat_raw = (
         data.get('patriotEngine') or request.args.get('patriotEngine') or ''
@@ -3978,6 +3989,45 @@ def api_relocate_apply():
     return jsonify({
         'ok': True,
         'updated': len(path_map),
+        'count': len(st.songs),
+        'vdjfolders_sync': sync_stats,
+    })
+
+
+@app.route('/api/replace-path-prefix', methods=['POST'])
+def api_replace_path_prefix():
+    """
+    Zamiana prefiksu ścieżek w sesji (np. Mac → Windows).
+    Body: { "pathFrom": "/Users/stare", "pathTo": "C:/Users/nowe" }
+    """
+    _ensure_loaded()
+    data = request.get_json(silent=True) or {}
+    path_from = (data.get('pathFrom') or '').strip().replace('\\', '/').rstrip('/')
+    path_to = (data.get('pathTo') or '').strip().replace('\\', '/').rstrip('/')
+    if not path_from or not path_to or path_from == path_to:
+        return jsonify({'error': 'Podaj różne pathFrom i pathTo (np. /Users/mac → C:/Users/win)'}), 400
+    _push_undo_state()
+    from vdjfolder import normalize_path
+    replacements = []
+    updated = 0
+    for i, s in enumerate(st.songs):
+        fp = (s.get('FilePath') or '').replace('\\', '/')
+        if fp == path_from or fp.startswith(path_from + '/'):
+            new_path = path_to + fp[len(path_from):]
+            replacements.append({'oldPath': fp, 'newPath': new_path, 'oldIdx': i})
+            s['FilePath'] = normalize_path(new_path)
+            updated += 1
+    if st.unified and st.unified.tracks:
+        for t in st.unified.tracks:
+            fp = (t.path or '').replace('\\', '/')
+            if fp == path_from or fp.startswith(path_from + '/'):
+                t.path = path_to + fp[len(path_from):]
+    sync_stats = _sync_vdjfolder_paths(replacements) if replacements else {'folders_changed': 0, 'refs_updated': 0}
+    return jsonify({
+        'ok': True,
+        'updated': updated,
+        'pathFrom': path_from,
+        'pathTo': path_to,
         'count': len(st.songs),
         'vdjfolders_sync': sync_stats,
     })
