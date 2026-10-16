@@ -1943,23 +1943,34 @@ def load_flat_subcrates(base: Path, drive_root: str) -> list:
 
 
 def _retarget_playlist_paths(playlists: list, tracks: list) -> None:
-    """Ścieżki z .crate dopina do utworów z bazy, żeby XML Rekordboxa miał ten sam Location."""
+    """Ścieżki z .crate dopina do utworów z bazy, żeby Key w XML był tym samym Location."""
     from vdjfolder import normalize_path
 
-    exact: dict[str, str] = {}
+    tails: dict[str, Optional[str]] = {}
+
+    def add(key: str, path: str) -> None:
+        if not key:
+            return
+        folded = key.casefold()
+        previous = tails.get(folded, path)
+        tails[folded] = path if previous == path else None
+
     for track in tracks or []:
         raw = normalize_path(track.path)
         if not raw:
             continue
-        exact[raw.casefold()] = raw
-        exact[raw.lstrip("/").casefold()] = raw
+        add(raw, raw)
+        add(raw.lstrip("/"), raw)
+        parts = [part for part in raw.split("/") if part]
+        for index in range(len(parts)):
+            add("/".join(parts[index:]), raw)
 
     def resolve(path: str) -> str:
         key = normalize_path(path)
         if not key:
             return ""
-        for candidate in (key, "/" + key.lstrip("/"), key.lstrip("/")):
-            hit = exact.get(candidate.casefold())
+        for candidate in (key, key.lstrip("/")):
+            hit = tails.get(candidate.casefold())
             if hit:
                 return hit
         return ""

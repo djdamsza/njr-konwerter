@@ -203,10 +203,10 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertIn("file://localhost/Users/dj/Music/a.mp3", xml)
             self.assertIn("file://localhosttidal:tracks:99", xml)
             self.assertIn('Name="wesele"', xml)
-            self.assertIn('KeyType="0"', xml)
+            self.assertIn('KeyType="1"', xml)
             flat = xml.replace("\n", "")
             self.assertIn('Entries="2"', flat)
-            self.assertRegex(flat, r'<TRACK Key="\d+"')
+            self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', flat)
             self.assertIn("<COLLECTION Entries=\"3\"", xml)
 
     def test_artist_taken_from_filename_when_missing(self):
@@ -268,8 +268,8 @@ class TestSeratoSqliteRead(unittest.TestCase):
         xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
         self.assertIn('Name="wesele"', xml)
         self.assertIn('Entries="1"', xml)
-        self.assertIn('KeyType="0"', xml)
-        self.assertRegex(xml, r'<TRACK Key="\d+"')
+        self.assertIn('KeyType="1"', xml)
+        self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', xml)
 
     def test_location_matches_rekordbox_export(self):
         from rb_generator import _path_to_location
@@ -279,7 +279,7 @@ class TestSeratoSqliteRead(unittest.TestCase):
         )
         self.assertEqual(
             loc,
-            "file://localhost/Users/test/Downloads/DAWID%20KWIATKOWSKI%2C%20MARGARET%20-%20Pozniej%20%28Radio%20Edit%29.mp3",
+            "file://localhost/Users/test/Downloads/DAWID%20KWIATKOWSKI,%20MARGARET%20-%20Pozniej%20(Radio%20Edit).mp3",
         )
         self.assertIn("%26", _path_to_location("/Users/test/Music/A & B.mp3"))
 
@@ -329,6 +329,16 @@ class TestSeratoSqliteRead(unittest.TestCase):
             self.assertEqual(child.name, "sylwester")
             self.assertIn("/Users/dj/Music/a.mp3", child.track_ids)
 
+    def test_subcrates_match_track_by_relative_suffix(self):
+        from serato_parser import _retarget_playlist_paths
+        from unified_model import Playlist, Track
+
+        leaf = Playlist(name="country", track_ids=["Desktop/muzyka dj/a.mp3"], is_folder=False)
+        folder = Playlist(name="przedszkole 2022", track_ids=[], is_folder=True, children=[leaf])
+        track = Track(path="/Users/test/Desktop/muzyka dj/a.mp3", title="Song")
+        _retarget_playlist_paths([folder], [track])
+        self.assertEqual(leaf.track_ids, ["/Users/test/Desktop/muzyka dj/a.mp3"])
+
     def test_subcrates_replace_empty_sqlite_playlists(self):
         import tempfile
         from io import BytesIO
@@ -360,9 +370,9 @@ class TestSeratoSqliteRead(unittest.TestCase):
             xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
             self.assertIn('Type="0"', xml)
             self.assertIn('Name="sylwester"', xml)
-            self.assertIn('KeyType="0"', xml)
+            self.assertIn('KeyType="1"', xml)
             self.assertIn('Entries="1"', xml)
-            self.assertRegex(xml, r'<TRACK Key="\d+"')
+            self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', xml)
 
     def test_cyclic_containers_do_not_recurse(self):
         import sqlite3

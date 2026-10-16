@@ -62,8 +62,8 @@ def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
     """Location wg Pioneer XML i pyrekordbox.encode_path.
 
     Specyfikacja: https://cdn.rekordbox.com/files/20200410160904/xml_format_list.pdf
-    Kodowanie: urllib.parse.quote(path, safe=':/\\\\') i prefiks file://localhost/
-    (https://github.com/dylanljones/pyrekordbox/blob/master/pyrekordbox/rbxml.py).
+    Prefiks file://localhost/ jest wymagany. Kodowanie znaków jest takie, jak Rekordbox 7
+    sam zapisuje w eksporcie: spacja %20, & %26, przecinek i nawiasy bez zmian.
     """
     if not path:
         return ""
@@ -86,7 +86,9 @@ def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
     ):
         return f"file://localhost{path}"
     raw = path.replace("\\", "/")
-    quoted = quote(raw, safe=":/")
+    # Rekordbox 7 zapisuje URI tak: spacja → %20, & → %26, przecinek i nawiasy zostają.
+    # To jest Location z własnego eksportu RB (xml4), nadal pod file://localhost/ ze specyfikacji.
+    quoted = quote(raw, safe="/(),")
     if quoted.startswith("/"):
         return "file://localhost" + quoted
     return "file://localhost/" + quoted
@@ -286,11 +288,12 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     return tr
 
 
-def _playlist_to_node(pl: Playlist, path_to_id: dict[str, str]) -> ET.Element:
-    """NODE jak w przykładzie Pioneer / pyrekordbox.
+def _playlist_to_node(pl: Playlist, path_to_location: dict[str, str]) -> ET.Element:
+    """NODE wg PDF Pioneer.
 
     Folder: Type=0, Count = liczba dzieci.
-    Lista: Type=1, KeyType=0, Key to TrackID z COLLECTION, Entries = liczba TRACK.
+    Lista: Type=1, KeyType=1. Key to ten sam Location co w COLLECTION.
+    Rekordbox przy imporcie nadaje własne TrackID, więc KeyType=0 (numer) gubi utwory.
     """
     if pl.is_folder:
         node = ET.Element(
@@ -298,19 +301,19 @@ def _playlist_to_node(pl: Playlist, path_to_id: dict[str, str]) -> ET.Element:
             {"Type": "0", "Name": pl.name, "Count": str(len(pl.children))},
         )
         for child in pl.children:
-            node.append(_playlist_to_node(child, path_to_id))
+            node.append(_playlist_to_node(child, path_to_location))
         return node
     keys = []
     for path in pl.track_ids:
-        tid = path_to_id.get(normalize_path(path)) or path_to_id.get(path)
-        if tid:
-            keys.append(str(tid))
+        loc = path_to_location.get(normalize_path(path)) or path_to_location.get(path)
+        if loc:
+            keys.append(loc)
     node = ET.Element(
         "NODE",
-        {"Name": pl.name, "Type": "1", "KeyType": "0", "Entries": str(len(keys))},
+        {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(keys))},
     )
-    for tid in keys:
-        node.append(ET.Element("TRACK", {"Key": tid}))
+    for loc in keys:
+        node.append(ET.Element("TRACK", {"Key": loc}))
     return node
 
 
@@ -352,6 +355,7 @@ def generate_rb_playlists_only_xml(
 
     plists = ET.SubElement(root, "PLAYLISTS")
     root_node = ET.SubElement(plists, "NODE", Type="0", Name="ROOT", Count=str(len(playlists)))
+    id_to_location = {t.source_id: _path_to_location(t.path) for t in coll_tracks if t.source_id}
 
     def pl_to_node(pl: Playlist) -> ET.Element:
         if pl.is_folder:
@@ -364,13 +368,15 @@ def generate_rb_playlists_only_xml(
             rb_key = vdj_path_to_rb_key(path)
             tid = path_to_rb_id.get(rb_key)
             if tid:
-                keys.append(str(tid))
+                loc = id_to_location.get(tid)
+                if loc:
+                    keys.append(loc)
         node = ET.Element(
             "NODE",
-            {"Name": pl.name, "Type": "1", "KeyType": "0", "Entries": str(len(keys))},
+            {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(keys))},
         )
-        for tid in keys:
-            node.append(ET.Element("TRACK", {"Key": tid}))
+        for loc in keys:
+            node.append(ET.Element("TRACK", {"Key": loc}))
         return node
 
     for pl in playlists:
@@ -413,7 +419,7 @@ def generate_rb_xml(db: UnifiedDatabase, path_replace: Optional[dict] = None) ->
     plists = ET.SubElement(root, "PLAYLISTS")
     root_node = ET.SubElement(plists, "NODE", Type="0", Name="ROOT", Count=str(len(db.playlists)))
     for pl in db.playlists:
-        root_node.append(_playlist_to_node(pl, path_to_id))
+        root_node.append(_playlist_to_node(pl, path_to_location))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ", level=0)
