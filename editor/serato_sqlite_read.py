@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional
@@ -31,6 +32,8 @@ _BACKUP_RE = re.compile(
 )
 _ROLES = ("master", "root", "tidal")
 _ROOT_NAME = "serato library root"
+# Serato zapisuje trzy ZIP-y po kolei, często o sekundę od siebie.
+_BACKUP_CLUSTER_SEC = 180
 
 
 def is_serato_sqlite_source(path: Path) -> bool:
@@ -111,10 +114,10 @@ def _resolve_role_files(path: Path, tmp: Path) -> tuple[dict[str, Path], str, in
                 "To nie jest kopia biblioteki Serato (master/root/tidal.sqlite-backup-….zip)."
             )
         stamp = match.group(2)
-        grouped = _backup_groups(path.parent).get(stamp, {})
+        grouped = _cluster_around(path)
         if "master" not in grouped and "root" not in grouped:
             raise ValueError(
-                "W tym folderze nie ma pary master.sqlite i root.sqlite z tego samego czasu."
+                "W tym folderze nie ma pary master.sqlite i root.sqlite z tej samej kopii."
             )
         return _unzip_group(grouped, tmp), stamp, 0
 
@@ -135,26 +138,66 @@ def _resolve_role_files(path: Path, tmp: Path) -> tuple[dict[str, Path], str, in
             raise ValueError("W folderze jest tidal.sqlite, ale nie ma master.sqlite ani root.sqlite.")
         return live, "", 0
 
-    groups = _backup_groups(path)
-    if not groups:
+    listed = _list_backups(path)
+    if not listed:
         raise ValueError("Folder kopii Serato jest pusty.")
-    stamp = sorted(groups)[-1]
-    return _unzip_group(groups[stamp], tmp), stamp, 0
+    newest = max(listed, key=lambda item: item[2])
+    grouped = _cluster_around(newest[1])
+    return _unzip_group(grouped, tmp), _stamp_of(newest[1]), 0
 
 
-def _backup_groups(directory: Path) -> dict[str, dict[str, Path]]:
-    groups: dict[str, dict[str, Path]] = {}
+def _stamp_of(path: Path) -> str:
+    match = _BACKUP_RE.match(path.name)
+    return match.group(2) if match else ""
+
+
+def _parse_stamp(stamp: str) -> Optional[datetime]:
+    """20261016_075713+0200 → datetime. Bez strefy zostaje naiwny czas z nazwy."""
+    text = stamp.strip()
+    for fmt in ("%Y%m%d_%H%M%S%z", "%Y%m%d_%H%M%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _list_backups(directory: Path) -> list[tuple[str, Path, datetime]]:
+    found: list[tuple[str, Path, datetime]] = []
     if not directory.is_dir():
-        return groups
+        return found
     for child in directory.iterdir():
         if not child.is_file():
             continue
         match = _BACKUP_RE.match(child.name)
         if not match:
             continue
-        role, stamp = match.group(1).lower(), match.group(2)
-        groups.setdefault(stamp, {})[role] = child
-    return groups
+        when = _parse_stamp(match.group(2))
+        if when is None:
+            continue
+        found.append((match.group(1).lower(), child, when))
+    return found
+
+
+def _cluster_around(anchor: Path) -> dict[str, Path]:
+    """master/root/tidal z tego samego zapisu, nawet gdy czas w nazwie różni się o sekundę."""
+    match = _BACKUP_RE.match(anchor.name)
+    if not match:
+        return {}
+    when = _parse_stamp(match.group(2))
+    grouped: dict[str, tuple[float, Path]] = {}
+    if when is None:
+        grouped[match.group(1).lower()] = (0.0, anchor)
+        return {role: path for role, (_delta, path) in grouped.items()}
+    for role, path, stamped in _list_backups(anchor.parent):
+        delta = abs((stamped - when).total_seconds())
+        if delta > _BACKUP_CLUSTER_SEC:
+            continue
+        current = grouped.get(role)
+        if current is None or delta < current[0]:
+            grouped[role] = (delta, path)
+    grouped[match.group(1).lower()] = (0.0, anchor)
+    return {role: path for role, (_delta, path) in grouped.items()}
 
 
 def _unzip_group(grouped: dict[str, Path], tmp: Path) -> dict[str, Path]:
