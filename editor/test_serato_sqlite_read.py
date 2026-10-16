@@ -280,6 +280,86 @@ class TestSeratoSqliteRead(unittest.TestCase):
         )
         self.assertIn("%26", _path_to_location("/Users/test/Music/A & B.mp3"))
 
+    def test_root_sqlite_tree_beats_empty_master_crates(self):
+        import tempfile
+
+        from serato_sqlite_read import load_serato_sqlite_from_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            root = folder / "root.sqlite"
+            master = folder / "master.sqlite"
+            _write(root, _ASSET + """
+                INSERT INTO asset VALUES
+                    (1, 'Users/dj/Music/a.mp3', 'a.mp3', 'DJ', 'Song', '', '', '8A', 128, 200, 200000, 0.8, '', '2020', 1);
+                INSERT INTO space_asset VALUES (5, 1, 1);
+                INSERT INTO container VALUES
+                    (1, 0, 'automix', 0, 1, 1),
+                    (2, 1, 'sylwester', 1, 1, 1);
+                INSERT INTO container_asset VALUES (1, 2, 5, 1);
+            """)
+            _write(master, """
+                CREATE TABLE space (id INTEGER PRIMARY KEY, name TEXT);
+                INSERT INTO space VALUES (5, 'Serato Library');
+                CREATE TABLE container (
+                    id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT,
+                    type INTEGER, list_order INTEGER, space_id INTEGER
+                );
+                INSERT INTO container VALUES
+                    (1, 0, 'Serato Library root', 0, 0, 5),
+                    (2, 1, 'automix', 1, 1, 5);
+                CREATE TABLE location (id INTEGER PRIMARY KEY, path TEXT);
+                CREATE TABLE connection (location_id INTEGER PRIMARY KEY, database_uri TEXT);
+                CREATE TABLE location_container (
+                    id INTEGER PRIMARY KEY, container_id INTEGER,
+                    location_id INTEGER, external_container_id INTEGER
+                );
+            """)
+            con = sqlite3.connect(str(master))
+            con.execute("INSERT INTO connection VALUES (1, ?)", (str(root),))
+            con.commit()
+            con.close()
+            db, _info = load_serato_sqlite_from_path(folder)
+            self.assertEqual(db.playlists[0].name, "automix")
+            self.assertTrue(db.playlists[0].is_folder)
+            child = db.playlists[0].children[0]
+            self.assertEqual(child.name, "sylwester")
+            self.assertIn("/Users/dj/Music/a.mp3", child.track_ids)
+
+    def test_subcrates_replace_empty_sqlite_playlists(self):
+        import tempfile
+        from io import BytesIO
+
+        from rb_generator import generate_rb_xml
+        from serato_parser import _encode_utf16be, _write_serato_record, overlay_disk_subcrates
+        from unified_model import Playlist, Track, UnifiedDatabase
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "_Serato_"
+            (base / "Subcrates").mkdir(parents=True)
+            buf = BytesIO()
+            _write_serato_record(buf, "vrsn", _encode_utf16be("1.0/Serato ScratchLive Crate"))
+            inner = BytesIO()
+            _write_serato_record(inner, "ptrk", _encode_utf16be("Users/dj/Music/a.mp3"))
+            _write_serato_record(buf, "otrk", inner.getvalue())
+            (base / "Subcrates" / "automix%%sylwester.crate").write_bytes(buf.getvalue())
+            db = UnifiedDatabase(
+                tracks=[Track(path="/Users/dj/Music/a.mp3", title="Song", artist="DJ")],
+                playlists=[Playlist(name="automix", track_ids=[], is_folder=False)],
+                source="serato",
+            )
+            db, note = overlay_disk_subcrates(db, roots=[(base, "/")])
+            self.assertIn("Subcrates", note)
+            folder = next(pl for pl in db.playlists if pl.name == "automix")
+            self.assertTrue(folder.is_folder)
+            leaf = next(pl for pl in folder.children if pl.name == "sylwester")
+            self.assertEqual(leaf.track_ids, ["/Users/dj/Music/a.mp3"])
+            xml = generate_rb_xml(db).decode("utf-8").replace("\n", "")
+            self.assertIn('Type="0"', xml)
+            self.assertIn('Name="sylwester"', xml)
+            self.assertIn('Entries="1"', xml)
+            self.assertIn('Key="file://localhost/Users/dj/Music/a.mp3"', xml)
+
     def test_missing_sibling_is_reported(self):
         import tempfile
 

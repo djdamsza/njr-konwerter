@@ -91,6 +91,7 @@ from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
 from serato_parser import (
     load_serato_database_v2,
     load_serato_folder,
+    overlay_disk_subcrates,
     resolve_serato_library_dir,
     is_serato_database_filename,
     looks_like_serato_database_blob,
@@ -410,8 +411,10 @@ def _load_from_path(
 
     if is_serato_sqlite_source(p):
         db, info = load_serato_sqlite_from_path(p)
+        db, crate_note = overlay_disk_subcrates(db)
         out = _commit_serato_load(db, str(p))
-        out["message"] = info["message"]
+        out["message"] = info["message"] + crate_note
+        out["playlists"] = count_playlist_entries(db.playlists or [])
         return out
 
     serato_base = resolve_serato_library_dir(p)

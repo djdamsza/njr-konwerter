@@ -367,17 +367,19 @@ def _assemble(
             if key and key not in tracks_by_path:
                 tracks_by_path[key] = track
 
-    playlists: list[Playlist] = []
+    candidates: list[list[Playlist]] = []
     if master is not None and "container" in _tables(master):
-        playlists = _playlists_from_master(master, peripherals)
-    if not playlists:
-        for role in ("root", "tidal"):
-            con = connections.get(role)
-            if con is None or "container" not in _tables(con):
-                continue
-            assets = _assets_by_id(con, role, "")
-            tree = _playlist_tree(con, lambda cid, a=assets, c=con: _tracks_in_container(c, cid, a))
-            playlists.extend(tree)
+        candidates.append(_playlists_from_master(master, peripherals, restrict_space=True))
+        candidates.append(_playlists_from_master(master, peripherals, restrict_space=False))
+    for role in ("root", "tidal"):
+        con = connections.get(role)
+        if con is None or "container" not in _tables(con):
+            continue
+        assets = _assets_by_id(con, role, str(role_paths.get(role, "")))
+        tracks_of = lambda cid, a=assets, c=con: _tracks_in_container(c, cid, a)
+        candidates.append(_playlist_tree(con, tracks_of, restrict_space=True))
+        candidates.append(_playlist_tree(con, tracks_of, restrict_space=False))
+    playlists = _richest_playlist_tree(candidates)
 
     return UnifiedDatabase(
         tracks=list(tracks_by_path.values()),
@@ -574,9 +576,43 @@ def _tracks_in_container(
     return out
 
 
+def _playlist_score(playlists: list[Playlist]) -> tuple[int, int, int]:
+    """Więcej utworów w listach wygrywa z samym zestawem pustych nazw."""
+    lists = 0
+    tracks = 0
+    folders = 0
+
+    def walk(nodes: list[Playlist]) -> None:
+        nonlocal lists, tracks, folders
+        for pl in nodes or []:
+            children = list(pl.children or [])
+            if pl.is_folder or children:
+                folders += 1
+                walk(children)
+            if pl.track_ids and not pl.is_folder:
+                lists += 1
+                tracks += len(pl.track_ids)
+
+    walk(playlists)
+    return (tracks, lists, folders)
+
+
+def _richest_playlist_tree(candidates: list[list[Playlist]]) -> list[Playlist]:
+    best: list[Playlist] = []
+    best_score = (-1, -1, -1)
+    for tree in candidates:
+        score = _playlist_score(tree)
+        if score > best_score:
+            best_score = score
+            best = tree
+    return best
+
+
 def _playlists_from_master(
     master: sqlite3.Connection,
     peripherals: dict[int, tuple[sqlite3.Connection, dict[int, Track]]],
+    *,
+    restrict_space: bool = True,
 ) -> list[Playlist]:
     def tracks_of(container_id: int) -> list[Track]:
         if "location_container" not in _tables(master):
@@ -600,16 +636,16 @@ def _playlists_from_master(
                 found.append(track)
         return found
 
-    return _playlist_tree(master, tracks_of)
+    return _playlist_tree(master, tracks_of, restrict_space=restrict_space)
 
 
-def _playlist_tree(con: sqlite3.Connection, tracks_of) -> list[Playlist]:
+def _playlist_tree(con: sqlite3.Connection, tracks_of, *, restrict_space: bool = True) -> list[Playlist]:
     cols = set(_cols(con, "container"))
     if "id" not in cols or "name" not in cols:
         return []
     params: list = []
     where = ""
-    if "space_id" in cols and "space" in _tables(con):
+    if restrict_space and "space_id" in cols and "space" in _tables(con):
         spaces = [r[0] for r in con.execute("SELECT id FROM space WHERE name='Serato Library'")]
         if spaces:
             marks = ",".join("?" * len(spaces))
