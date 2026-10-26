@@ -30,7 +30,8 @@ _AUDIO_EXT = {e.lower() for e in _SUPPORTED_EXT}
 
 
 def _default_vdj_db() -> Path:
-    return Path.home() / "Library/Application Support/VirtualDJ/database.xml"
+    from platform_paths import vdj_root
+    return vdj_root() / "database.xml"
 
 
 def _is_writable_audio(path: str) -> bool:

@@ -179,10 +179,7 @@ def load_serato_database_v2(content: bytes, drive_root: Optional[str] = None) ->
         if name == "otrk" and isinstance(value, list):
             t = _parse_track(value)
             if t and t.path:
-                path = t.path.replace("\\", "/")
-                if drive_root and not (len(path) >= 2 and path[1] == ":") and not path.startswith("/"):
-                    path = str(Path(drive_root) / path.lstrip("/"))
-                t.path = path
+                t.path = resolve_serato_stored_path(t.path, drive_root)
                 tracks.append(t)
     return UnifiedDatabase(tracks=tracks, playlists=[], source="serato")
 
@@ -195,10 +192,7 @@ def load_serato_crate(content: bytes, crate_name: str, drive_root: Optional[str]
         if name == "otrk" and isinstance(value, list):
             for n, v in value:
                 if (n == "ptrk" or n == "pfil") and isinstance(v, str) and v.strip():
-                    p = v.strip().replace("\\", "/")
-                    if drive_root and not (len(p) >= 2 and p[1] == ":") and not p.startswith("/"):
-                        p = str(Path(drive_root) / p.lstrip("/"))
-                    paths.append(p)
+                    paths.append(resolve_serato_stored_path(v, drive_root))
                     break
     return Playlist(name=crate_name, track_ids=paths)
 
@@ -272,6 +266,231 @@ def _write_serato_record(buf: BytesIO, name: str, data: bytes) -> None:
     buf.write(data)
 
 
+_V2_TEXT_TAGS = (
+    "tsng",
+    "tart",
+    "talb",
+    "tgen",
+    "tlen",
+    "tsiz",
+    "tbit",
+    "tsmp",
+    "tbpm",
+    "tcmp",
+    "ttyr",
+    "tkey",
+    "tcom",
+    "trem",
+)
+
+
+def _iter_raw_serato_fields(data: bytes):
+    fp = BytesIO(data)
+    while True:
+        header = fp.read(8)
+        if len(header) < 8:
+            break
+        name = header[:4].decode("ascii", errors="replace")
+        length = struct.unpack(">I", header[4:8])[0]
+        payload = fp.read(length)
+        if len(payload) < length:
+            break
+        yield name, payload
+
+
+def fill_otrk_missing_text_tags(payload: bytes, tags: dict[str, str]) -> tuple[bytes, int]:
+    """Dopisuje brakujące pola tekstowe. Ścieżki i istniejące pola zostają."""
+    existing = list(_iter_raw_serato_fields(payload))
+    have = {name for name, _ in existing}
+    extra: list[tuple[str, bytes]] = []
+    for name in _V2_TEXT_TAGS:
+        if name in have:
+            continue
+        text = (tags.get(name) or "").strip()
+        if not text:
+            continue
+        extra.append((name, _encode_utf16be(text)))
+    if not extra:
+        return payload, 0
+    insert_at = 0
+    for index, (name, _) in enumerate(existing):
+        if name in ("pfil", "ptrk"):
+            insert_at = index + 1
+    merged = existing[:insert_at] + extra + existing[insert_at:]
+    out = BytesIO()
+    for name, raw in merged:
+        _write_serato_record(out, name, raw)
+    return out.getvalue(), len(extra)
+
+
+def _otrk_path_and_flags(payload: bytes) -> tuple[str, bool, bool]:
+    path = ""
+    has_title = has_artist = False
+    for name, value in _parse_serato_records(BytesIO(payload)):
+        if name in ("pfil", "ptrk") and isinstance(value, str) and value.strip() and not path:
+            path = value.strip()
+        elif name == "tsng" and isinstance(value, str) and value.strip():
+            has_title = True
+        elif name == "tart" and isinstance(value, str) and value.strip():
+            has_artist = True
+    return path, has_title, has_artist
+
+
+def v2_text_tags_by_path(content: bytes) -> dict[str, dict[str, str]]:
+    """Ścieżka → pola tekstowe, tylko rekordy z tytułem i artystą."""
+    index: dict[str, dict[str, str]] = {}
+    for name, data in _iter_top_level_raw(content):
+        if name != "otrk":
+            continue
+        path, has_title, has_artist = _otrk_path_and_flags(data)
+        if not path or not has_title or not has_artist:
+            continue
+        tags: dict[str, str] = {}
+        for field, value in _parse_serato_records(BytesIO(data)):
+            if field in _V2_TEXT_TAGS and isinstance(value, str) and value.strip():
+                tags[field] = value.strip()
+        if tags.get("tsng") and tags.get("tart"):
+            index[serato_path_identity_key(path)] = tags
+    return index
+
+
+def commit_database_v2(db_file: Path, new_content: bytes) -> bytes:
+    """
+    Zapis database V2. Tytuł i artysta z dotychczasowego pliku wracają,
+    jeśli nowa wersja ma z tej ścieżki samą ścieżkę.
+    """
+    if db_file.is_file():
+        previous = v2_text_tags_by_path(db_file.read_bytes())
+        if previous:
+            new_content, _stats = restore_missing_v2_text_tags(new_content, previous)
+    db_file.write_bytes(new_content)
+    return new_content
+
+
+def restore_missing_v2_text_tags(
+    content: bytes,
+    tags_by_path: dict[str, dict[str, str]],
+) -> tuple[bytes, dict]:
+    """
+    Uzupełnia rekordy database V2, które mają samą ścieżkę.
+    Serato przy starcie importuje V2 i tym importem kasuje artystę oraz tytuł w bazie.
+    """
+    out = BytesIO()
+    filled = 0
+    still = 0
+    for name, data in _iter_top_level_raw(content):
+        if name != "otrk":
+            _write_serato_record(out, name, data)
+            continue
+        path, has_title, has_artist = _otrk_path_and_flags(data)
+        if has_title and has_artist:
+            _write_serato_record(out, name, data)
+            continue
+        tags = tags_by_path.get(serato_path_identity_key(path)) or {}
+        updated, added = fill_otrk_missing_text_tags(data, tags)
+        if added and (tags.get("tsng") or tags.get("tart")):
+            filled += 1
+            _write_serato_record(out, name, updated)
+        else:
+            still += 1
+            _write_serato_record(out, name, data)
+    return out.getvalue(), {"filled": filled, "still_without_tags": still}
+
+
+def _length_text(seconds: float) -> str:
+    whole = int(seconds)
+    minutes, secs = divmod(whole, 60)
+    frac = seconds - whole
+    return f"{minutes:02d}:{secs:02d}.{int(frac * 100):02d}"
+
+
+def file_tags_as_v2_fields(path: str) -> dict[str, str]:
+    """Tagi z pliku audio w polach database V2. Pusty słownik, gdy pliku nie da się odczytać."""
+    try:
+        from mutagen import File
+    except ImportError:
+        return {}
+    file_path = Path(path)
+    try:
+        audio = File(file_path)
+    except Exception:
+        return {}
+    if audio is None or not getattr(audio, "tags", None):
+        return {}
+    tags = audio.tags
+    title = artist = album = genre = year = key = ""
+    bpm = 0.0
+    if "©nam" in tags or "©ART" in tags:
+        def _mp4(key_name: str) -> str:
+            value = tags.get(key_name)
+            if not value:
+                return ""
+            return str(value[0]).strip()
+
+        title = _mp4("©nam")
+        artist = _mp4("©ART")
+        album = _mp4("©alb")
+        genre = _mp4("©gen")
+        year = _mp4("©day")
+        if tags.get("tmpo"):
+            try:
+                bpm = float(tags["tmpo"][0])
+            except (TypeError, ValueError):
+                bpm = 0.0
+        free = tags.get("----:com.apple.iTunes:initialkey")
+        if free:
+            raw = free[0]
+            key = bytes(raw).decode("utf-8", errors="replace").strip() if not isinstance(raw, str) else raw.strip()
+    else:
+        def _id3(frame: str) -> str:
+            value = tags.get(frame)
+            if not value:
+                return ""
+            text = getattr(value, "text", None)
+            if text:
+                return str(text[0]).strip()
+            return str(value).strip()
+
+        title = _id3("TIT2")
+        artist = _id3("TPE1")
+        album = _id3("TALB")
+        genre = _id3("TCON")
+        year = _id3("TDRC") or _id3("TYER")
+        key = _id3("TKEY")
+        bpm_text = _id3("TBPM")
+        if bpm_text:
+            try:
+                bpm = float(bpm_text)
+            except ValueError:
+                bpm = 0.0
+    length = 0.0
+    info = getattr(audio, "info", None)
+    if info is not None:
+        try:
+            length = float(info.length or 0)
+        except (TypeError, ValueError):
+            length = 0.0
+    out: dict[str, str] = {}
+    if title:
+        out["tsng"] = title
+    if artist:
+        out["tart"] = artist
+        out["tcmp"] = artist
+    if album:
+        out["talb"] = album
+    if genre:
+        out["tgen"] = genre
+    if year:
+        out["ttyr"] = year[:4]
+    if key:
+        out["tkey"] = key
+    if bpm > 0:
+        out["tbpm"] = f"{bpm:.2f}"
+    if length > 0:
+        out["tlen"] = _length_text(length)
+    return out
+
+
 def _get_comment_from_song(s: dict) -> str:
     """Wyciąga tekst Comment z _children_xml (format VDJ)."""
     import xml.etree.ElementTree as ET
@@ -315,6 +534,61 @@ def collapse_serato_broken_path_prefixes(path: str) -> str:
 def canonical_serato_relative_path(path: str) -> str:
     """Relatywna ścieżka Serato + naprawa znanego podwójnego prefixu Music/Users."""
     return collapse_serato_broken_path_prefixes(to_serato_relative_path(path))
+
+
+def _collapse_doubled_music_users(path: str) -> str:
+    """Absolutna albo względna ścieżka bez podwójnego Users/…/Music/Users/…."""
+    p = (path or "").strip().replace("\\", "/")
+    if not p:
+        return p
+    if len(p) >= 2 and p[1] == ":":
+        drive = p[:2]
+        body = collapse_serato_broken_path_prefixes(p[2:].lstrip("/"))
+        return drive + "/" + body
+    if p.startswith("/"):
+        return "/" + collapse_serato_broken_path_prefixes(p[1:])
+    return collapse_serato_broken_path_prefixes(p)
+
+
+def _volume_root_for_serato(drive_root: Optional[str]) -> str:
+    """Root dysku, na którym leży biblioteka. Nie folder Music."""
+    root = (drive_root or "").strip().replace("\\", "/").rstrip("/")
+    if not root or root == "/":
+        return "/"
+    if len(root) >= 2 and root[1] == ":":
+        return root[:2] + "/"
+    parts = [part for part in root.split("/") if part]
+    if len(parts) >= 2 and parts[0] == "Volumes":
+        return "/Volumes/" + parts[1]
+    if root.startswith("/"):
+        return "/"
+    return root + "/"
+
+
+def resolve_serato_stored_path(path: str, drive_root: Optional[str] = None) -> str:
+    """
+    Ścieżka z database V2 albo crate do ścieżki na dysku.
+
+    Serato trzyma plik jako Users/test/Desktop/…. To jest ścieżka od roota dysku,
+    nie od folderu Music. Doklejenie Music daje /Users/…/Music/Users/… i każdy
+    plik wygląda na brakujący.
+    """
+    raw = (path or "").strip().replace("\\", "/")
+    if not raw:
+        return raw
+    head = raw[:24].lower()
+    if "://" in head or head.startswith("netsearch:"):
+        return raw
+    if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
+        return _collapse_doubled_music_users(raw)
+    rel = collapse_serato_broken_path_prefixes(raw)
+    if rel.startswith("Users/") or rel.startswith("Volumes/"):
+        base = _volume_root_for_serato(drive_root).rstrip("/")
+        return _collapse_doubled_music_users(base + "/" + rel.lstrip("/"))
+    root = (drive_root or "").strip()
+    if not root:
+        return rel
+    return str(Path(root) / rel.lstrip("/"))
 
 
 def _rewrite_paths_in_container(data: bytes, transform) -> tuple[bytes, int]:
@@ -490,7 +764,7 @@ def sync_serato_genres_from_vdj(
     if dry_run or n == 0:
         return result
     bak.write_bytes(raw)
-    db_file.write_bytes(new_blob)
+    commit_database_v2(db_file, new_blob)
     return result
 
 
@@ -784,7 +1058,7 @@ def merge_vdj_tracks_into_serato_database(
     bak = Path(str(db_file) + f".pre-merge-vdj-{stamp}.bak")
     bak.write_bytes(raw)
     merged = _append_otrks_to_database(raw, new_payloads)
-    db_file.write_bytes(merged)
+    commit_database_v2(db_file, merged)
     result["backup"] = str(bak)
     result["total_after"] = len(_database_path_keys(merged))
     return result
@@ -856,7 +1130,12 @@ def upsert_otrks_in_serato_database(
                 break
         key = serato_path_identity_key(to_serato_relative_path(rec_path)) if rec_path else ""
         if key and key in wanted:
-            _write_serato_record(out, "otrk", wanted[key])
+            new_tags: dict[str, str] = {}
+            for field, value in _parse_serato_records(BytesIO(wanted[key])):
+                if field in _V2_TEXT_TAGS and isinstance(value, str) and value.strip():
+                    new_tags[field] = value.strip()
+            merged, _added = fill_otrk_missing_text_tags(payload, new_tags)
+            _write_serato_record(out, "otrk", merged)
             seen.add(key)
             replaced += 1
         else:
@@ -873,7 +1152,7 @@ def upsert_otrks_in_serato_database(
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         bak = Path(str(db_file) + f".pre-upsert-meta-{stamp}.bak")
         bak.write_bytes(raw)
-        db_file.write_bytes(out.getvalue())
+        commit_database_v2(db_file, out.getvalue())
         return {"ok": True, "replaced": replaced, "added": added, "backup": str(bak)}
     return {"ok": True, "replaced": 0, "added": 0}
 
@@ -931,7 +1210,7 @@ def normalize_and_dedupe_serato_library(
         path_redirects = pst.get("redirects") or {}
         cleaned = cleaned2
 
-    db_file.write_bytes(cleaned)
+    commit_database_v2(db_file, cleaned)
 
     sub = base / "Subcrates"
     if sub.is_dir():
@@ -1215,6 +1494,11 @@ def purge_serato_stale_duplicates(content: bytes) -> tuple[bytes, dict]:
         bonus = 0
         if exists:
             bonus += 1_000_000
+        _, has_title, has_artist = _otrk_path_and_flags(data)
+        if has_title and has_artist:
+            # Pusta kopia (sama ścieżka) nie może wygrać z rekordem, który ma tytuł.
+            # Serato przy starcie importuje database V2 i tym kasuje tagi w bibliotece.
+            bonus += 10_000_000
         pl = path_for_key.replace("\\", "/")
         fullish = pl if pl.startswith("/") else "/" + pl
         if "/Desktop/" in fullish:
@@ -1427,6 +1711,9 @@ def dedupe_serato_database_v2(
             score += 100000
         elif prefer_style == "relative" and path and not path.startswith("/"):
             score += 100000
+        _, has_title, has_artist = _otrk_path_and_flags(data)
+        if has_title and has_artist:
+            score += 10_000_000
         prev = best.get(key)
         if prev is None:
             best[key] = (score, data, path)
@@ -1571,6 +1858,30 @@ def save_serato_database_v2(
     return buf.getvalue()
 
 
+def append_track_to_crate_file(crate_path: Path, track_path: str) -> bool:
+    """Dopisuje jeden plik na koniec istniejącego .crate. False, gdy już tam jest."""
+    path = Path(crate_path)
+    if not path.is_file():
+        return False
+    content = path.read_bytes()
+    playlist = load_serato_crate(content, path.stem, drive_root="/")
+    key = serato_path_identity_key(track_path)
+    if not key:
+        return False
+    for have in playlist.track_ids or []:
+        if serato_path_identity_key(have) == key:
+            return False
+    relative = to_serato_relative_path(track_path)
+    if not relative:
+        return False
+    otrk = BytesIO()
+    _write_serato_record(otrk, "ptrk", _encode_utf16be(relative))
+    extra = BytesIO()
+    _write_serato_record(extra, "otrk", otrk.getvalue())
+    path.write_bytes(content + extra.getvalue())
+    return True
+
+
 def save_serato_crate(
     track_paths: list[str],
     crate_name: str,
@@ -1641,7 +1952,7 @@ def serato_library_exists(serato_dir: Optional[Path] = None) -> bool:
     return (base / "database V2").is_file() or (base / "Database V2").is_file()
 
 
-SERATO_EXPORT_INSTALL_TXT = """NJR Konwerter — eksport Serato
+SERATO_EXPORT_INSTALL_TXT = """Imprezja Playlist Pro — eksport Serato
 ================================
 
 Zalecane (istniejąca biblioteka Serato):
@@ -1842,6 +2153,12 @@ def serato_flat_playlists_to_tree(
                     seen.add(t)
 
     def build(parts: tuple[str, ...]) -> Playlist:
+        if len(parts) > 40:
+            return Playlist(
+                name=parts[-1] if parts else "Serato",
+                track_ids=list(nodes.get(parts) or []),
+                is_folder=False,
+            )
         children: list = []
         child_names = sorted(
             {
@@ -1854,6 +2171,11 @@ def serato_flat_playlists_to_tree(
         for name in child_names:
             children.append(build(parts + (name,)))
         tracks = nodes.get(parts) or []
+        if children and tracks:
+            children = [
+                Playlist(name=parts[-1], track_ids=list(tracks), is_folder=False)
+            ] + children
+            tracks = []
         return Playlist(
             name=parts[-1] if parts else "Serato",
             track_ids=list(tracks),
@@ -1866,6 +2188,148 @@ def serato_flat_playlists_to_tree(
         key=lambda s: s.lower(),
     )
     return [build((name,)) for name in roots]
+
+
+def serato_playlists_for_export(playlists: list) -> list:
+    """Drzewo crate'ów do XML Rekordbox.
+
+    database V2 trzyma płaskie nazwy „Folder%%Lista”. SQLite ma już dzieci
+    i utwory — składanie po „%%” kasuje te listy i w Rekordboxie zostają puste.
+    """
+    raw = list(playlists or [])
+
+    def has_percent(nodes: list) -> bool:
+        for pl in nodes or []:
+            if "%%" in (getattr(pl, "name", "") or ""):
+                return True
+            if has_percent(getattr(pl, "children", None) or []):
+                return True
+        return False
+
+    if has_percent(raw):
+        return serato_flat_playlists_to_tree(raw)
+    return raw
+
+
+def _playlist_membership_score(playlists: list) -> tuple[int, int]:
+    from unified_model import iter_playlist_entries
+
+    lists = 0
+    tracks = 0
+    for _label, pl in iter_playlist_entries(playlists):
+        count = len(pl.track_ids or [])
+        if count:
+            lists += 1
+            tracks += count
+    return (tracks, lists)
+
+
+def serato_subcrate_roots() -> list[tuple[Path, str]]:
+    """Foldery _Serato_ z Subcrates i root dysku, do którego odnoszą się ścieżki."""
+    found: list[tuple[Path, str]] = []
+    home = Path.home() / "Music" / "_Serato_"
+    if (home / "Subcrates").is_dir():
+        found.append((home, "/"))
+    volumes = Path("/Volumes")
+    if volumes.is_dir():
+        for vol in volumes.iterdir():
+            if not vol.is_dir():
+                continue
+            if vol.name in {"Macintosh HD", "Macintosh HD - Data"}:
+                continue
+            base = vol / "_Serato_"
+            if (base / "Subcrates").is_dir():
+                found.append((base, str(vol)))
+    return found
+
+
+def load_flat_subcrates(base: Path, drive_root: str) -> list:
+    """Płaskie playlisty z nazwami Folder%%Lista, tak jak pliki .crate."""
+    sub = base / "Subcrates"
+    if not sub.is_dir():
+        return []
+    out = []
+    for crate in sorted(sub.glob("*.crate")):
+        try:
+            playlist = load_serato_crate(crate.read_bytes(), crate.stem, drive_root=drive_root)
+        except Exception:
+            continue
+        out.append(playlist)
+    return out
+
+
+def _retarget_playlist_paths(playlists: list, tracks: list) -> None:
+    """Ścieżki z .crate dopina do utworów z bazy, żeby Key w XML był tym samym Location."""
+    from vdjfolder import normalize_path
+
+    tails: dict[str, Optional[str]] = {}
+
+    def add(key: str, path: str) -> None:
+        if not key:
+            return
+        folded = key.casefold()
+        previous = tails.get(folded, path)
+        tails[folded] = path if previous == path else None
+
+    for track in tracks or []:
+        raw = normalize_path(track.path)
+        if not raw:
+            continue
+        add(raw, raw)
+        add(raw.lstrip("/"), raw)
+        parts = [part for part in raw.split("/") if part]
+        for index in range(len(parts)):
+            add("/".join(parts[index:]), raw)
+
+    def resolve(path: str) -> str:
+        key = normalize_path(path)
+        if not key:
+            return ""
+        for candidate in (key, key.lstrip("/")):
+            hit = tails.get(candidate.casefold())
+            if hit:
+                return hit
+        return ""
+
+    def walk(nodes: list) -> None:
+        for pl in nodes or []:
+            kept: list[str] = []
+            seen: set[str] = set()
+            for path in pl.track_ids or []:
+                hit = resolve(path)
+                if hit and hit not in seen:
+                    seen.add(hit)
+                    kept.append(hit)
+            pl.track_ids = kept
+            walk(pl.children or [])
+
+    walk(playlists)
+
+
+def overlay_disk_subcrates(
+    db: UnifiedDatabase,
+    roots: Optional[list] = None,
+) -> tuple[UnifiedDatabase, str]:
+    """Gdy SQLite ma puste listy, weź drzewo z plików Subcrates.
+
+    Serato 4 trzyma w master.sqlite często tylko wierzch (automix, sylwester…).
+    Setki list i ich utwory są w ~/Music/_Serato_/Subcrates jako Folder%%Lista.crate.
+    """
+    current = _playlist_membership_score(db.playlists or [])
+    flat = []
+    for base, drive_root in (roots if roots is not None else serato_subcrate_roots()):
+        flat.extend(load_flat_subcrates(Path(base), drive_root))
+    if not flat:
+        return db, ""
+    tree = serato_flat_playlists_to_tree(flat)
+    _retarget_playlist_paths(tree, db.tracks or [])
+    score = _playlist_membership_score(tree)
+    if score <= current or score[0] == 0:
+        return db, ""
+    db.playlists = tree
+    return db, (
+        f" Drzewo wzięte z Subcrates: {score[1]} list z utworami, {score[0]} pozycji."
+    )
 
 
 def prepare_serato_unified_for_engine(
@@ -2505,7 +2969,7 @@ def merge_tidal_streaming_paths_into_serato_database(
     bak = Path(str(db_file) + f".pre-merge-tidal-streaming-{stamp}.bak")
     bak.write_bytes(raw)
     merged = _append_otrks_to_database(raw, new_payloads)
-    db_file.write_bytes(merged)
+    commit_database_v2(db_file, merged)
     result["backup"] = str(bak)
     return result
 
@@ -3002,6 +3466,14 @@ def install_serato_playlists_from_tree(
             prepared_entries,
             dry_run=False,
         )
+        try:
+            from serato_library_sqlite import refresh_library_tags_from_songs
+
+            merge_stats["library_tags"] = refresh_library_tags_from_songs(
+                songs, local_paths
+            )
+        except Exception as e:
+            merge_stats["library_tags"] = {"ok": False, "error": str(e)}
         merge_stats["local_root_sqlite"] = root_stats
         merge_stats["local_root_links"] = root_stats.get("links_added", 0)
         merge_stats["local_root_master_links"] = root_stats.get("master_links", 0)

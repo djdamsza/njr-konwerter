@@ -86,6 +86,18 @@ class TestResolveSeratoLibraryDir(unittest.TestCase):
             for p in (music, serato, db_file):
                 db = load_serato_folder(p)
                 self.assertEqual(len(db.tracks), 1, msg=str(p))
+                self.assertEqual(db.tracks[0].path, "/Users/a/t.mp3")
+
+    def test_relative_users_path_is_from_disk_root_not_music(self):
+        import tempfile
+        from serato_parser import load_serato_folder
+        with tempfile.TemporaryDirectory() as td:
+            music = Path(td) / "Music"
+            serato = music / "_Serato_"
+            serato.mkdir(parents=True)
+            (serato / "database V2").write_bytes(_db(_otrk("Users/a/Desktop/t.mp3")))
+            db = load_serato_folder(serato)
+            self.assertEqual(db.tracks[0].path, "/Users/a/Desktop/t.mp3")
 
 
 class TestSeratoPathIdentity(unittest.TestCase):

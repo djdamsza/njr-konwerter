@@ -2,7 +2,7 @@
 Tidal OAuth – Authorization Code flow (PKCE).
 Oficjalne API Tidal nie obsługuje Device Code – wymaga Authorization Code.
 Używa openapi.tidal.com / api.tidalhifi.com z Bearer token.
-Wymaga kluczy z developer.tidal.com w ~/.config/njr/tidal-credentials.json
+Klucze aplikacji Tidal są w programie. Użytkownik loguje się tylko na swoje konto Tidal.
 """
 from __future__ import annotations
 
@@ -25,23 +25,41 @@ TIDAL_OAUTH_SCOPE = "user.read playlists.read"
 _PENDING_AUTH_TTL_SEC = 600
 
 
+def _credential_files() -> list[Path]:
+    """Najpierw plik użytkownika, potem klucze włożone w program."""
+    paths = [Path.home() / ".config" / "njr" / "tidal-credentials.json"]
+    meipass = getattr(__import__("sys"), "_MEIPASS", None)
+    if meipass:
+        paths.append(Path(meipass) / "tidal-credentials.json")
+    paths.append(Path(__file__).resolve().parent / "tidal-credentials.json")
+    return paths
+
+
+def _pair_from_file(path: Path) -> tuple[str, str]:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    cid = data.get("client_id") or ""
+    csec = data.get("client_secret") or ""
+    if not isinstance(cid, str) or not isinstance(csec, str):
+        return "", ""
+    return cid.strip(), csec.strip()
+
+
 def _load_credentials() -> tuple[str, str]:
-    """Zwraca (client_id, client_secret). Priorytet: env > plik. Brak domyślnych – wymagane developer.tidal.com."""
+    """Zwraca (client_id, client_secret). Kolejność: env, plik użytkownika, plik w programie."""
     cid = os.environ.get("TIDAL_CLIENT_ID", "").strip()
     csec = os.environ.get("TIDAL_CLIENT_SECRET", "").strip()
     if cid and csec:
         return cid, csec
-    p = Path.home() / ".config" / "njr" / "tidal-credentials.json"
-    if p.exists():
-        try:
-            with open(p, encoding="utf-8") as f:
-                d = json.load(f)
-            cid = (d.get("client_id") or "").strip()
-            csec = (d.get("client_secret") or "").strip()
-            if cid and csec:
-                return cid, csec
-        except Exception:
-            pass
+    for path in _credential_files():
+        cid, csec = _pair_from_file(path)
+        if cid and csec:
+            return cid, csec
     return "", ""
 
 
@@ -202,7 +220,7 @@ def get_authorize_url(redirect_uri: str) -> tuple[Optional[str], Optional[str], 
     """
     cid, csec = _load_credentials()
     if not cid or not csec:
-        return None, None, None, "Brak kluczy Tidal. Utwórz ~/.config/njr/tidal-credentials.json z client_id i client_secret z developer.tidal.com"
+        return None, None, None, "Połączenie z Tidal nie jest włączone w tej wersji programu."
     verifier, challenge = _pkce_verifier_challenge()
     state = secrets.token_urlsafe(16)
     params = {
@@ -224,7 +242,7 @@ def exchange_code_for_token(code: str, code_verifier: str, redirect_uri: str) ->
     """
     cid, csec = _load_credentials()
     if not cid or not csec:
-        return False, "Brak kluczy Tidal"
+        return False, "Połączenie z Tidal nie jest włączone w tej wersji programu."
     try:
         data = urllib.parse.urlencode({
             "grant_type": "authorization_code",

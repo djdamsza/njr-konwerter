@@ -1069,6 +1069,73 @@ def enrich_tracks_with_serato_markers2(
     return stats
 
 
+def export_markers_already_in_file(track: Track, path: str) -> bool:
+    """True, gdy plik ma już dokładnie te bajty cue, które zapisze eksport."""
+    file_path = Path(path or "")
+    if not file_path.is_file():
+        return False
+    ext = file_path.suffix.lower()
+    if ext not in _SUPPORTED_EXT:
+        return False
+    try:
+        markers_u = encode_serato_markers_underscore(track.cue_points, track.loops)
+        markers2 = encode_markers2_id3(track.cue_points)
+        markers_mp4 = encode_serato_markers_mp4(track.cue_points, track.loops)
+    except Exception:
+        return False
+    try:
+        if ext == ".mp3":
+            from mutagen.id3 import ID3, ID3NoHeaderError
+
+            try:
+                tags = ID3(str(file_path))
+            except ID3NoHeaderError:
+                return False
+            geob2 = tags.get("GEOB:Serato Markers2")
+            geob_u = tags.get("GEOB:Serato Markers_")
+            if geob2 is None or geob_u is None:
+                return False
+            return bytes(geob2.data) == markers2 and bytes(geob_u.data) == markers_u
+
+        if ext in (".aiff", ".aif", ".wav"):
+            from mutagen.aiff import AIFF
+            from mutagen.wave import WAVE
+
+            audio = AIFF(str(file_path)) if ext != ".wav" else WAVE(str(file_path))
+            if not audio.tags:
+                return False
+            geob2 = audio.tags.get("GEOB:Serato Markers2")
+            geob_u = audio.tags.get("GEOB:Serato Markers_")
+            if geob2 is None or geob_u is None:
+                return False
+            return bytes(geob2.data) == markers2 and bytes(geob_u.data) == markers_u
+
+        if ext == ".flac":
+            from mutagen.flac import FLAC
+
+            audio = FLAC(str(file_path))
+            vals = audio.get("SERATO_MARKERS_V2") or []
+            if not vals:
+                return False
+            inner = encode_markers2_flac_inner(track.cue_points)
+            return str(vals[0]) == base64.b64encode(inner).decode("ascii")
+
+        if ext in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4
+
+            audio = MP4(str(file_path))
+            markers_key = "----:com.serato.dj:markers"
+            markers2_key = "----:com.serato.dj:markersv2"
+            if markers_key not in audio or markers2_key not in audio:
+                return False
+            want_u = _mp4_serato_atom_payload("Serato Markers_", markers_mp4, with_newlines=True)
+            want2 = _mp4_serato_atom_payload("Serato Markers2", markers2, with_newlines=True)
+            return bytes(audio[markers_key][0]) == want_u and bytes(audio[markers2_key][0]) == want2
+    except Exception:
+        return False
+    return False
+
+
 def write_serato_markers2_to_file(
     track: Track,
     path: Optional[str] = None,
@@ -1100,6 +1167,9 @@ def write_serato_markers2_to_file(
     ext = file_path.suffix.lower()
     if ext not in _SUPPORTED_EXT:
         return False, f"Format nieobsługiwany: {ext}"
+
+    if skip_unchanged and export_markers_already_in_file(track, str(file_path)):
+        return False, "UNCHANGED"
 
     if skip_unchanged:
         wanted_cues = cue_points_signature(track.cue_points)
@@ -1252,6 +1322,11 @@ def write_serato_markers2_batch(
             return path, False, str(e)
 
     done = 0
+    if progress_cb:
+        try:
+            progress_cb(0, total, 0, 0)
+        except Exception:
+            pass
     with ThreadPoolExecutor(max_workers=max(1, min(workers, 12))) as ex:
         futs = [ex.submit(_one, t) for t in tracks]
         for fut in as_completed(futs):
@@ -1273,7 +1348,7 @@ def write_serato_markers2_batch(
                 failed += 1
                 if len(errors) < 80:
                     errors.append(f"{Path(path).name}: {msg}")
-            if progress_cb and (done % 50 == 0 or done == total):
+            if progress_cb:
                 try:
                     progress_cb(done, total, written, unchanged)
                 except Exception:

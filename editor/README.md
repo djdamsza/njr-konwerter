@@ -29,7 +29,7 @@ python3 app.py
 **Binarka** (po `./scripts/build-local.sh` z korzenia repo):
 
 ```bash
-./releases/NJR-konwerter-1.0.0
+./releases/Imprezja-Playlist-Pro-1.0.14-macos-arm64.dmg
 ```
 
 Następnie otwórz w przeglądarce adres z terminala (domyślnie **http://127.0.0.1:5050**).

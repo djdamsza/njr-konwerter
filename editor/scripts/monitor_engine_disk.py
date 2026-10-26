@@ -135,10 +135,8 @@ def sample(
     stems_n, stems_b = _stems_stats(stems_dir)
     mdb = mac_engine / "Database2" / "m.db"
     mdb_b = mdb.stat().st_size if mdb.is_file() else 0
-    prime = (
-        Path.home()
-        / "Library/Application Support/AIR Music Technology/EnginePrime"
-    )
+    from platform_paths import engine_prime_dir
+    prime = engine_prime_dir()
     snaps = _tm_snapshot_dates()
     cache_gb = float(scan.get("cache_gb") or 0)
     used_vs_start = None

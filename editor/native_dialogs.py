@@ -22,9 +22,9 @@ def pick_folder_native() -> Optional[str]:
             return None
         if sys_name == 'Windows':
             r = subprocess.run(
-                ['powershell', '-NoProfile', '-Command',
-                 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "Wybierz folder z muzyką"; if ($f.ShowDialog() -eq "OK") { $f.SelectedPath }'],
-                capture_output=True, text=True, timeout=60
+                ['powershell', '-STA', '-NoProfile', '-Command',
+                 'Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = "Wybierz folder z muzyką"; $f.ShowNewFolderButton = $true; if ($f.ShowDialog() -eq "OK") { $f.SelectedPath }'],
+                capture_output=True, text=True, timeout=120
             )
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip()
@@ -62,7 +62,7 @@ def pick_open_path_native() -> Optional[str]:
         if sys_name == 'Darwin':
             r = subprocess.run(
                 ['osascript', '-e',
-                 'return POSIX path of (choose file with prompt "Otwórz bazę DJ (ZIP, XML, m.db, nml, database V2)")'],
+                 'return POSIX path of (choose file with prompt "Otwórz bazę DJ. Serato: wystarczy jeden z trzech ZIP-ów master/root/tidal z tej samej kopii")'],
                 capture_output=True, text=True, timeout=120
             )
             if r.returncode == 0 and r.stdout.strip():
@@ -70,7 +70,7 @@ def pick_open_path_native() -> Optional[str]:
             return None
         if sys_name == 'Windows':
             r = subprocess.run(
-                ['powershell', '-NoProfile', '-Command',
+                ['powershell', '-STA', '-NoProfile', '-Command',
                  'Add-Type -AssemblyName System.Windows.Forms; '
                  '$d = New-Object System.Windows.Forms.OpenFileDialog; '
                  '$d.Title = "Otworz baze DJ"; '

@@ -21,7 +21,8 @@ VDJ_LINKI = (
 
 def _count_sqlite_assets(stem: str) -> dict:
     out: dict[str, int] = {}
-    lib = Path.home() / "Library/Application Support/Serato/Library"
+    from platform_paths import serato_sqlite_dir
+    lib = serato_sqlite_dir()
     leaf = stem.split("%%")[-1]
     for name in ("root.sqlite", "tidal.sqlite"):
         db = lib / name
@@ -72,9 +73,10 @@ def main() -> int:
         print(json.dumps({"ok": False, "errors": errors}, indent=2))
         return 1
 
+    from platform_paths import vdj_root
     rows = parse_vdj_library_html_export(HTML_PATH)
     songs, version = load_database(
-        Path.home() / "Library/Application Support/VirtualDJ/database.xml"
+        vdj_root() / "database.xml"
     )
     subs, sub_stats = build_serato_offline_substitutes(songs)
     paths, match_stats = match_html_rows_to_local_paths(

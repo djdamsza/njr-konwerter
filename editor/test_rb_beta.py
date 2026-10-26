@@ -1,6 +1,7 @@
 """Testy RB Beta — skan folderów, duplikaty, wersje."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -15,11 +16,19 @@ class TestRbBeta(unittest.TestCase):
     def setUp(self):
         st.reset_session()
         self.tmp = tempfile.mkdtemp(prefix='njr_rb_beta_')
+        self.account = tempfile.mkdtemp(prefix='njr_account_')
+        os.environ["NJR_ACCOUNT_DIR"] = self.account
+        (Path(self.account) / "account-session.json").write_text(
+            json.dumps({"deviceToken": "test-device", "email": "test@example.com"}),
+            encoding="utf-8",
+        )
         self.client = app.test_client()
 
     def tearDown(self):
         st.reset_session()
         shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.account, ignore_errors=True)
+        os.environ.pop("NJR_ACCOUNT_DIR", None)
 
     def _write_mp3_stub(self, path: Path, content: bytes) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

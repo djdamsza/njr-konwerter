@@ -19,6 +19,66 @@ class TestSeratoTidalStreamingPaths(unittest.TestCase):
         self.assertTrue(is_serato_tidal_path("streaming://tidal/1"))
         self.assertTrue(is_serato_tidal_path("tidal:tracks:1"))
 
+    def test_tidal_becomes_vdj_netsearch(self):
+        from vdj_streaming import to_vdj_path
+        from vdjfolder import create_vdjfolder_playlist
+
+        self.assertEqual(to_vdj_path("streaming://tidal/159123843"), "netsearch://td159123843")
+        self.assertEqual(to_vdj_path("netsearch://td159123843"), "netsearch://td159123843")
+        self.assertEqual(to_vdj_path("/Users/test/Music/a.mp3"), "/Users/test/Music/a.mp3")
+        xml = create_vdjfolder_playlist(["streaming://tidal/159123843"], "Techno")
+        self.assertIn('path="netsearch://td159123843"', xml)
+        self.assertIn('netsearchId="td159123843"', xml)
+
+    def test_playlist_tree_label_and_rel_match(self):
+        from vdjfolder import playlist_tree_label, vdj_rel_matches
+
+        self.assertEqual(
+            playlist_tree_label("MyLists/gatunki/Techno.vdjfolder", "Techno"),
+            "gatunki / Techno",
+        )
+        self.assertTrue(vdj_rel_matches("MyLists/techniawka.vdjfolder", "MyLists/techniawka.vdjfolder"))
+        self.assertTrue(vdj_rel_matches("MyLists/techniawka.vdjfolder", "techniawka"))
+        self.assertFalse(
+            vdj_rel_matches("MyLists/VDJ.subfolders/MyLists.subfolders/techniawka.vdjfolder", "MyLists/techniawka.vdjfolder")
+        )
+        from vdjfolder import is_export_artifact
+        self.assertTrue(is_export_artifact("MyLists/VDJ.subfolders/MyLists.subfolders/techniawka.vdjfolder"))
+        self.assertFalse(is_export_artifact("MyLists/techniawka.vdjfolder"))
+
+    def test_rekordbox_keeps_disk_and_tidal(self):
+        import os
+        import tempfile
+        from unified_model import Playlist, Track, UnifiedDatabase
+        from rb_generator import generate_rb_xml
+        from vdj_streaming import vdj_to_rb_location
+
+        self.assertEqual(
+            vdj_to_rb_location("streaming://tidal/159123843"),
+            "file://localhosttidal:tracks:159123843",
+        )
+        self.assertEqual(
+            vdj_to_rb_location("netsearch://td159123843"),
+            "file://localhosttidal:tracks:159123843",
+        )
+        fd, name = tempfile.mkstemp(suffix=".mp3")
+        os.write(fd, b"ID3")
+        os.close(fd)
+        try:
+            db = UnifiedDatabase(
+                tracks=[
+                    Track(path=name, title="Z dysku", artist="A"),
+                    Track(path="streaming://tidal/159123843", title="Z Tidal", artist="B"),
+                ],
+                playlists=[Playlist(name="Set", track_ids=[name, "streaming://tidal/159123843"])],
+            )
+            xml = generate_rb_xml(db).decode("utf-8")
+            self.assertIn("file://localhosttidal:tracks:159123843", xml)
+            self.assertIn("Z dysku", xml)
+            self.assertEqual(xml.count("file://localhosttidal:tracks:159123843"), 2)
+        finally:
+            os.unlink(name)
+
     def test_crate_stem_to_parts(self):
         from serato_library_sqlite import _crate_stem_to_parts
 

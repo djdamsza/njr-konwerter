@@ -346,9 +346,11 @@ def track_to_engine_json(
     music_path_occupied: Optional[set[str]] = None,
     music_source_to_rel: Optional[dict[str, str]] = None,
     patriot_path_index: Optional[dict[str, list[dict]]] = None,
+    existing_by_source: Optional[dict[str, str]] = None,
 ) -> Optional[dict]:
     from engine_music_paths import (
         ensure_music_symlink,
+        index_engine_music_by_source,
         music_rel_for_export,
         resolve_local_file,
     )
@@ -368,6 +370,8 @@ def track_to_engine_json(
         if cached:
             rel = cached
         else:
+            if existing_by_source is None:
+                existing_by_source = index_engine_music_by_source(engine_dir)
             rel = music_rel_for_export(
                 engine_dir,
                 artist=track.artist or "",
@@ -377,6 +381,7 @@ def track_to_engine_json(
                 file_bytes=file_bytes,
                 occupied=occupied,
                 pat_index=patriot_path_index,
+                existing_by_source=existing_by_source,
             )
             if music_source_to_rel is not None:
                 music_source_to_rel[source_key] = rel
@@ -432,29 +437,38 @@ def _resolve_playlist_track_paths(
     music_path_occupied: Optional[set[str]] = None,
     music_source_to_rel: Optional[dict[str, str]] = None,
     patriot_path_index: Optional[dict[str, list[dict]]] = None,
+    source_path_to_rel: Optional[dict[str, str]] = None,
+    existing_by_source: Optional[dict[str, str]] = None,
 ) -> list[str]:
     paths: list[str] = []
-    for tid in track_ids:
-        tmatch = next((x for x in db.tracks if x.path == tid), None)
-        if tmatch:
-            row = track_to_engine_json(
-                tmatch,
-                engine_dir=engine_dir,
-                library_root=library_root,
-                path_replace=path_replace,
-                engine_music_layout=engine_music_layout,
-                music_path_occupied=music_path_occupied,
-                music_source_to_rel=music_source_to_rel,
-                patriot_path_index=patriot_path_index,
-            )
-            if row:
-                paths.append(row["relative_path"])
-        else:
-            ap = _apply_path_replace(tid, path_replace)
-            if _is_engine_exportable_path(ap):
-                rel = _to_relative_path(ap, engine_dir=engine_dir, library_root=library_root)
-                if rel in path_set:
-                    paths.append(rel)
+    if source_path_to_rel is not None:
+        for tid in track_ids:
+            rel = source_path_to_rel.get(tid)
+            if rel:
+                paths.append(rel)
+    else:
+        for tid in track_ids:
+            tmatch = next((x for x in db.tracks if x.path == tid), None)
+            if tmatch:
+                row = track_to_engine_json(
+                    tmatch,
+                    engine_dir=engine_dir,
+                    library_root=library_root,
+                    path_replace=path_replace,
+                    engine_music_layout=engine_music_layout,
+                    music_path_occupied=music_path_occupied,
+                    music_source_to_rel=music_source_to_rel,
+                    patriot_path_index=patriot_path_index,
+                    existing_by_source=existing_by_source,
+                )
+                if row:
+                    paths.append(row["relative_path"])
+            else:
+                ap = _apply_path_replace(tid, path_replace)
+                if _is_engine_exportable_path(ap):
+                    rel = _to_relative_path(ap, engine_dir=engine_dir, library_root=library_root)
+                    if rel in path_set:
+                        paths.append(rel)
     deduped: list[str] = []
     seen: set[str] = set()
     for rel in paths:
@@ -476,6 +490,8 @@ def _playlist_to_engine_json(
     music_path_occupied: Optional[set[str]] = None,
     music_source_to_rel: Optional[dict[str, str]] = None,
     patriot_path_index: Optional[dict[str, list[dict]]] = None,
+    source_path_to_rel: Optional[dict[str, str]] = None,
+    existing_by_source: Optional[dict[str, str]] = None,
 ) -> Optional[dict]:
     children_json: list[dict] = []
     for child in pl.children or []:
@@ -490,6 +506,8 @@ def _playlist_to_engine_json(
             music_path_occupied=music_path_occupied,
             music_source_to_rel=music_source_to_rel,
             patriot_path_index=patriot_path_index,
+            source_path_to_rel=source_path_to_rel,
+            existing_by_source=existing_by_source,
         )
         if row:
             children_json.append(row)
@@ -505,6 +523,8 @@ def _playlist_to_engine_json(
         music_path_occupied=music_path_occupied,
         music_source_to_rel=music_source_to_rel,
         patriot_path_index=patriot_path_index,
+        source_path_to_rel=source_path_to_rel,
+        existing_by_source=existing_by_source,
     )
 
     if not track_paths and not children_json:
@@ -540,13 +560,20 @@ def unified_to_engine_export_doc(
     path_set: set[str] = set()
     music_path_occupied: set[str] = set()
     music_source_to_rel: dict[str, str] = {}
+    source_path_to_rel: dict[str, str] = {}
     tracks_skipped = 0
+    existing_by_source: dict[str, str] = {}
+    if engine_music_layout and engine_dir:
+        from engine_music_paths import index_engine_music_by_source
+
+        existing_by_source = index_engine_music_by_source(engine_dir)
 
     if engine_music_layout and patriot_path_index is None:
-        from engine_stems import DEFAULT_PATRIOT_ENGINE, index_tracks_by_filename, patriot_engine_available
+        from engine_stems import index_tracks_by_filename, patriot_engine_available, resolve_patriot_dir
 
-        if patriot_engine_available(DEFAULT_PATRIOT_ENGINE):
-            patriot_path_index = index_tracks_by_filename(DEFAULT_PATRIOT_ENGINE)
+        patriot_dir = resolve_patriot_dir(None)
+        if patriot_dir is not None and patriot_engine_available(patriot_dir):
+            patriot_path_index = index_tracks_by_filename(patriot_dir)
 
     for t in db.tracks:
         row = track_to_engine_json(
@@ -558,12 +585,14 @@ def unified_to_engine_export_doc(
             music_path_occupied=music_path_occupied,
             music_source_to_rel=music_source_to_rel,
             patriot_path_index=patriot_path_index,
+            existing_by_source=existing_by_source,
         )
         if not row:
             if t.path and not str(t.path).startswith("netsearch:"):
                 tracks_skipped += 1
             continue
         rel = row["relative_path"]
+        source_path_to_rel.setdefault(t.path, rel)
         if rel in path_set:
             continue
         path_set.add(rel)
@@ -582,6 +611,8 @@ def unified_to_engine_export_doc(
             music_path_occupied=music_path_occupied,
             music_source_to_rel=music_source_to_rel,
             patriot_path_index=patriot_path_index,
+            source_path_to_rel=source_path_to_rel,
+            existing_by_source=existing_by_source,
         )
         if row:
             playlists_json.append(row)

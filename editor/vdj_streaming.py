@@ -130,6 +130,19 @@ def vdj_to_rb_location(path: str) -> Optional[str]:
     return None
 
 
+def to_vdj_path(path: str) -> str:
+    """
+    Tidal w formacie VirtualDJ: netsearch://tdID.
+    Serato trzyma streaming://tidal/ID, Rekordbox file://localhosttidal:tracks:ID.
+    Zwykła ścieżka pliku wraca bez zmian.
+    """
+    raw = (path or "").strip()
+    tid = extract_tidal_id(raw)
+    if not tid:
+        return raw
+    return f"netsearch://td{tid}"
+
+
 def vdj_to_serato_tidal_path(path: str) -> Optional[str]:
     """
     VDJ td123 / netsearch://td123 → ścieżka streamingu Serato Library.

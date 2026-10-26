@@ -20,7 +20,7 @@ import json, re, sys, urllib.error, urllib.request
 
 repo, tag, keep, token = sys.argv[1:5]
 keep = int(keep)
-pat = re.compile(r"NJR-konwerter-(\d+\.\d+\.\d+)-")
+pat = re.compile(r"Imprezja-Playlist-Pro-(\d+\.\d+\.\d+)-")
 
 headers = {
     "Authorization": f"Bearer {token}",

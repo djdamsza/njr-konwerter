@@ -106,6 +106,32 @@ class TestWriteMarkers2Mp3(unittest.TestCase):
             loaded2 = ID3(str(path))
             self.assertIsNotNone(loaded2.get("GEOB:Serato Markers_"))
 
+    def test_file_cues_become_vdj_points(self):
+        from serato_markers import enrich_tracks_with_serato_markers2
+        from unified_model import UnifiedDatabase
+        from vdj_adapter import unified_to_vdj_songs
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "cue.mp3"
+            ID3().save(str(path))
+            seeded = Track(
+                path=str(path),
+                title="Test",
+                cue_points=[CuePoint(name="Intro", pos=5.25, num=1)],
+            )
+            ok, msg = write_serato_markers2_to_file(seeded, skip_unchanged=False)
+            self.assertTrue(ok, msg)
+
+            loaded = Track(path=str(path), title="Test", artist="DJ")
+            stats = enrich_tracks_with_serato_markers2([loaded])
+            self.assertEqual(stats["with_cues"], 1)
+            self.assertEqual(loaded.cue_points[0].name, "Intro")
+
+            songs = unified_to_vdj_songs(UnifiedDatabase(tracks=[loaded]))
+            xml = " ".join(songs[0]["_children_xml"])
+            self.assertIn('Type="cue"', xml)
+            self.assertIn('Name="Intro"', xml)
+
     def test_no_markers_skipped(self):
         track = Track(path="/tmp/x.mp3", cue_points=[], loops=[])
         ok, msg = write_serato_markers2_to_file(track)

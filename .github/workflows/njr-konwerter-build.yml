@@ -188,13 +188,13 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd "$NJR_DIR"
-          ./dist/NJR-konwerter.exe --smoke-test
+          "./dist/Imprezja Playlist Pro.exe" --smoke-test
 
       - name: Smoke test (macOS — numpy / importy)
         if: runner.os == 'macOS'
         run: |
           cd "$NJR_DIR"
-          BIN="./dist/NJR Konwerter.app/Contents/MacOS/NJR-konwerter"
+          BIN="./dist/Imprezja Playlist Pro.app/Contents/MacOS/Imprezja Playlist Pro"
           test -x "$BIN"
           "$BIN" --smoke-test
 
@@ -235,10 +235,10 @@ jobs:
         run: |
           mkdir -p _upload
           if [ "${{ runner.os }}" = "Windows" ]; then
-            test -f "$NJR_DIR/dist/NJR-konwerter.exe"
-            cp "$NJR_DIR/dist/NJR-konwerter.exe" "_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.exe"
+            test -f "$NJR_DIR/dist/Imprezja Playlist Pro.exe"
+            cp "$NJR_DIR/dist/Imprezja Playlist Pro.exe" "_upload/Imprezja-Playlist-Pro-${VERSION}-${{ matrix.asset_suffix }}.exe"
           else
-            APP="$NJR_DIR/dist/NJR Konwerter.app"
+            APP="$NJR_DIR/dist/Imprezja Playlist Pro.app"
             if [ ! -d "$APP" ]; then
               echo "::error::Brak $APP — oczekiwano bundle .app z PyInstaller (macOS)."
               exit 1
@@ -246,11 +246,11 @@ jobs:
             STAGING="_dmg_root"
             rm -rf "$STAGING"
             mkdir -p "$STAGING"
-            cp -R "$APP" "$STAGING/NJR Konwerter.app"
+            cp -R "$APP" "$STAGING/Imprezja Playlist Pro.app"
             INSTALLER="$GITHUB_WORKSPACE/scripts/macos/Instaluj-NJR-Konwerter.command"
             if [ -f "$INSTALLER" ]; then
-              cp "$INSTALLER" "$STAGING/Instaluj NJR Konwerter.command"
-              chmod +x "$STAGING/Instaluj NJR Konwerter.command"
+              cp "$INSTALLER" "$STAGING/Instaluj Imprezja Playlist Pro.command"
+              chmod +x "$STAGING/Instaluj Imprezja Playlist Pro.command"
             fi
             ln -sf /Applications "$STAGING/Applications"
             ENT="$GITHUB_WORKSPACE/.github/macos-entitlements.plist"
@@ -258,10 +258,10 @@ jobs:
               codesign --force --deep --timestamp --options runtime \
                 --entitlements "$ENT" \
                 --sign "$SIGN_ID" \
-                "$STAGING/NJR Konwerter.app"
+                "$STAGING/Imprezja Playlist Pro.app"
             fi
-            DMG="_upload/NJR-konwerter-${VERSION}-${{ matrix.asset_suffix }}.dmg"
-            hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+            DMG="_upload/Imprezja-Playlist-Pro-${VERSION}-${{ matrix.asset_suffix }}.dmg"
+            hdiutil create -volname "Imprezja Playlist Pro" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
             rm -rf "$STAGING"
             if [ "${{ steps.macsign.outputs.enabled }}" = "true" ] && [ -n "$SIGN_ID" ]; then
               codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
@@ -383,7 +383,7 @@ jobs:
           tag = os.environ["RELEASE_TAG"]
           version = os.environ["BUILD_VERSION"]
           token = os.environ["GH_TOKEN"]
-          pat = re.compile(rf"NJR-konwerter-{re.escape(version)}-")
+          pat = re.compile(rf"Imprezja-Playlist-Pro-{re.escape(version)}-")
 
           req = urllib.request.Request(
               f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
@@ -427,7 +427,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
-          name: NJR Konwerter
+          name: Imprezja Playlist Pro
           draft: false
           body_path: release-notes.md
           fail_on_unmatched_files: false

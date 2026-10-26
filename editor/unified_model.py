@@ -65,6 +65,45 @@ class Playlist:
     filter_text: str = ""  # VDJ filter list → Engine Smartlist (gdy ustawione)
 
 
+def iter_playlist_entries(playlists: list, prefix: tuple[str, ...] = ()):
+    """
+    Każda lista z utworami, także głęboko w folderach.
+    Etykieta to ścieżka „Folder / Lista”. Gdy folder ma własną listę utworów
+    o tej samej nazwie, etykieta zostaje przy nazwie folderu.
+    """
+    for pl in playlists or []:
+        if pl.is_folder:
+            yield from iter_playlist_entries(pl.children, prefix + (pl.name,))
+            continue
+        parts = prefix
+        if not parts or parts[-1] != pl.name:
+            parts = parts + (pl.name,)
+        yield " / ".join(parts), pl
+
+
+def empty_leaf_names(playlists: list) -> list[str]:
+    """Puste listy z utworami. Folder, który trzyma inne listy, nie wchodzi."""
+    names = []
+
+    def walk(nodes) -> None:
+        for pl in nodes or []:
+            if getattr(pl, "is_folder", False) or getattr(pl, "children", None):
+                walk(getattr(pl, "children", None))
+                continue
+            if getattr(pl, "filter_text", ""):
+                continue
+            if not getattr(pl, "track_ids", None):
+                names.append(pl.name)
+
+    walk(playlists)
+    return names
+
+
+def count_playlist_entries(playlists: list) -> int:
+    """Liczba list z utworami w całym drzewie, nie tylko na pierwszym poziomie."""
+    return sum(1 for _label, _pl in iter_playlist_entries(playlists))
+
+
 @dataclass
 class SmartPlaylist:
     """Playlista inteligentna – reguły filtrowania."""

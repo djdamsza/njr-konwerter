@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -56,6 +57,12 @@ def _vdj_xml(path: str) -> bytes:
 class TestLoadAndExport(unittest.TestCase):
     def setUp(self):
         st.reset_session()
+        self.account = tempfile.TemporaryDirectory()
+        os.environ["NJR_ACCOUNT_DIR"] = self.account.name
+        (Path(self.account.name) / "account-session.json").write_text(
+            json.dumps({"deviceToken": "test-device", "email": "test@example.com"}),
+            encoding="utf-8",
+        )
         self.client = app.test_client()
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -74,6 +81,8 @@ class TestLoadAndExport(unittest.TestCase):
     def tearDown(self):
         st.reset_session()
         self.tmp.cleanup()
+        self.account.cleanup()
+        os.environ.pop("NJR_ACCOUNT_DIR", None)
 
     def test_load_serato_file_folder_parent(self):
         for p in (self.db_file, self.serato_dir, self.music):

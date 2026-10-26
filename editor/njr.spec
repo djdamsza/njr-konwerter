@@ -16,6 +16,13 @@ try:
 except OSError:
     pass
 
+if platform.system() == 'Darwin':
+    _icon = 'static/brand/app-icon.icns'
+else:
+    _icon = 'static/brand/app-icon.ico'
+if not Path(_icon).is_file():
+    _icon = None
+
 _engine_bin = []
 for _cand in [
     Path('engine_bridge/build/njr-engine-export'),
@@ -58,6 +65,9 @@ hidden_imports = [
     'constants',
     'native_dialogs',
     'ssl_utils',
+    'platform_paths',
+    'normalize_advice',
+    'send2trash',
     'routes',
     'routes.meta',
     'routes.session',
@@ -75,6 +85,9 @@ hidden_imports = [
     'online_playlist_parser',
     'tkinter',
     'tkinter.filedialog',
+    'webview',
+    'webview.platforms.cocoa',
+    'webview.platforms.edgechromium',
     # numpy 2.x (pyrekordbox) — PyInstaller <6.14 pomija numpy._core._exceptions
     'numpy._core._exceptions',
     'numpy._core._multiarray_umath',
@@ -82,11 +95,20 @@ hidden_imports = [
     'numpy._core._dtype_ctypes',
 ]
 
+for _native in ('objc', 'Foundation', 'WebKit', 'AppKit', 'clr', 'pythonnet'):
+    try:
+        __import__(_native)
+    except Exception:
+        continue
+    hidden_imports.append(_native)
+
 _datas = [
     ('static', 'static'),
     ('../VERSION', '.'),
     ('scripts', 'scripts'),
 ]
+if Path('tidal-credentials.json').is_file():
+    _datas.append(('tidal-credentials.json', '.'))
 _binaries = list(_engine_bin)
 
 try:
@@ -94,6 +116,14 @@ try:
     _datas += _numpy_datas
     _binaries += _numpy_binaries
     hidden_imports += _numpy_hidden
+except Exception:
+    pass
+
+try:
+    _webview_datas, _webview_binaries, _webview_hidden = collect_all('webview')
+    _datas += _webview_datas
+    _binaries += _webview_binaries
+    hidden_imports += _webview_hidden
 except Exception:
     pass
 
@@ -130,7 +160,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='NJR-konwerter',
+    name='Imprezja Playlist Pro',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -138,25 +168,31 @@ exe = EXE(
     upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=platform.system() != 'Darwin',
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=_icon,
 )
 
 if platform.system() == 'Darwin':
     app = BUNDLE(
         exe,
-        name='NJR Konwerter.app',
-        icon=None,
+        name='Imprezja Playlist Pro.app',
+        icon=_icon,
         bundle_identifier='pl.djdamsza.njr-konwerter',
         info_plist={
             'CFBundleShortVersionString': _version,
             'CFBundleVersion': _version,
-            'CFBundleDisplayName': 'NJR Konwerter',
+            'CFBundleName': 'Imprezja Playlist Pro',
+            'CFBundleDisplayName': 'Imprezja Playlist Pro',
+            'LSApplicationCategoryType': 'public.app-category.entertainment',
             'NSHighResolutionCapable': True,
             'LSMinimumSystemVersion': '10.13',
+            'NSAppTransportSecurity': {
+                'NSAllowsLocalNetworking': True,
+            },
         },
     )

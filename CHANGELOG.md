@@ -4,6 +4,50 @@ Historia zmian. Na GitHub Releases (tag `1.0`) trzymane są **dwie ostatnie wers
 
 ---
 
+## 1.1.15 (2026-10-26)
+
+Okno aktualizacji pokaże się ludziom ze starszej wersji, gdy w panelu wtyczki będzie wersja 1.1.15 i komplet trzech plików: Windows, Mac Apple Silicon i Mac Intel.
+
+### Tidal i Pimp my list
+
+- Eksport CSV i TXT z listy niedostępnych utworów Tidal oraz z Pimp my list zapisuje plik do Pobranych. Okno programu zostaje na swoim miejscu.
+- Lista w zakładce Tidal przewija się razem ze stroną. Nagłówki kolumn zostają u góry.
+
+---
+
+## 1.1.14 (2026-10-25)
+
+Okno aktualizacji pokaże się ludziom ze starszej wersji, gdy w panelu wtyczki będzie wersja 1.1.14 i komplet trzech plików: Windows, Mac Apple Silicon i Mac Intel.
+
+### Logowanie Google
+
+- Na ekranie konta jest **Zaloguj przez Google**, obok e-maila i hasła.
+- To samo konto co na stronie, w quizie i w fotobudce. Program zapisuje tylko zgodę tej instalacji, nie hasło.
+- Konto Google, którego nie było w sklepie, powstaje od razu. Hasła do strony ten sposób nie ustawia. Jak będzie potrzebne na stronie, zostaje przypomnienie hasła.
+
+### Serato
+
+- Zapis list nie zostawia już pustego wpisu, który przy następnym starcie Serato kasuje artystę, tytuł, BPM i tonację. Utwór nie znika z wyszukiwania, choć plik leży na dysku.
+- Punkty cue zostają w pliku. Serato czyta je po wczytaniu utworu.
+- Plik znaleziony jako brakujący wskazuje na kopię, która się odtwarza. Nie powstaje druga, martwa pozycja obok starej ścieżki.
+- Kilka kopii tego samego pliku, także ze skrótu albo z kosza, składa się do tej, która gra. Program nie podpina pliku o innym tytule tylko dlatego, że nazwa jest podobna.
+- Przy scaleniu wygrywa wpis z artystą i tytułem, nie pusta ścieżka.
+- VirtualDJ, Engine DJ i Rekordbox tego czyszczenia tagów nie robią.
+
+### Konto w panelu klienta
+
+- Tokeny Playlist Pro są na koncie, nie na komputerze. Drugie konto zalogowane na tej samej instalacji dostaje własne saldo i nie przejmuje poprzedniego.
+- Na stronie konta widać jedno saldo konta. Komputery są tylko listą miejsc, z których to konto się loguje.
+- Zakup, kod na start i zużycie AI zmieniają saldo zalogowanego konta. Kod na start nadal jest raz na komputer.
+- Zakup nie dzieli tokenów na komputery. Cała paczka wchodzi na konto i działa na każdym komputerze tego e-maila.
+
+### Poza tym programem
+
+- Żeby Google i saldo na koncie działały, na stronie ma być wtyczka konta 1.9.22.
+- Nazwa „Moje Kursy” na stronie nie została zmieniona. Wejście do konta nadal jest osobną sprawą od kursów.
+
+---
+
 ## 1.0.13 (2026-09-21)
 
 ### Otwieranie bazy Serato

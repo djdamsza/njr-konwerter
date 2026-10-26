@@ -282,6 +282,8 @@ class TestRoundtripRBXML(unittest.TestCase):
             u1 = vdj_songs_to_unified(songs)
             rb_bytes = generate_rb_xml(u1)
             self.assertIn(b"COLLECTION", rb_bytes)
+            self.assertIn(b'Name="Intro"', rb_bytes)
+            self.assertIn(b'Num="0"', rb_bytes)
 
             rb_file = tmp_path / "export_rb.xml"
             rb_file.write_bytes(rb_bytes)

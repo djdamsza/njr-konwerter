@@ -10,11 +10,15 @@ Thumbs.db
 .vscode/
 *.log
 editor/build/
+editor/build-*/
 editor/dist/
+editor/dist-*/
 editor/__pycache__/
 editor/**/__pycache__/
 editor/.venv/
 editor/.venv-*/
+editor/.env
+editor/tidal-credentials.json
 editor/.pytest_cache/
 editor/logs/
 editor/engine_bridge/build/

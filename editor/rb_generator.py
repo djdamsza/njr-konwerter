@@ -3,6 +3,8 @@ Generator XML Rekordbox (File → Import).
 Tworzy rbxml.xml z UnifiedDatabase do importu w RB.
 """
 import os
+import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from io import BytesIO
 from pathlib import Path
@@ -57,7 +59,12 @@ def _read_file_meta(path: str) -> tuple[int, float, int, int]:
 
 
 def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
-    """Konwertuje ścieżkę na format Location RB (file://localhost/...)."""
+    """Location wg Pioneer XML i pyrekordbox.encode_path.
+
+    Specyfikacja: https://cdn.rekordbox.com/files/20200410160904/xml_format_list.pdf
+    Prefiks file://localhost/ jest wymagany. Kodowanie znaków jest takie, jak Rekordbox 7
+    sam zapisuje w eksporcie: spacja %20, & %26, przecinek i nawiasy bez zmian.
+    """
     if not path:
         return ""
     if path_replace:
@@ -78,13 +85,125 @@ def _path_to_location(path: str, path_replace: Optional[dict] = None) -> str:
         ":" in path and len(path) > 1 and path[1] != ":"
     ):
         return f"file://localhost{path}"
-    # Lokalny plik – ścieżka absolutna
-    if path.startswith("/"):
-        return "file://localhost" + quote(path, safe="/")
-    # Windows C:\...
-    if len(path) > 1 and path[1] == ":":
-        return "file://localhost/" + quote(path, safe="/")
-    return "file://localhost/" + quote(path, safe="/")
+    raw = path.replace("\\", "/")
+    # Rekordbox 7 zapisuje URI tak: spacja → %20, & → %26, przecinek i nawiasy zostają.
+    # To jest Location z własnego eksportu RB (xml4), nadal pod file://localhost/ ze specyfikacji.
+    quoted = quote(raw, safe="/(),")
+    if quoted.startswith("/"):
+        return "file://localhost" + quoted
+    return "file://localhost/" + quoted
+
+
+_JUNK_ARTIST = re.compile(
+    r"(tomp3|myfreemp3|free\.download|\bwww\b|\.(com|cc|vip|net|pl)\b)",
+    re.IGNORECASE,
+)
+_ARTIST_SEPS = (" - ", " – ", " — ", " _ ")
+
+
+def _fold_name(text: str) -> str:
+    """Porównanie tytułu z nazwą pliku: bez ogonków, apostrofów i podkreśleń."""
+    raw = unicodedata.normalize("NFKD", text or "")
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = raw.replace("ł", "l").replace("Ł", "l")
+    raw = raw.casefold()
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return " ".join(raw.split())
+
+
+def _clean_artist(text: str) -> str:
+    artist = " ".join((text or "").replace("_", " ").split())
+    if not artist or _JUNK_ARTIST.search(artist):
+        return ""
+    return artist
+
+
+def _artist_from_filename(track: Track) -> str:
+    stem = Path(track.path or "").stem.strip()
+    title = (track.title or "").strip()
+    if not stem:
+        return ""
+    folded_title = _fold_name(title)
+    for sep in _ARTIST_SEPS:
+        if sep not in stem:
+            continue
+        left, right = stem.split(sep, 1)
+        artist = _clean_artist(left)
+        if not artist or not right.strip():
+            continue
+        folded_right = _fold_name(right)
+        if not folded_title or folded_right == folded_title or folded_title in folded_right or folded_right in folded_title:
+            return artist
+    display = re.sub(r"[_\-–—]+", " ", stem)
+    words = display.split()
+    folded_words = [_fold_name(word) for word in words]
+    folded_words = [word for word in folded_words if word]
+    title_words = folded_title.split()
+    if (
+        len(title_words) >= 2
+        and len(folded_words) > len(title_words)
+        and folded_words[-len(title_words) :] == title_words
+    ):
+        # Słowa po złożeniu mogą mieć inną liczbę niż surowe (nawias znika).
+        # Bierzemy tyle początkowych słów, ile zostaje po odjęciu tytułu.
+        keep = len(folded_words) - len(title_words)
+        return _clean_artist(" ".join(words[:keep]))
+    if folded_title and folded_title == _fold_name(stem):
+        for sep in _ARTIST_SEPS:
+            if sep not in stem:
+                continue
+            left, right = stem.split(sep, 1)
+            artist = _clean_artist(left)
+            if artist and right.strip():
+                return artist
+    return ""
+
+
+def _text_tags(path: str) -> dict[str, str]:
+    """Artist/album z tagu pliku, gdy kolumny Serato są puste."""
+    if not path or "://" in path:
+        return {}
+    try:
+        if not Path(path).is_file():
+            return {}
+        from mutagen import File
+
+        audio = File(path, easy=True)
+        if not audio:
+            return {}
+        found: dict[str, str] = {}
+        for key in ("artist", "album"):
+            values = audio.get(key) or []
+            text = str(values[0]).strip() if values else ""
+            if text:
+                found[key] = text
+        return found
+    except Exception:
+        return {}
+
+
+def _artist_for_rb(track: Track, file_artist: str = "") -> str:
+    """Wykonawca: kolumna bazy, potem tag pliku, potem nazwa „Wykonawca - Tytuł”."""
+    artist = (track.artist or "").strip()
+    if artist:
+        return artist
+    from_file = _clean_artist(file_artist)
+    if from_file:
+        return from_file
+    return _artist_from_filename(track)
+
+
+def _rb_hotcue_num(num: int) -> str:
+    """CuePoint.num 1–8 (VDJ i odczyt Markers2) → hot cue Rekordbox 0–7."""
+    try:
+        n = int(num)
+    except (TypeError, ValueError):
+        return "-1"
+    if 1 <= n <= 8:
+        return str(n - 1)
+    if 0 <= n <= 7:
+        return str(n)
+    return "-1"
 
 
 def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] = None) -> ET.Element:
@@ -105,16 +224,17 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     # Size, TotalTime, BitRate, SampleRate – RB wymaga z pliku (win.xml: drag-drop ma te wartości, import z 0 ma czerwone)
     size, duration_sec, bitrate, sample_rate = _read_file_meta(track.path)
     total_time = int(duration_sec) if duration_sec else (int(track.duration) if track.duration else 0)
+    file_tags = _text_tags(track.path) if not (track.artist or "").strip() or not (track.album or "").strip() else {}
 
     # Comments = tagi z # (RB My Tags w eksporcie często w Comments)
-    comments = " ".join(t for t in track.tags if t) if track.tags else ""
+    comments = " ".join(t for t in track.tags if t) if track.tags else (track.comment or "")
 
     attrib = {
         "TrackID": track_id,
         "Name": track.title or Path(track.path).stem,
-        "Artist": track.artist,
+        "Artist": _artist_for_rb(track, file_tags.get("artist", "")),
         "Composer": "",
-        "Album": track.album,
+        "Album": (track.album or "").strip() or file_tags.get("album", ""),
         "Grouping": "",
         "Genre": track.genre,
         "Kind": kind,
@@ -158,7 +278,7 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
             {"Inizio": "0.000", "Bpm": f"{track.bpm:.2f}", "Metro": "4/4", "Battito": "1"},
         )
 
-    # POSITION_MARK (cue points)
+    # POSITION_MARK (cue points). Rekordbox wczytuje je z XML przy nowym utworze.
     for cp in track.cue_points:
         r = ((cp.color or 0) >> 16) & 0xFF
         g = ((cp.color or 0) >> 8) & 0xFF
@@ -170,7 +290,7 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
                 "Name": cp.name,
                 "Type": "0",
                 "Start": f"{cp.pos:.3f}",
-                "Num": str(cp.num),
+                "Num": _rb_hotcue_num(cp.num),
                 "Red": str(r),
                 "Green": str(g),
                 "Blue": str(b),
@@ -181,30 +301,38 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
     return tr
 
 
-def _playlist_to_node(pl: Playlist, path_to_id: dict[str, str]) -> ET.Element:
-    """Rekurencyjnie buduje NODE dla playlisty/folderu."""
+def _playlist_to_node(pl: Playlist, path_to_location: dict[str, str]) -> ET.Element:
+    """NODE wg PDF Pioneer.
+
+    Folder: Type=0, Count = liczba dzieci.
+    Lista: Type=1, KeyType=1. Key to ten sam Location co w COLLECTION.
+    Rekordbox przy imporcie nadaje własne TrackID, więc KeyType=0 (numer) gubi utwory.
+    """
     if pl.is_folder:
-        count = len(pl.children)
-        node = ET.Element("NODE", {"Type": "0", "Name": pl.name, "Count": str(count)})
-        for child in pl.children:
-            node.append(_playlist_to_node(child, path_to_id))
-        return node
-    else:
-        entries = 0
-        track_elems = []
-        for path in pl.track_ids:
-            # path jest znormalizowany (z vdjfolders_to_playlists)
-            tid = path_to_id.get(path)
-            if tid:
-                track_elems.append(ET.Element("TRACK", {"Key": tid}))
-                entries += 1
+        children = list(pl.children or [])
+        if pl.track_ids:
+            children = [
+                Playlist(name=pl.name, track_ids=list(pl.track_ids), is_folder=False)
+            ] + children
         node = ET.Element(
             "NODE",
-            {"Name": pl.name, "Type": "1", "KeyType": "0", "Entries": str(entries)},
+            {"Type": "0", "Name": pl.name, "Count": str(len(children))},
         )
-        for te in track_elems:
-            node.append(te)
+        for child in children:
+            node.append(_playlist_to_node(child, path_to_location))
         return node
+    keys = []
+    for path in pl.track_ids:
+        loc = path_to_location.get(normalize_path(path)) or path_to_location.get(path)
+        if loc:
+            keys.append(loc)
+    node = ET.Element(
+        "NODE",
+        {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(keys))},
+    )
+    for loc in keys:
+        node.append(ET.Element("TRACK", {"Key": loc}))
+    return node
 
 
 def generate_rb_playlists_only_xml(
@@ -245,8 +373,6 @@ def generate_rb_playlists_only_xml(
 
     plists = ET.SubElement(root, "PLAYLISTS")
     root_node = ET.SubElement(plists, "NODE", Type="0", Name="ROOT", Count=str(len(playlists)))
-
-    # KeyType=1 (Location) – RB lepiej dopasowuje utwory przy przeciąganiu playlist
     id_to_location = {t.source_id: _path_to_location(t.path) for t in coll_tracks if t.source_id}
 
     def pl_to_node(pl: Playlist) -> ET.Element:
@@ -255,19 +381,21 @@ def generate_rb_playlists_only_xml(
             for child in pl.children:
                 node.append(pl_to_node(child))
             return node
-        else:
-            track_elems = []
-            for path in pl.track_ids:
-                rb_key = vdj_path_to_rb_key(path)
-                tid = path_to_rb_id.get(rb_key)
-                if tid:
-                    loc = id_to_location.get(tid)
-                    if loc:
-                        track_elems.append(ET.Element("TRACK", {"Key": loc}))
-            node = ET.Element("NODE", {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(track_elems))})
-            for te in track_elems:
-                node.append(te)
-            return node
+        keys = []
+        for path in pl.track_ids:
+            rb_key = vdj_path_to_rb_key(path)
+            tid = path_to_rb_id.get(rb_key)
+            if tid:
+                loc = id_to_location.get(tid)
+                if loc:
+                    keys.append(loc)
+        node = ET.Element(
+            "NODE",
+            {"Name": pl.name, "Type": "1", "KeyType": "1", "Entries": str(len(keys))},
+        )
+        for loc in keys:
+            node.append(ET.Element("TRACK", {"Key": loc}))
+        return node
 
     for pl in playlists:
         root_node.append(pl_to_node(pl))
@@ -289,12 +417,15 @@ def generate_rb_xml(db: UnifiedDatabase, path_replace: Optional[dict] = None) ->
 
     # Mapowanie path -> TrackID (znormalizowane ścieżki – dopasowanie do playlist z vdjfolder)
     path_to_id = {}
+    path_to_location = {}
     next_id = 100000000
     for t in db.tracks:
         tid = t.source_id or str(next_id)
         if not t.source_id:
             next_id += 1
-        path_to_id[normalize_path(t.path)] = tid
+        key = normalize_path(t.path)
+        path_to_id[key] = tid
+        path_to_location[key] = _path_to_location(t.path, path_replace)
 
     # COLLECTION
     coll = ET.SubElement(root, "COLLECTION", Entries=str(len(db.tracks)))
@@ -306,7 +437,7 @@ def generate_rb_xml(db: UnifiedDatabase, path_replace: Optional[dict] = None) ->
     plists = ET.SubElement(root, "PLAYLISTS")
     root_node = ET.SubElement(plists, "NODE", Type="0", Name="ROOT", Count=str(len(db.playlists)))
     for pl in db.playlists:
-        root_node.append(_playlist_to_node(pl, path_to_id))
+        root_node.append(_playlist_to_node(pl, path_to_location))
 
     tree = ET.ElementTree(root)
     ET.indent(tree, space="  ", level=0)

@@ -155,7 +155,8 @@ def replace_paths_in_vdjfolder_content(
     from vdj_streaming import extract_tidal_id
 
     modified = 0
-    for song_elem in root.findall("song"):
+    seen_paths: list[str] = []
+    for song_elem in list(root.findall("song")):
         p = (song_elem.get("path") or "").strip()
         np = normalize_path(p) if p else ""
         new_path = lookup_map.get(np) if np else None
@@ -173,6 +174,14 @@ def replace_paths_in_vdjfolder_content(
         if new_path and normalize_path(new_path) != np:
             _update_vdjfolder_song_path(song_elem, new_path)
             modified += 1
+            p = (song_elem.get("path") or "").strip()
+            np = normalize_path(p) if p else ""
+        if np and np in seen_paths:
+            root.remove(song_elem)
+            modified += 1
+            continue
+        if np:
+            seen_paths.append(np)
     if not modified:
         return content, 0
     out = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding='unicode')
@@ -354,6 +363,41 @@ def update_filter_remove(filter_text: str, field: str, tags: List[str]) -> str:
     return result
 
 
+def playlist_tree_label(rel_path: str, name: str = "") -> str:
+    """Ścieżka listy bez MyLists i końcówki .vdjfolder, np. gatunki / Techno."""
+    rel = (rel_path or "").replace("\\", "/")
+    if rel.lower().endswith(".vdjfolder"):
+        rel = rel[: -len(".vdjfolder")]
+    parts = []
+    for part in rel.split("/"):
+        if part.endswith(".subfolders"):
+            part = part[: -len(".subfolders")]
+        if part in {"", "MyLists", "Folders", "VDJ"}:
+            continue
+        parts.append(part)
+    return " / ".join(parts) if parts else (name or rel)
+
+
+def is_export_artifact(rel_path: str) -> bool:
+    """Fałszywa kopia z eksportu: MyLists/VDJ.subfolders/MyLists.subfolders/lista."""
+    parts = (rel_path or "").replace("\\", "/").split("/")
+    return "VDJ.subfolders" in parts
+
+
+def vdj_rel_matches(rel_path: str, query: str) -> bool:
+    """Pełna ścieżka .vdjfolder albo sama nazwa listy."""
+    rel = (rel_path or "").replace("\\", "/")
+    want = (query or "").replace("\\", "/").strip()
+    if not want:
+        return False
+    if "/" in want or want.lower().endswith(".vdjfolder"):
+        return rel == want or rel.endswith("/" + want)
+    stem = rel.split("/")[-1]
+    if stem.lower().endswith(".vdjfolder"):
+        stem = stem[: -len(".vdjfolder")]
+    return stem == want
+
+
 def _is_exportable_path(p: str) -> bool:
     """Czy ścieżka nadaje się do eksportu. netsearch://td... = Tidal streaming (VDJ pobiera z sieci)."""
     if not p or not (p := p.strip()):
@@ -394,7 +438,8 @@ def create_vdjfolder_playlist(paths: List[str], name: str = "", entries: List[di
     if entries:
         lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<VirtualFolder noDuplicates="no" ordered="yes">']
         for idx, e in enumerate(entries):
-            p = normalize_path((e.get("path") or "").strip())
+            from vdj_streaming import to_vdj_path
+            p = to_vdj_path(normalize_path((e.get("path") or "").strip()))
             if not p or not _is_exportable_path(p):
                 continue
             artist = _xml_attr(e.get("artist") or e.get("author") or "")
@@ -434,11 +479,16 @@ def create_vdjfolder_playlist(paths: List[str], name: str = "", entries: List[di
             lines.append(f"\t<song {attrs} />")
         lines.append("</VirtualFolder>")
         return "\r\n".join(lines) + "\r\n"
+    from vdj_streaming import extract_tidal_id, to_vdj_path
     root = ET.Element("VirtualFolder", Name=name or "Playlist")
     for p in paths:
-        np = normalize_path(p.strip()) if p else ""
+        np = to_vdj_path(normalize_path(p.strip())) if p else ""
         if np and _is_exportable_path(np):
-            ET.SubElement(root, "song", path=np)
+            attrib = {"path": np}
+            tid = extract_tidal_id(np)
+            if tid:
+                attrib["netsearchId"] = f"td{tid}"
+            ET.SubElement(root, "song", attrib)
     return ET.tostring(root, encoding="unicode", default_namespace="")
 
 
@@ -465,6 +515,8 @@ def scan_vdjfolders(folder: Path) -> Dict[Path, str]:
     """Skanuje folder i zwraca {path: content} dla plików .vdjfolder."""
     out = {}
     for p in folder.rglob('*.vdjfolder'):
+        if "VDJ.subfolders" in p.parts:
+            continue
         try:
             out[p] = p.read_text(encoding='utf-8')
         except Exception:
@@ -1314,6 +1366,22 @@ def _playlist_paths_from_vdjfolder_content(
         if export_p:
             paths.append(export_p)
     return paths, False, ""
+
+
+def playlist_paths_that_hold_children(rel_paths) -> set[tuple[str, ...]]:
+    """Ścieżki, pod którymi leży inna lista. To drzewo, nie pusta playlista."""
+    parts_list = []
+    for rel in rel_paths or []:
+        parts = _vdjfolder_path_parts(str(rel))
+        if parts:
+            parts_list.append(parts)
+    parents = set()
+    for parts in parts_list:
+        for other in parts_list:
+            if len(other) > len(parts) and other[: len(parts)] == parts:
+                parents.add(parts)
+                break
+    return parents
 
 
 def _vdjfolder_path_parts(rel_path: str) -> tuple[str, ...]:

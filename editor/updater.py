@@ -1,13 +1,14 @@
 """
-Aktualizacje NJR Konwerter z GitHub Releases (jak Imprezja Quiz, ale dla PyInstaller).
+Aktualizacje Imprezja Playlist Pro ze strony Nowa Jakość Rozrywki.
 
-Flow:
-  1. check_for_updates() — skanuje assets w release'ach, wybiera właściwy plik Mac/Win
-  2. start_download() — pobiera w tle do ~/Downloads/NJR-updates/
-  3. install_update() — instaluje (Mac: DMG→/Applications; Win: podmiana .exe + restart)
+Jak fotobudka: przy starcie pyta GET /api/konwerter/update, bez logowania.
+Kartę pokazuje tylko gdy numer na stronie jest wyższy. Plik musi leżeć
+na https://nowajakoscrozrywki.pl/. Po pobraniu liczy SHA-256. Instalatora
+nie uruchamia.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -27,16 +29,17 @@ from ssl_utils import configure_ssl_env, urlopen
 
 configure_ssl_env()
 
-GITHUB_OWNER = "djdamsza"
-GITHUB_REPO = "njr-konwerter"
-MANUAL_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
-USER_AGENT = "NJR-Konwerter-Updater"
-
-# NJR-konwerter-1.0.3-macos-arm64.dmg / windows-x64.exe / macos-intel-x64.dmg
-ASSET_RE = re.compile(
-    r"^NJR-konwerter-(\d+(?:\.\d+){1,3})-(windows-x64\.exe|macos-arm64\.dmg|macos-intel-x64\.dmg)$",
-    re.IGNORECASE,
-)
+SITE = "https://nowajakoscrozrywki.pl"
+UPDATE_URL = SITE + "/api/konwerter/update"
+MANUAL_URL = SITE + "/pobierz"
+USER_AGENT = "ImprezjaPlaylistPro-Updater"
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+SHA_RE = re.compile(r"^[a-f0-9]{64}$")
+SLOT_SUFFIX = {
+    "windows": "windows-x64.exe",
+    "macArm": "macos-arm64.dmg",
+    "macIntel": "macos-intel-x64.dmg",
+}
 
 _lock = threading.Lock()
 _status: dict[str, Any] = {
@@ -45,6 +48,7 @@ _status: dict[str, Any] = {
     "currentVersion": "",
     "assetName": "",
     "downloadUrl": "",
+    "sha256": "",
     "path": "",
     "message": "",
     "progress": 0,
@@ -62,16 +66,34 @@ def get_status() -> dict[str, Any]:
         return dict(_status)
 
 
-def platform_asset_suffix() -> str:
-    """Nazwa sufiksu assetu dla bieżącego OS/arch."""
+def platform_slot() -> str:
+    """Który plik ze strony pasuje do tego komputera."""
     if sys.platform.startswith("win"):
-        return "windows-x64.exe"
+        return "windows"
     if sys.platform == "darwin":
         machine = platform.machine().lower()
         if machine in ("arm64", "aarch64"):
-            return "macos-arm64.dmg"
-        return "macos-intel-x64.dmg"
+            return "macArm"
+        return "macIntel"
     raise RuntimeError(f"Aktualizacje nieobsługiwane na platformie: {sys.platform}")
+
+
+def platform_asset_suffix() -> str:
+    """Nazwa sufiksu pliku dla bieżącego OS/arch."""
+    return SLOT_SUFFIX[platform_slot()]
+
+
+def asset_name(version: str, slot: str) -> str:
+    return f"Imprezja-Playlist-Pro-{version}-{SLOT_SUFFIX[slot]}"
+
+
+def accepted_asset_names(version: str, slot: str) -> set[str]:
+    """1.0.16 szuka Imprezja-Playlist-Pro. Strona wgrywa też NJR-konwerter."""
+    suffix = SLOT_SUFFIX[slot]
+    return {
+        f"Imprezja-Playlist-Pro-{version}-{suffix}",
+        f"NJR-konwerter-{version}-{suffix}",
+    }
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
@@ -91,16 +113,50 @@ def version_gt(a: str, b: str) -> bool:
     return parse_version(a) > parse_version(b)
 
 
-def _http_json(url: str, timeout: float = 30.0) -> Any:
+def _http_json(url: str, timeout: float = 12.0) -> Any:
     req = urllib.request.Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
+            "Accept": "application/json",
             "User-Agent": USER_AGENT,
+            "Cache-Control": "no-cache",
         },
     )
     with urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def select_offer(payload: Any, current_version: str, slot: str) -> Optional[dict[str, Any]]:
+    """Wybiera plik tego komputera. Zły adres, suma albo numer: brak oferty."""
+    if not isinstance(payload, dict) or slot not in SLOT_SUFFIX:
+        return None
+    version = str(payload.get("version") or "").strip()
+    if not VERSION_RE.match(version) or version == "0.0.0":
+        return None
+    if not version_gt(version, current_version):
+        return None
+    block = payload.get(slot)
+    if not isinstance(block, dict):
+        return None
+    url = str(block.get("url") or "").strip()
+    sha = str(block.get("sha256") or "").strip().lower()
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    filename = urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1])
+    if parsed.scheme != "https" or host != "nowajakoscrozrywki.pl":
+        return None
+    if not parsed.path.startswith("/pobierz/") or filename not in accepted_asset_names(version, slot):
+        return None
+    if not SHA_RE.match(sha):
+        return None
+    return {
+        "version": version,
+        "changelog": str(payload.get("changelog") or ""),
+        "name": filename,
+        "url": url,
+        "sha256": sha,
+        "slot": slot,
+    }
 
 
 def _download_file(url: str, dest: Path, progress_cb=None) -> None:
@@ -124,146 +180,110 @@ def _download_file(url: str, dest: Path, progress_cb=None) -> None:
 
 
 def updates_dir() -> Path:
-    home = Path.home()
-    if sys.platform.startswith("win"):
-        base = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
-        d = base / "NJR-Konwerter" / "updates"
-    else:
-        d = home / "Downloads" / "NJR-updates"
+    """Katalog na skrypty podmiany. Pobrany instalator ląduje w Pobranych."""
+    from platform_paths import app_support_dir
+    d = app_support_dir() / "updates"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def find_latest_asset(
-    current_version: str,
-    *,
-    suffix: Optional[str] = None,
-    force_newer_than: Optional[str] = None,
-) -> Optional[dict[str, Any]]:
-    """
-    Przeszukuje release'y GitHub i wybiera najnowszy asset dla platformy
-    nowszy niż current_version (lub force_newer_than).
-    """
-    suffix = suffix or platform_asset_suffix()
-    baseline = force_newer_than or current_version
-    releases = _http_json(
-        f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=20"
-    )
-    best: Optional[dict[str, Any]] = None
-    best_ver = ""
-    for rel in releases or []:
-        if rel.get("draft"):
-            continue
-        for asset in rel.get("assets") or []:
-            name = asset.get("name") or ""
-            m = ASSET_RE.match(name)
-            if not m:
-                continue
-            ver, suf = m.group(1), m.group(2).lower()
-            if suf != suffix.lower():
-                continue
-            if not version_gt(ver, baseline):
-                continue
-            if best is None or version_gt(ver, best_ver):
-                best_ver = ver
-                best = {
-                    "version": ver,
-                    "name": name,
-                    "url": asset.get("browser_download_url") or "",
-                    "size": int(asset.get("size") or 0),
-                    "tag": rel.get("tag_name") or "",
-                    "releaseUrl": rel.get("html_url") or MANUAL_URL,
-                    "suffix": suf,
-                }
-    return best
+def downloads_dir() -> Path:
+    d = Path.home() / "Downloads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 256)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def check_for_updates(current_version: str) -> dict[str, Any]:
-    """Sprawdza GitHub i opcjonalnie uruchamia pobieranie."""
-    force = (os.environ.get("NJR_FORCE_UPDATE_BASELINE") or "").strip() or None
+    """Pyta stronę. Nie pobiera pliku i nie przerywa startu przy błędzie sieci."""
+    base = {
+        "available": False,
+        "manualUrl": MANUAL_URL,
+        "currentVersion": current_version,
+        "changelog": "",
+    }
     try:
-        suffix = platform_asset_suffix()
+        slot = platform_slot()
     except RuntimeError as e:
-        return {
-            "available": False,
-            "error": "unsupported_platform",
-            "message": str(e),
-            "manualUrl": MANUAL_URL,
-            "currentVersion": current_version,
-        }
-
+        return {**base, "error": "unsupported_platform", "message": str(e)}
+    url = UPDATE_URL + "?_=" + str(int(time.time() * 1000))
     try:
-        asset = find_latest_asset(current_version, suffix=suffix, force_newer_than=force)
-    except urllib.error.HTTPError as e:
+        payload = _http_json(url)
+    except urllib.error.HTTPError:
+        return {**base, "message": "Masz najnowszą wersję.", "platform": slot}
+    except Exception:
         return {
-            "available": False,
-            "error": "github_http",
-            "message": f"GitHub API: HTTP {e.code}",
-            "manualUrl": MANUAL_URL,
-            "currentVersion": current_version,
+            **base,
+            "error": "offline",
+            "message": "Nie udało się sprawdzić aktualizacji.",
+            "platform": slot,
         }
-    except Exception as e:
-        err = str(e)
-        if "CERTIFICATE_VERIFY_FAILED" in err:
-            msg = (
-                "Błąd certyfikatów SSL w tej wersji aplikacji. "
-                "Automatyczna aktualizacja nie zadziała — pobierz najnowszą wersję ręcznie (link poniżej)."
-            )
-        else:
-            msg = f"Nie udało się sprawdzić aktualizacji: {e}"
-        return {
-            "available": False,
-            "error": "github_error",
-            "message": msg,
-            "manualUrl": MANUAL_URL,
-            "currentVersion": current_version,
-        }
-
-    if not asset:
-        return {
-            "available": False,
-            "message": "Masz najnowszą wersję.",
-            "manualUrl": MANUAL_URL,
-            "currentVersion": current_version,
-            "platform": suffix,
-        }
-
+    offer = select_offer(payload, current_version, slot)
+    if not offer:
+        return {**base, "message": "Masz najnowszą wersję.", "platform": slot}
     _set_status(
         status="idle",
-        version=asset["version"],
+        version=offer["version"],
         currentVersion=current_version,
-        assetName=asset["name"],
-        downloadUrl=asset["url"],
+        assetName=offer["name"],
+        downloadUrl=offer["url"],
+        sha256=offer["sha256"],
         path="",
-        message=f"Dostępna wersja {asset['version']}",
+        message=f"Dostępna wersja {offer['version']}",
         progress=0,
         error="",
     )
-    # Auto-download (jak Imprezja Quiz autoDownload)
-    start_download(asset["url"], asset["version"], asset["name"])
     return {
         "available": True,
-        "version": asset["version"],
+        "version": offer["version"],
         "currentVersion": current_version,
-        "assetName": asset["name"],
-        "downloadUrl": asset["url"],
-        "size": asset["size"],
-        "message": f"Dostępna aktualizacja {asset['version']} (masz {current_version}). Pobieranie…",
-        "manualUrl": asset.get("releaseUrl") or MANUAL_URL,
-        "platform": suffix,
+        "changelog": offer["changelog"],
+        "assetName": offer["name"],
+        "downloadUrl": offer["url"],
+        "sha256": offer["sha256"],
+        "message": f"Jest nowa wersja {offer['version']}. Masz {current_version}.",
+        "manualUrl": MANUAL_URL,
+        "platform": slot,
     }
 
 
-def start_download(url: str, version: str, asset_name: str) -> None:
-    dest = updates_dir() / asset_name
+def start_download(url: str, version: str, asset_name: str, sha256: str = "") -> None:
+    dest = downloads_dir() / asset_name
+    expected = (sha256 or "").strip().lower()
+
+    def _fail(message: str) -> None:
+        if dest.is_file():
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+        _set_status(status="error", error=message, message=message, path="")
 
     def _run() -> None:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() != "nowajakoscrozrywki.pl":
+            _fail("Adres pliku jest spoza strony Nowa Jakość Rozrywki.")
+            return
+        if not SHA_RE.match(expected):
+            _fail("Strona nie podała sumy pliku.")
+            return
         try:
             _set_status(
                 status="downloading",
                 version=version,
                 assetName=asset_name,
                 downloadUrl=url,
+                sha256=expected,
                 path="",
                 progress=0,
                 message=f"Pobieranie {asset_name}…",
@@ -274,25 +294,25 @@ def start_download(url: str, version: str, asset_name: str) -> None:
                 _set_status(progress=p, message=f"Pobieranie {asset_name}… {p}%")
 
             _download_file(url, dest, progress_cb=on_prog)
+            got = _sha256_file(dest)
+            if got != expected:
+                _fail("Pobrany plik się nie zgadza. Spróbuj jeszcze raz.")
+                return
             _set_status(
                 status="ready",
                 path=str(dest),
                 progress=100,
-                message=f"Pobrano {asset_name}. Możesz zainstalować.",
+                message=f"Pobrano {asset_name}. Plik jest w Pobranych.",
             )
         except Exception as e:
-            _set_status(
-                status="error",
-                error=str(e),
-                message=f"Błąd pobierania: {e}",
-            )
+            _fail(f"Błąd pobierania: {e}")
 
     t = threading.Thread(target=_run, name="njr-updater-download", daemon=True)
     t.start()
 
 
 def _mac_installed_app() -> Path:
-    return Path("/Applications/NJR Konwerter.app")
+    return Path("/Applications/Imprezja Playlist Pro.app")
 
 
 def _mac_running_app_bundle() -> Optional[Path]:
@@ -316,15 +336,15 @@ def default_install_target() -> Path:
         return _mac_installed_app()
     if sys.platform.startswith("win"):
         local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
-        return local / "NJR-Konwerter" / "NJR-konwerter.exe"
-    return updates_dir() / "NJR-konwerter"
+        return local / "Imprezja Playlist Pro" / "Imprezja Playlist Pro.exe"
+    return updates_dir() / "Imprezja Playlist Pro"
 
 
 def _mac_find_payload_in_dmg(mount: Path) -> tuple[Path, str]:
     apps = sorted(p for p in mount.glob("*.app") if p.is_dir())
     if apps:
         return apps[0], "app"
-    candidates = list(mount.rglob("NJR-konwerter"))
+    candidates = list(mount.rglob("Imprezja Playlist Pro"))
     binary = None
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK):
@@ -336,7 +356,7 @@ def _mac_find_payload_in_dmg(mount: Path) -> tuple[Path, str]:
                 binary = c
                 break
     if binary is None:
-        raise RuntimeError("W DMG nie znaleziono NJR Konwerter.app ani pliku NJR-konwerter")
+        raise RuntimeError("W DMG nie znaleziono Imprezja Playlist Pro.app")
     return binary, "binary"
 
 
@@ -353,7 +373,7 @@ def _mac_extract_binary_from_dmg(dmg: Path, out_bin: Path) -> Path:
             raise RuntimeError(attach.stderr.strip() or attach.stdout.strip() or "hdiutil attach failed")
         payload, kind = _mac_find_payload_in_dmg(mount)
         if kind == "app":
-            out_app = out_bin if str(out_bin).endswith(".app") else out_bin.with_name("NJR Konwerter.app")
+            out_app = out_bin if str(out_bin).endswith(".app") else out_bin.with_name("Imprezja Playlist Pro.app")
             if out_app.exists():
                 shutil.rmtree(out_app, ignore_errors=True)
             shutil.copytree(payload, out_app, symlinks=True)
@@ -461,6 +481,29 @@ del /f /q "%~f0"
     )
 
 
+def reveal_download(path: str) -> dict[str, Any]:
+    """Pokazuje pobrany plik w Finderze albo Eksploratorze. Tylko z Pobranych."""
+    target = Path(path or "").expanduser()
+    try:
+        folder = downloads_dir().resolve()
+        resolved = target.resolve()
+        resolved.relative_to(folder)
+    except (OSError, ValueError):
+        return {"ok": False, "error": "To nie jest plik z Pobranych."}
+    if not resolved.is_file():
+        return {"ok": False, "error": "Pliku już nie ma."}
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-R", str(resolved)], check=True, timeout=5)
+        elif sys.platform.startswith("win"):
+            subprocess.run(["explorer", "/select," + str(resolved)], check=False, timeout=5)
+        else:
+            subprocess.run(["xdg-open", str(resolved.parent)], check=True, timeout=5)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
+
 def install_update(
     *,
     package_path: Optional[str] = None,
@@ -485,7 +528,7 @@ def install_update(
             if sys.platform != "darwin":
                 return {"ok": False, "error": "Plik .dmg można zainstalować tylko na macOS."}
             # Staging w katalogu updates — unikamy kolizji z działającym plikiem
-            staging = updates_dir() / f"NJR-konwerter-{st.get('version') or 'new'}"
+            staging = updates_dir() / f"Imprezja-Playlist-Pro-{st.get('version') or 'new'}"
             extracted = _mac_extract_binary_from_dmg(pkg, staging)
             install_dest = target if target.suffix == ".app" else (
                 extracted if extracted.suffix == ".app" else target

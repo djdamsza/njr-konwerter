@@ -15,7 +15,8 @@ def main() -> int:
     from vdj_parser import load_database
     from vdj_path_mapping import compare_vdj_serato_mapping
 
-    vdj_db = Path.home() / "Library/Application Support/VirtualDJ/database.xml"
+    from platform_paths import vdj_root
+    vdj_db = vdj_root() / "database.xml"
     if not vdj_db.is_file():
         print(f"Brak bazy VDJ: {vdj_db}", file=sys.stderr)
         return 1
