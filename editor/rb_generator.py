@@ -193,6 +193,19 @@ def _artist_for_rb(track: Track, file_artist: str = "") -> str:
     return _artist_from_filename(track)
 
 
+def _rb_hotcue_num(num: int) -> str:
+    """CuePoint.num 1–8 (VDJ i odczyt Markers2) → hot cue Rekordbox 0–7."""
+    try:
+        n = int(num)
+    except (TypeError, ValueError):
+        return "-1"
+    if 1 <= n <= 8:
+        return str(n - 1)
+    if 0 <= n <= 7:
+        return str(n)
+    return "-1"
+
+
 def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] = None) -> ET.Element:
     """Tworzy element TRACK w formacie RB XML."""
     loc = _path_to_location(track.path, path_replace)
@@ -265,7 +278,7 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
             {"Inizio": "0.000", "Bpm": f"{track.bpm:.2f}", "Metro": "4/4", "Battito": "1"},
         )
 
-    # POSITION_MARK (cue points)
+    # POSITION_MARK (cue points). Rekordbox wczytuje je z XML przy nowym utworze.
     for cp in track.cue_points:
         r = ((cp.color or 0) >> 16) & 0xFF
         g = ((cp.color or 0) >> 8) & 0xFF
@@ -277,7 +290,7 @@ def _track_to_rb_xml(track: Track, track_id: str, path_replace: Optional[dict] =
                 "Name": cp.name,
                 "Type": "0",
                 "Start": f"{cp.pos:.3f}",
-                "Num": str(cp.num),
+                "Num": _rb_hotcue_num(cp.num),
                 "Red": str(r),
                 "Green": str(g),
                 "Blue": str(b),

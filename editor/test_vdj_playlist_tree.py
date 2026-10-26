@@ -7,8 +7,29 @@ import unittest
 from pathlib import Path
 
 from engine_generator import unified_to_engine_export_doc
-from unified_model import Playlist, Track, UnifiedDatabase
-from vdjfolder import normalize_path, vdjfolders_to_playlist_tree
+from unified_model import Playlist, Track, UnifiedDatabase, empty_leaf_names
+from vdjfolder import normalize_path, playlist_paths_that_hold_children, vdjfolders_to_playlist_tree
+
+
+class TestEmptyPlaylistTree(unittest.TestCase):
+    def test_parent_folder_is_not_an_empty_list(self):
+        paths = [
+            "MyLists/gatunki.vdjfolder",
+            "MyLists/gatunki/disco.vdjfolder",
+            "MyLists/pusta.vdjfolder",
+        ]
+        parents = playlist_paths_that_hold_children(paths)
+        self.assertIn(("MyLists", "gatunki"), parents)
+        self.assertNotIn(("MyLists", "pusta"), parents)
+
+    def test_unified_folder_is_not_an_empty_list(self):
+        tree = [
+            Playlist(name="Gatunki", track_ids=[], is_folder=True, children=[
+                Playlist(name="Disco", track_ids=["/a.mp3"], is_folder=False),
+            ]),
+            Playlist(name="Pusta", track_ids=[], is_folder=False),
+        ]
+        self.assertEqual(empty_leaf_names(tree), ["Pusta"])
 
 
 class TestVdjPlaylistTree(unittest.TestCase):

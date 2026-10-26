@@ -254,12 +254,18 @@ def _backup_dir_near(path: Path) -> Optional[Path]:
 
 def _open_failure_message(path: Path, exc: BaseException) -> str:
     from mac_access import offer_library_access
+    from platform_paths import is_windows
 
     folder = path if path.is_dir() else path.parent
     raw = str(exc)
     low = raw.lower()
     if "unable to open" in low or "permission" in low or "operation not permitted" in low:
         offer_library_access(folder, "Serato")
+        if is_windows():
+            return (
+                f"Nie mogę otworzyć bazy Serato w {folder}. Zamknij Serato i pobierz bazę ponownie. "
+                f"Szczegół: {raw}"
+            )
         return (
             f"Nie mogę otworzyć bazy Serato w {folder}. Zamknij Serato (Cmd+Q). "
             "Jeśli macOS nie pyta o zgodę, włącz Pełny dostęp do dysku dla Terminala "

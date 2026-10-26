@@ -18,7 +18,7 @@ def _is_streaming_path(path: str) -> bool:
     return any(
         p.startswith(x)
         for x in (
-            "tidal:", "soundcloud:", "beatport:",
+            "tidal:", "streaming:", "netsearch:", "soundcloud:", "beatport:",
             "file://localhosttidal:", "file://localhostsoundcloud:", "file://localhostbeatport:",
         )
     )

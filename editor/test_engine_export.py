@@ -139,6 +139,38 @@ class TestEngineGenerator(unittest.TestCase):
     def test_skip_streaming(self):
         row = track_to_engine_json(Track(path="netsearch://td123", title="T"))
         self.assertIsNone(row)
+        self.assertIsNone(track_to_engine_json(Track(path="streaming://tidal/159", title="T")))
+
+    def test_playlist_keeps_disk_and_drops_tidal(self):
+        import os
+        import tempfile
+
+        fd, name = tempfile.mkstemp(suffix=".mp3")
+        os.write(fd, b"ID3")
+        os.close(fd)
+        try:
+            db = UnifiedDatabase(
+                tracks=[
+                    Track(path=name, title="Z dysku", artist="A"),
+                    Track(path="streaming://tidal/159123843", title="Z Tidal", artist="B"),
+                ],
+                playlists=[Playlist(name="Set", track_ids=[name, "streaming://tidal/159123843"])],
+            )
+            doc = unified_to_engine_export_doc(
+                db,
+                engine_dir=Path(tempfile.mkdtemp()),
+                merge_mode=True,
+                replace_playlist_tracks=True,
+            )
+            blob = str(doc["tracks"])
+            self.assertIn("Z dysku", blob)
+            self.assertNotIn("159123843", blob)
+            self.assertEqual(len(doc["playlists"]), 1)
+            joined = " ".join(doc["playlists"][0].get("track_paths") or [])
+            self.assertNotIn("tidal", joined.lower())
+            self.assertTrue(joined)
+        finally:
+            os.unlink(name)
 
     def test_skip_vdjcache_and_no_extension(self):
         from engine_generator import _is_engine_exportable_path

@@ -20,6 +20,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+from platform_paths import plain_quit
 from ssl_utils import configure_ssl_env
 
 configure_ssl_env()
@@ -63,6 +64,9 @@ from vdjfolder import (
     create_vdjfolder_playlist,
     filter_vdjfolders_for_export,
     song_matches_filter,
+    playlist_tree_label,
+    vdj_rel_matches,
+    is_export_artifact,
 )
 from rb_parser import load_rb_xml
 from traktor_parser import load_traktor_nml
@@ -85,7 +89,15 @@ from engine_libdjinterop import (
 )
 from dj_apps_guard import sync_guard_blockers
 from serato_sqlite_read import is_serato_sqlite_source, load_serato_sqlite_from_path
-from dj_libraries import create_backup, locate, locate_all, restore_backup, running_message
+from dj_libraries import (
+    create_backup,
+    delete_backup,
+    locate,
+    locate_all,
+    materialize_backup,
+    restore_backup,
+    running_message,
+)
 from engine_patriot_sync import sync_metadata_and_playlists_to_patriot
 from engine_stems import DEFAULT_PATRIOT_ENGINE, patriot_engine_available
 from serato_parser import (
@@ -127,7 +139,50 @@ from routes import register_blueprints
 
 _static_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'static'
 app = Flask(__name__, static_folder=str(_static_dir))
+
+
+from njr_account import AccountError as _AccountError
+
+
+@app.errorhandler(_AccountError)
+def _account_spend_error(exc):
+    status = 402 if exc.status == 409 else exc.status
+    return jsonify({
+        "error": exc.message,
+        "needTokens": exc.status == 409,
+        "charged": False,
+        **_token_shop(),
+    }), status
 app.config['MAX_CONTENT_LENGTH'] = 4 * 1024 * 1024 * 1024  # 4 GB – bazy RB bywają 2 GB+
+
+_LOGIN_FREE = {
+    "/api/version",
+    "/api/account/status",
+    "/api/account/login",
+    "/api/account/google/start",
+    "/api/account/google/poll",
+    "/api/account/logout",
+    "/api/check-updates",
+    "/api/update-status",
+    "/api/download-update",
+    "/api/update-reveal",
+    "/api/quit-for-update",
+    "/api/install-update",
+}
+
+
+@app.before_request
+def _require_njr_account():
+    path = request.path or ""
+    if not path.startswith("/api/") or path in _LOGIN_FREE:
+        return None
+    from njr_account import has_session
+    if has_session():
+        return None
+    return jsonify({
+        "error": "Zaloguj się na konto Nowa Jakość Rozrywki.",
+        "loginRequired": True,
+    }), 401
 
 _CORS_ORIGINS = [f'http://127.0.0.1:{p}' for p in range(5050, 5061)] + [f'http://localhost:{p}' for p in range(5050, 5061)]
 CORS(app, origins=_CORS_ORIGINS, supports_credentials=True)
@@ -310,7 +365,7 @@ def _commit_vdj_load(
 ) -> dict:
     st.songs = songs
     st.version = version
-    st.vdjfolders = vdjfolders
+    st.vdjfolders = _fold_vdj_export_artifacts(vdjfolders)
     st.extra_files = extra
     st.source = "vdj"
     st.unified = None
@@ -595,6 +650,10 @@ def api_export_live():
         message = written['message']
         if backup:
             message += f" Poprzednia baza jest w kopii: {backup['dir']}."
+        message += (
+            " Plików z muzyką nie ruszałem. Kopii bazy zostaje najwyżej 3. "
+            f"Otwórz {info['label']} i sprawdź utwory oraz playlisty."
+        )
         return jsonify({'ok': True, 'message': message, 'backup': backup, 'path': written.get('path', '')})
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -623,6 +682,50 @@ def api_restore_live():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/open-backup', methods=['POST'])
+def api_open_backup():
+    """Wczytaj wybraną kopię do konwertera. Baza programu na dysku zostaje."""
+    _clear_undo_stack()
+    data = request.get_json() or {}
+    system = (data.get('system') or '').strip().lower()
+    stamp = (data.get('stamp') or '').strip()
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='njr-backup-open-') as tmp:
+            target = materialize_backup(system, stamp, Path(tmp))
+            loaded = _load_from_path(target)
+        loaded['message'] = (
+            f"Otwarto backup z {loaded.get('message', '')}. "
+            "To podgląd kopii w konwerterze. Baza programu na dysku została bez zmian."
+        )
+        return jsonify(loaded)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/delete-backup', methods=['POST'])
+def api_delete_backup():
+    """Usuń jedną kopię konwertera. Bazy programu DJ nie rusza."""
+    data = request.get_json() or {}
+    system = (data.get('system') or '').strip().lower()
+    stamp = (data.get('stamp') or '').strip()
+    try:
+        result = delete_backup(system, stamp)
+        return jsonify({
+            'ok': True,
+            'message': f"Usunięto backup z {result['label']}.",
+            'stamp': result['stamp'],
+        })
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def _write_live_library(system: str, info: dict) -> dict:
     if system == 'vdj':
         return _write_vdj_live(info)
@@ -637,23 +740,83 @@ def _write_live_library(system: str, info: dict) -> dict:
     raise ValueError(f'Nieznany system: {system}')
 
 
+def _count_tracks_with_cues(songs: list) -> int:
+    found = 0
+    for song in songs or []:
+        for xml in song.get("_children_xml") or []:
+            if 'Type="cue"' in xml or "Type='cue'" in xml:
+                found += 1
+                break
+    return found
+
+
 def _write_vdj_live(info: dict) -> dict:
     target = Path(info['path'])
     if target.suffix.lower() != '.xml':
         raise ValueError(info['note'] or 'Nie znaleziono database.xml VirtualDJ.')
     target.parent.mkdir(parents=True, exist_ok=True)
-    save_database(target, st.songs, st.version or '1.0')
+    songs, cues = _songs_for_vdj_export(st.songs)
+    save_database(target, songs, st.version or '1.0')
     written = _write_vdj_playlists(target.parent)
+    cue_line = (
+        f"Punkty cue przeszły przy {cues} utworach."
+        if cues
+        else "W nagraniach nie było punktów cue."
+    )
     return {
         'path': str(target),
         'message': (
             f"Zapisano VirtualDJ: {target}. List: {written}. "
-            "Uruchom VirtualDJ — utwory i listy są w jego folderze."
+            "Podmienione: database.xml i listy w MyLists. "
+            f"{cue_line} "
+            "Utwór z Tidal zapisuje się jako link VirtualDJ. "
+            "Przechodzą też utwory, trzy pola tagów, ocena i siatka, gdy była w bazie. "
+            "Żywy filtr staje się zwykłą listą. Plików muzycznych nie ruszałem. "
+            "Uruchom VirtualDJ i sprawdź bibliotekę."
         ),
     }
 
 
 def _write_vdj_playlists(folder: Path) -> int:
+    """Zapis list VirtualDJ.
+
+    Gdy sesja jest z VirtualDJ, pliki wracają w swoje miejsca
+    (MyLists/techniawka.vdjfolder). Nowe drzewo MyLists/VDJ.subfolders
+    VirtualDJ pomija, więc dopisane utwory tam nie były widoczne.
+    """
+    if st.vdjfolders and (st.source or "") == "vdj":
+        st.vdjfolders = _fold_vdj_export_artifacts(st.vdjfolders)
+        count = 0
+        root = folder.resolve()
+        for rel, content in st.vdjfolders.items():
+            rel_norm = (rel or "").replace("\\", "/").lstrip("/")
+            if not rel_norm.lower().endswith(".vdjfolder"):
+                continue
+            if is_export_artifact(rel_norm):
+                continue
+            dest = (root / rel_norm).resolve()
+            try:
+                dest.relative_to(root)
+            except ValueError:
+                continue
+            text = content or ""
+            if text and not text.lstrip().startswith("<?xml"):
+                text = '<?xml version="1.0" encoding="UTF-8"?>\n' + text
+            try:
+                current = dest.read_text(encoding="utf-8") if dest.is_file() else ""
+            except OSError:
+                current = ""
+            if _vdj_text_same(current, text):
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(text, encoding="utf-8")
+            count += 1
+        artifact = root / "MyLists" / "VDJ.subfolders"
+        nested = artifact / "MyLists.subfolders"
+        if artifact.is_dir() and nested.is_dir():
+            import shutil
+            shutil.rmtree(artifact)
+        return count
     db = _unified_db_for_export(playlist_tree=True)
     root = folder / 'MyLists'
     root.mkdir(parents=True, exist_ok=True)
@@ -667,7 +830,9 @@ def _write_vdj_playlists(folder: Path) -> int:
                 dump(pl.children, dest / f'{name}.subfolders')
                 continue
             dest.mkdir(parents=True, exist_ok=True)
-            xml = create_vdjfolder_playlist(list(pl.track_ids or []), name)
+            from vdj_streaming import to_vdj_path
+            ids = [to_vdj_path(path) for path in (pl.track_ids or [])]
+            xml = create_vdjfolder_playlist(ids, name)
             (dest / f'{name}.vdjfolder').write_text(xml, encoding='utf-8')
             count += 1
 
@@ -681,33 +846,172 @@ def _safe_library_name(name: str) -> str:
     return cleaned[:80]
 
 
+def _with_export_cues(db):
+    """Kopia bazy z punktami cue z nagrań. Sesja pracy zostaje bez nich."""
+    if (st.source or "") != "serato":
+        return db
+    from copy import copy
+    from serato_markers import enrich_tracks_with_serato_markers2
+
+    clones = []
+    for track in db.tracks or []:
+        item = copy(track)
+        item.cue_points = list(track.cue_points or [])
+        item.loops = list(getattr(track, "loops", None) or [])
+        clones.append(item)
+    enrich_tracks_with_serato_markers2(clones, max_workers=12)
+    return UnifiedDatabase(
+        tracks=clones,
+        playlists=list(db.playlists or []),
+        smart_playlists=list(getattr(db, "smart_playlists", None) or []),
+        source=getattr(db, "source", "") or "",
+    )
+
+
+def _vdj_export_song(song: dict) -> dict:
+    """Kopia rekordu. Tidal idzie do VirtualDJ jako netsearch://tdID."""
+    from vdj_streaming import extract_tidal_id, to_vdj_path
+    copy = dict(song)
+    fp = copy.get("FilePath") or ""
+    new = to_vdj_path(fp)
+    if new != fp:
+        copy["FilePath"] = new
+        tid = extract_tidal_id(fp)
+        if tid:
+            copy["Link.NetSearch"] = f"td{tid}"
+    return copy
+
+
+def _songs_for_vdj_export(songs: list) -> tuple[list, int]:
+    """Do zapisu VirtualDJ dokleja cue z nagrań Serato. Pamięci programu nie zmienia."""
+    if (st.source or "") != "serato":
+        converted = [_vdj_export_song(song) for song in songs]
+        return converted, _count_tracks_with_cues(converted)
+    from vdj_adapter import unified_to_vdj_songs, vdj_songs_to_unified
+    from vdjfolder import normalize_path
+
+    db = _with_export_cues(vdj_songs_to_unified(songs))
+    poi_by_path = {}
+    for song in unified_to_vdj_songs(db):
+        cues = [
+            xml for xml in (song.get("_children_xml") or [])
+            if 'Type="cue"' in xml or "Type='cue'" in xml
+        ]
+        if cues:
+            poi_by_path[normalize_path(song.get("FilePath") or "")] = cues
+    out = []
+    found = 0
+    for song in songs:
+        copy = _vdj_export_song(song)
+        kids = list(copy.get("_children_xml") or [])
+        has_cue = any('Type="cue"' in xml or "Type='cue'" in xml for xml in kids)
+        if not has_cue:
+            extra = poi_by_path.get(normalize_path(song.get("FilePath") or ""), [])
+            if extra:
+                kids = kids + extra
+                has_cue = True
+        if has_cue:
+            found += 1
+        copy["_children_xml"] = kids
+        out.append(copy)
+    return out, found
+
+
+def _publish_serato_cue_job(**fields) -> None:
+    with _serato_cues_lock:
+        _serato_cues_job.update(fields)
+
+
+def _serato_cue_export_note() -> str:
+    """Punkty cue z innej bazy dopisuje do nagrań. Z Serato już tam są."""
+    if (st.source or "") == "serato":
+        return "Punkty cue zostają w nagraniach. Ten zapis bazy ich nie rusza."
+    _publish_serato_cue_job(
+        running=True,
+        finished=False,
+        done=0,
+        total=0,
+        written=0,
+        unchanged=0,
+        skipped=0,
+        failed=0,
+        errors=[],
+        error=None,
+    )
+
+    def progress(done, total, written, unchanged):
+        _publish_serato_cue_job(
+            running=True,
+            done=done,
+            total=total,
+            written=written,
+            unchanged=unchanged,
+        )
+
+    try:
+        stats = _write_serato_cues_from_session(skip_unchanged=True, progress_cb=progress)
+    except Exception as exc:
+        _publish_serato_cue_job(running=False, finished=True, error=str(exc))
+        return f"Bazy zapisałem, punktów cue nie udało się dopisać: {exc}."
+    _publish_serato_cue_job(
+        running=False,
+        finished=True,
+        done=int(stats.get("candidates") or 0),
+        total=int(stats.get("candidates") or 0),
+        written=int(stats.get("written") or 0),
+        unchanged=int(stats.get("unchanged") or 0),
+        skipped=int(stats.get("skipped") or 0),
+        failed=int(stats.get("failed") or 0),
+    )
+    written = int(stats.get("written") or 0)
+    unchanged = int(stats.get("unchanged") or 0)
+    if written:
+        note = f"Punkty cue doszły do {written} utworów."
+        if unchanged:
+            note += f" Bez zmian zostało {unchanged}."
+        return note
+    if unchanged:
+        return f"Punkty cue już były przy {unchanged} utworach."
+    return "W bazie nie było punktów cue do przeniesienia."
+
+
 def _write_serato_live() -> dict:
     base = Path.home() / 'Music' / '_Serato_'
-    sub = base / 'Subcrates'
-    sub.mkdir(parents=True, exist_ok=True)
-    db_bytes = save_serato_database_v2(st.songs, '/', path_style='relative')
-    (base / 'database V2').write_bytes(db_bytes)
-    db = _unified_db_for_export(playlist_tree=True, include_all_tracks=True)
-    crates = 0
-    for stem, track_ids in iter_serato_crate_files(db.playlists or []):
-        content = save_serato_crate(
-            track_ids,
-            stem,
-            '/',
-            path_style='relative',
-            existing_files_only=False,
+    playlist_rows = []
+    if st.unified and st.unified.playlists:
+        playlist_rows = [
+            (label, list(playlist.track_ids or []))
+            for label, playlist in iter_playlist_entries(st.unified.playlists)
+            if playlist.track_ids
+        ]
+    from serato_library_sqlite import sync_live_serato_playlists
+
+    synced = sync_live_serato_playlists(playlist_rows)
+    if synced.get("ok"):
+        sqlite_note = (
+            f"Do list w Serato DJ dopisałem {int(synced.get('added') or 0)} brakujących utworów. "
         )
-        safe_stem = stem.replace('/', '%%')
-        (sub / f'{safe_stem}.crate').write_bytes(content)
-        crates += 1
+        skipped = int(synced.get("skipped") or 0)
+        if skipped:
+            sqlite_note += (
+                f"{skipped} utworów z list w programie nie doszło, "
+                "bo nie ma ich w bibliotece Serato — także Tidal, którego Serato jeszcze nie ma. "
+            )
+    else:
+        sqlite_note = (
+            "List w Serato DJ nie udało się zaktualizować"
+            + (f": {synced.get('error')}. " if synced.get("error") else ". ")
+            + "Zamknij Serato i zapisz jeszcze raz. "
+        )
     return {
         'path': str(base),
         'message': (
-            f"Zapisano Serato w {base}: database V2 i {crates} crate’ów. "
-            "Plików master.sqlite / root.sqlite / tidal.sqlite nie nadpisuję — "
-            "bezpośredni zapis tych trzech baz psuje bibliotekę. "
-            "Zamknij Serato przed zapisem i otwórz je po nim. "
-            "Jeśli crate’ów nie widać, użyj Przywróć backup."
+            f"Listy Serato są w {base}. "
+            f"{sqlite_note}"
+            f"{_serato_cue_export_note()} "
+            "Nie przepisuję bazy, crate’ów ani plików z punktami cue, gdy utwór już je ma. "
+            "Dopisuję tylko brakujące utwory na listach. "
+            "Zamknij Serato przed zapisem i otwórz go po zapisie."
         ),
     }
 
@@ -716,7 +1020,7 @@ def _write_engine_live(info: dict) -> dict:
     if not info['importable']:
         raise ValueError(info['note'] or 'Nie znaleziono biblioteki Engine DJ.')
     target = default_engine_desktop_library()
-    db = _unified_db_for_export(playlist_tree=True)
+    db = _with_export_cues(_unified_db_for_export(playlist_tree=True))
     export_doc = unified_to_engine_export_doc(
         db,
         engine_dir=target,
@@ -727,19 +1031,38 @@ def _write_engine_live(info: dict) -> dict:
     )
     if not export_doc.get('tracks'):
         raise ValueError('Brak utworów, które Engine przyjmie (puste ścieżki albo sam streaming).')
+    music_paths = sum(
+        1 for t in export_doc['tracks']
+        if str(t.get('relative_path') or '').startswith('Music/')
+    )
+    if music_paths != len(export_doc['tracks']):
+        raise ValueError(
+            f'Eksport nie utworzył samych ścieżek Music/ '
+            f'({music_paths}/{len(export_doc["tracks"])}). '
+            'Baza Engine nie została ruszona. Zamknij Engine i spróbuj ponownie.'
+        )
+    repair_engine_track_paths(target)
     stats = run_engine_desktop_merge(export_doc, target)
     added = stats.get('tracks_added', 0)
     return {
         'path': str(target),
-        'message': f"Zapisano bibliotekę Engine DJ w {target}. Dodane utwory: {added}.",
+        'message': (
+            f"Zapisano bibliotekę Engine DJ w {target}. Dodane utwory: {added}. "
+            "Przechodzą utwory z dysku, listy (skład jest podmieniany), BPM, tonacja, ocena, "
+            "tagi w jednym Genre oraz cue i siatka, gdy były w bazie. "
+            "Nie kasuję utworów, które już są w Engine. "
+            "Engine nie pozwala dodać utworu z Tidal w ten sposób. "
+            "Stemy i liczba odtworzeń też nie wychodzą. "
+            "Pliki muzyczne zostają na miejscu — w bibliotece Engine powstają tylko skróty."
+        ),
     }
 
 
 def _write_rekordbox_live(info: dict) -> dict:
     downloads = Path.home() / "Downloads"
     downloads.mkdir(parents=True, exist_ok=True)
-    xml_path = downloads / "njr-rekordbox.xml"
-    db = _unified_db_for_export(playlist_tree=True)
+    xml_path = downloads / "Imprezja-Playlist-Pro-rekordbox.xml"
+    db = _with_export_cues(_unified_db_for_export(playlist_tree=True))
     xml_path.write_bytes(generate_rb_xml(db))
     lists = list(iter_playlist_entries(db.playlists))
     with_tracks = sum(1 for _name, pl in lists if pl.track_ids)
@@ -750,25 +1073,22 @@ def _write_rekordbox_live(info: dict) -> dict:
             f"Zapisałem {xml_path}. "
             f"Utwory: {len(db.tracks)}, playlisty z utworami: {with_tracks}, "
             f"wykonawca wpisany z bazy albo nazwy pliku: {with_artist}. "
-            "W rekordboxie wklej tę ścieżkę w pole XML. Program wczyta plik sam, bez pytań. "
-            "Utwory, które już są w kolekcji, Rekordbox zostawia bez zmian. "
-            "Żeby artysta i playlisty weszły na nowo, usuń te utwory z kolekcji i wklej ścieżkę jeszcze raz."
+            "Przechodzą utwory, listy, BPM, tonacja, ocena, siatka oraz tagi w Genre i komentarzu. "
+            "Cue są w XML. Rekordbox wczyta je przy utworze, który wchodzi do kolekcji po raz pierwszy. "
+            "Nie zapisuję master.db. Utwór, który już jest w kolekcji, zostaje ze starymi cue i tagami. "
+            "W Rekordboxie: Preferences → Advanced → Database → rekordbox xml, wklej tę ścieżkę. "
+            "Potem przeciągnij folder Serato na Playlists w kolekcji. "
+            "Żeby weszły nowe dane utworu, usuń go najpierw z kolekcji. Plików na dysku nie kasuj. "
+            "Wypełnione listy są w folderze Serato na dole. Nazwa z datą to folder, utwory są w listach w środku."
         ),
     }
 
 
 def _write_traktor_live(info: dict) -> dict:
-    from traktor_parser import save_traktor_nml
-
-    target = Path(info['path'])
-    if target.suffix.lower() != '.nml':
-        raise ValueError(info['note'] or 'Nie znaleziono collection.nml Traktora.')
-    db = _unified_db_for_export(playlist_tree=False)
-    target.write_bytes(save_traktor_nml(db))
-    return {
-        'path': str(target),
-        'message': f"Zapisano Traktor: {target}. Otwórz Traktora i sprawdź kolekcję.",
-    }
+    raise ValueError(
+        "Eksport do Traktora jest w opracowaniu. Traktor nie jest zainstalowany, "
+        "więc collection.nml nie powstaje."
+    )
 
 
 @app.route('/api/load-file', methods=['POST'])
@@ -1023,7 +1343,7 @@ def api_save():
         return jsonify({'error': str(e)}), 500
 
 
-VDJ_EXPORT_INSTALL_TXT = """NJR Konwerter — eksport VirtualDJ
+VDJ_EXPORT_INSTALL_TXT = """Imprezja Playlist Pro — eksport VirtualDJ
 =================================
 
 Zawartość archiwum:
@@ -1090,7 +1410,7 @@ def api_save_progress():
     }
     encoded = _encode_njr(data)
     ts = datetime.now().strftime('%Y-%m-%d_%H%M')
-    fn = f'njr-postep-{ts}.njr'
+    fn = f'Imprezja-Playlist-Pro-{ts}.njr'
     return Response(
         encoded,
         mimetype='application/octet-stream',
@@ -1338,6 +1658,97 @@ def api_search():
     })
 
 
+_TAG_BATCH = 100
+
+
+def _tag_scheme_offer() -> dict:
+    from tag_scheme import candidate_rows
+
+    eligible = len(candidate_rows(st.songs))
+    tokens = (eligible + _TAG_BATCH - 1) // _TAG_BATCH if eligible else 0
+    return {"eligible": eligible, "perToken": _TAG_BATCH, "tokens": tokens}
+
+
+@app.route('/api/tag-scheme-count', methods=['GET'])
+def api_tag_scheme_count():
+    """Ile utworów nie ma jeszcze pełnego zestawu tagów i ile tokenów to zajmie."""
+    _ensure_loaded()
+    return jsonify(_tag_scheme_offer())
+
+
+@app.route('/api/tag-scheme-preview', methods=['POST'])
+def api_tag_scheme_preview():
+    """100 utworów bez pełnych tagów. 1 token, gdy model odpowie. Zapis idzie do bazy."""
+    _ensure_loaded()
+    from ai_flash import flash_preview
+    from pimp_list import charge_token
+    from tag_scheme import (
+        add_scheme_tags, candidate_rows, example_rows, field_owners,
+        known_tag_map, parse_scheme_answer, scheme_prompt,
+    )
+    from vdj_streaming import extract_tidal_id
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    examples = example_rows(st.songs)
+    targets = candidate_rows(st.songs, limit=_TAG_BATCH, shuffle=True)
+    offer = _tag_scheme_offer()
+    if not targets:
+        return jsonify({
+            "tracks": [],
+            "charged": False,
+            "note": "Brak utworów do otagowania.",
+            **offer,
+        })
+    known = known_tag_map(st.songs)
+    allowed = sorted(set(known.values()))
+    prompt = scheme_prompt(examples, targets, allowed)
+    try:
+        result = flash_preview(prompt, max_chars=24000, timeout=80)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "charged": False, "tracks": []}), 400
+    parsed = {item["idx"]: item for item in parse_scheme_answer(result.get("answer") or "", known)}
+    owners = field_owners(st.songs)
+    written = 0
+    if any(item.get("tags") for item in parsed.values()):
+        _push_undo_state()
+    tracks = []
+    for row in targets:
+        item = parsed.get(row["idx"]) or {"tags": [], "why": "Nie rozpoznaję tego nagrania."}
+        song = st.songs[row["idx"]]
+        path = row.get("path") or ""
+        tracks.append({
+            **row,
+            "tagsAfter": item["tags"],
+            "why": item["why"],
+            "pathSource": _path_source(path),
+            "tidalId": extract_tidal_id(path) or "",
+            "length": song.get("Infos.SongLength") or "",
+            "bpm": song.get("Tags.Bpm") or "",
+            "key": song.get("Tags.Key") or "",
+            "rating": song.get("Tags.Stars") or song.get("Infos.Rating") or "",
+        })
+        if item.get("tags") and add_scheme_tags(song, item["tags"], owners):
+            written += 1
+    if not parsed:
+        return jsonify({
+            "tracks": [],
+            "charged": False,
+            "written": 0,
+            "note": "Model nie oddał listy. Token nie zszedł.",
+            **_tag_scheme_offer(),
+        })
+    charge_token()
+    return jsonify({
+        "tracks": tracks,
+        "charged": True,
+        "written": written,
+        **_tag_scheme_offer(),
+        **_token_shop(),
+    })
+
+
 @app.route('/api/tags', methods=['GET'])
 def api_tags():
     """Lista tagów z liczbą wystąpień dla User1, User2 lub Genre."""
@@ -1354,10 +1765,18 @@ def api_tags():
 def api_tags_all():
     """Lista tagów z Genre, User1 i User2 jednocześnie."""
     _ensure_loaded()
+    from tag_scheme import BUILTIN_TAG_FIELDS
+
     result = {}
     for field in ('Genre', 'User1', 'User2'):
         counts = get_all_tags(st.songs, field)
-        result[field] = [{'tag': k, 'count': v} for k, v in sorted(counts.items(), key=lambda x: -x[1])]
+        seen = {tag.casefold() for tag in counts}
+        items = [{'tag': k, 'count': v} for k, v in sorted(counts.items(), key=lambda x: (-x[1], x[0].casefold()))]
+        for tag in BUILTIN_TAG_FIELDS[field]:
+            if tag.casefold() in seen:
+                continue
+            items.append({'tag': tag, 'count': 0, 'builtin': True})
+        result[field] = items
     return jsonify(result)
 
 
@@ -1414,6 +1833,51 @@ def _sync_vdjfolder_paths(replacements: list[dict]) -> dict:
     st.vdjfolders.clear()
     st.vdjfolders.update(updated)
     return {'folders_changed': folders_changed, 'refs_updated': refs_updated}
+
+
+def _sync_unified_playlist_paths(replacements: list[dict], stats: Optional[dict] = None) -> int:
+    """W playlistach bazy (Serato, Engine, Rekordbox) podmienia starą ścieżkę na zostawioną.
+
+    Dwa wpisy na jednej liście po scaleniu zostają jednym.
+    """
+    db = st.unified
+    if not db or not db.playlists:
+        return 0
+    from vdjfolder import normalize_path
+
+    mapping = {}
+    for item in replacements:
+        old = normalize_path((item.get('oldPath') or '').strip())
+        new = (item.get('newPath') or '').strip()
+        if old and new and old != normalize_path(new):
+            mapping[old] = new
+    if not mapping:
+        return 0
+    changed = 0
+    collapsed = 0
+
+    def walk(nodes) -> None:
+        nonlocal changed, collapsed
+        for pl in nodes or []:
+            seen = []
+            for tid in list(getattr(pl, 'track_ids', None) or []):
+                repl = mapping.get(normalize_path(str(tid)))
+                chosen = repl or tid
+                if chosen in seen:
+                    if repl:
+                        collapsed += 1
+                    continue
+                if repl:
+                    changed += 1
+                seen.append(chosen)
+            pl.track_ids = seen
+            walk(getattr(pl, 'children', None) or [])
+
+    walk(db.playlists)
+    if stats is not None:
+        stats['replaced'] = stats.get('replaced', 0) + changed
+        stats['collapsed'] = stats.get('collapsed', 0) + collapsed
+    return changed + collapsed
 
 
 def _repair_vdjfolders_before_export() -> dict:
@@ -1510,6 +1974,73 @@ def api_merge_tags():
         sel = [(field, t) for t in old_tags]
         _update_vdjfolders_merge(sel, new_tag, field)
         return jsonify({'ok': True, 'modified': modified})
+
+
+@app.route('/api/tag-merge-preview', methods=['POST'])
+def api_tag_merge_preview():
+    """Propozycje scalenia tagów. 1 token, gdy model odda listę. Nic nie zapisuje."""
+    _ensure_loaded()
+    from ai_flash import flash_preview
+    from pimp_list import charge_token, token_balance
+    from tag_merge_ai import annotate_small, inventory, merge_prompt, parse_merge_answer, review_rows
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    rows = annotate_small(st.songs, inventory(st.songs))
+    review = review_rows(rows)
+    if not review:
+        return jsonify({"proposals": [], "charged": False, "note": "Nie ma tagów do sprzątnięcia."})
+    try:
+        result = flash_preview(merge_prompt(rows, review), max_chars=28000, timeout=120)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "charged": False, "proposals": []}), 400
+    proposals = parse_merge_answer(result.get("answer") or "", rows)
+    if not proposals:
+        return jsonify({
+            "proposals": [],
+            "charged": False,
+            "note": "Model nie oddał pewnych scaleń. Token nie zszedł.",
+        })
+    charge_token()
+    return jsonify({"proposals": proposals, "charged": True, **_token_shop()})
+
+
+@app.route('/api/tag-merge-apply', methods=['POST'])
+def api_tag_merge_apply():
+    """Zapisuje zaakceptowane scalenia. Bez tokena."""
+    _ensure_loaded()
+    from tag_merge_ai import inventory, validate_proposal
+    from vdj_parser import merge_tags_across_fields, remove_tags_in_songs
+
+    data = request.get_json() or {}
+    raw_items = data.get("proposals") or []
+    if not isinstance(raw_items, list) or not raw_items:
+        return jsonify({"error": "Podaj propozycje do zapisu"}), 400
+    rows = inventory(st.songs)
+    accepted = []
+    for item in raw_items:
+        proposal = validate_proposal(item, rows)
+        if proposal:
+            accepted.append(proposal)
+    if not accepted:
+        return jsonify({"error": "Żadna propozycja nie pasuje już do bazy"}), 400
+    _push_undo_state()
+    modified = 0
+    for proposal in accepted:
+        sources = [(src["field"], src["tag"]) for src in proposal["sources"]]
+        if proposal["newTag"]:
+            modified += merge_tags_across_fields(st.songs, sources, proposal["newTag"], proposal["targetField"])
+            _update_vdjfolders_merge(sources, proposal["newTag"], proposal["targetField"])
+        else:
+            by_field = {}
+            for field, tag in sources:
+                by_field.setdefault(field, []).append(tag)
+            for field, tags in by_field.items():
+                modified += remove_tags_in_songs(st.songs, field, tags)
+                _update_vdjfolders_remove(field, tags)
+        rows = inventory(st.songs)
+    return jsonify({"ok": True, "modified": modified})
 
 
 @app.route('/api/update-tags-selected', methods=['POST'])
@@ -2185,7 +2716,7 @@ def api_export_serato():
         from flask import Response
         z = BytesIO()
         with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("_Serato_/NJR-INSTALUJ.txt", SERATO_EXPORT_INSTALL_TXT)
+            zf.writestr("_Serato_/NJR-INSTALUJ.txt", plain_quit(SERATO_EXPORT_INSTALL_TXT))
             zf.writestr("_Serato_/usun-vdj-smartcrates.sh", SERATO_REMOVE_SMARTCRATES_SH)
             if not crates_only:
                 db_content = save_serato_database_v2(
@@ -2816,7 +3347,7 @@ def api_sync_engine_desktop():
             replace_playlist_tracks=True,
             playlist_prefix=playlist_prefix,
             cleanup_legacy_vdj_playlists=True,
-            prune_tracks_not_in_source=True,
+            prune_tracks_not_in_source=False,
             engine_music_layout=True,
         )
         if not export_doc.get('tracks'):
@@ -2888,8 +3419,9 @@ def api_sync_engine_desktop():
         msg_parts = [
             f'VDJ → Engine: {len(export_doc["tracks"])} utworów, '
             f'{playlists_total} playlist. +{added} nowych. '
+            f'Utworów, które już są w Engine, nie kasuję. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki). Zamknij i otwórz Engine (Cmd+Q).',
+            + plain_quit('Ścieżki Music/ (symlinki). Zamknij i otwórz Engine (Cmd+Q).'),
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -3273,7 +3805,7 @@ def api_sync_serato_to_engine():
             f'{playlists_total} playlist (folder „Serato” / MyLists). '
             f'+{added} nowych. Hot cues: {tracks_with_cues}. Loops: {tracks_with_loops}. '
             f'{analysis_hint} '
-            'Ścieżki Music/ (symlinki — bez kopiowania). Zamknij i otwórz Engine (Cmd+Q), poczekaj na analizę.',
+            + plain_quit('Ścieżki Music/ (symlinki — bez kopiowania). Zamknij i otwórz Engine (Cmd+Q), poczekaj na analizę.'),
         ]
         if patriot_sync and patriot_sync.get('ok'):
             msg_parts.append(
@@ -3338,8 +3870,10 @@ def api_validate_engine_library():
         result['engine_running'] = is_engine_desktop_running()
         if result['engine_running']:
             result.setdefault('warnings', []).append(
-                'Engine DJ jest uruchomiony — walidacja odczytu OK, '
-                'ale merge/naprawa wymaga zamknięcia (Cmd+Q).'
+                plain_quit(
+                    'Engine DJ jest uruchomiony — walidacja odczytu OK, '
+                    'ale merge/naprawa wymaga zamknięcia (Cmd+Q).'
+                )
             )
         status = 200 if result.get('ok') else 400
         return jsonify(result), status
@@ -3400,13 +3934,22 @@ def api_auto_repair_engine_playlists():
                 ),
             }
 
+        from engine_stems import resolve_patriot_dir
+
         mac_raw = (data.get('engineDir') or '').strip()
-        mac = Path(mac_raw).expanduser() if mac_raw else default_engine_desktop_library()
+        mac_text = mac_raw.replace("\\", "/").rstrip("/")
+        if mac_text.endswith("/Volumes/Patriot/Engine Library"):
+            found = resolve_patriot_dir(None)
+            if found is None:
+                return jsonify({"error": "Brak dysku Patriot. Podłącz dysk Rane."}), 400
+            mac = found
+        else:
+            mac = Path(mac_raw).expanduser() if mac_raw else default_engine_desktop_library()
         results.append(_repair_one(mac, 'Mac'))
 
         pat_raw = (data.get('patriotDir') or '').strip()
-        patriot = Path(pat_raw).expanduser() if pat_raw else DEFAULT_PATRIOT_ENGINE
-        if patriot_engine_available(patriot):
+        patriot = resolve_patriot_dir(Path(pat_raw).expanduser() if pat_raw else None)
+        if patriot is not None and patriot_engine_available(patriot):
             results.append(_repair_one(patriot, 'Patriot'))
 
         repaired = [r for r in results if r.get('repaired')]
@@ -3496,8 +4039,10 @@ def api_repair_engine_playlists():
     if is_engine_desktop_running():
         return jsonify({
             'error': (
-                'Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) '
-                'i ponów naprawę playlist.'
+                plain_quit(
+                    'Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) '
+                    'i ponów naprawę playlist.'
+                )
             ),
         }), 409
     try:
@@ -4020,20 +4565,80 @@ def api_write_tags():
     })
 
 
+def _playlist_label_index() -> dict[str, list[str]]:
+    """Jedno przejście po listach. Szukanie brakujących nie może chodzić po nich dla każdego pliku."""
+    from unified_model import iter_playlist_entries
+    from vdjfolder import normalize_path
+
+    index: dict[str, list[str]] = {}
+    if st.unified is None:
+        return index
+    for label, playlist in iter_playlist_entries(st.unified.playlists):
+        for tid in playlist.track_ids or []:
+            key = normalize_path(str(tid))
+            if not key:
+                continue
+            labels = index.get(key)
+            if labels is None:
+                index[key] = [label]
+            elif label not in labels:
+                labels.append(label)
+    return index
+
+
+def _playlist_labels_for_path(path: str) -> list[str]:
+    """Nazwy list, na których leży ta ścieżka (Serato/Engine oraz VirtualDJ)."""
+    from vdjfolder import normalize_path
+
+    want = normalize_path(path)
+    if not want:
+        return []
+    return list(_playlist_label_index().get(want, []))
+
+
 def _get_problematic_missing(vdj_cache_path=None):
-    """Zwraca listę brakujących plików (ścieżki w bazie, plik nie istnieje)."""
-    from file_analyzer import is_streaming
+    """Zwraca listę brakujących plików. Streaming tu nie wchodzi."""
+    from missing_files import in_trash, is_streaming_path, volume_unmounted
+    from serato_parser import resolve_serato_stored_path
+    from vdjfolder import normalize_path
+
+    labels_by_path = _playlist_label_index()
     missing = []
+    skipped_streaming = 0
     for i, s in enumerate(st.songs):
         path = s.get('FilePath', '') or ''
-        if not path or is_streaming(path):
+        if not path:
             continue
-        p = Path(path)
-        if not p.exists():
-            rec = {'idx': i, 'path': path, 'author': s.get('Tags.Author', ''), 'title': s.get('Tags.Title', '')}
-            _enrich_song_for_display(rec, vdj_cache_path)
-            missing.append(rec)
-    return missing
+        if is_streaming_path(path) or _is_vdj_cache_path(path):
+            skipped_streaming += 1
+            continue
+        shown = resolve_serato_stored_path(path) or path
+        p = Path(shown)
+        try:
+            exists = p.exists()
+        except OSError:
+            exists = False
+        if exists:
+            continue
+        key = normalize_path(shown) or normalize_path(path)
+        lists = labels_by_path.get(key, [])
+        rec = {
+            'idx': i,
+            'path': shown,
+            'author': s.get('Tags.Author', ''),
+            'title': s.get('Tags.Title', ''),
+            'lists': lists,
+            'listsDisplay': ", ".join(lists[:3]) + (" …" if len(lists) > 3 else ""),
+            'duration': s.get('Infos.SongLength') or s.get('SongLength') or '',
+            'bpm': s.get('Tags.Bpm') or '',
+            'key': s.get('Tags.Key') or '',
+            'genre': s.get('Tags.Genre') or '',
+            'volume': volume_unmounted(shown),
+            'inTrash': in_trash(shown),
+        }
+        _enrich_song_for_display(rec, vdj_cache_path, skip_path_check=True)
+        missing.append(rec)
+    return missing, skipped_streaming
 
 
 def _is_my_library_path(rel_path: str) -> bool:
@@ -4053,8 +4658,9 @@ def _is_folder_container(root) -> bool:
 
 
 def _get_problematic_empty_playlists():
-    """Zwraca listę pustych list odtwarzania (vdjfolder bez utworów z bazy)."""
-    from vdjfolder import normalize_path
+    """Puste listy utworów. Folder, który jest tylko drzewem dla innych list, odpada."""
+    from unified_model import empty_leaf_names
+    from vdjfolder import normalize_path, playlist_paths_that_hold_children, _vdjfolder_path_parts
     valid_paths = {normalize_path(s.get('FilePath')) for s in st.songs if s.get('FilePath')}
     _EMPTY_SKIP_NAMES = frozenset({
         "database", "livelists", "artist", "album", "title", "key", "bpm", "genre", "hashtags",
@@ -4067,8 +4673,12 @@ def _get_problematic_empty_playlists():
     empty_playlists = []
     if st.vdjfolders:
         import xml.etree.ElementTree as ET
+        parents = playlist_paths_that_hold_children(st.vdjfolders.keys())
         for rel_path, content in st.vdjfolders.items():
             if _is_my_library_path(rel_path):
+                continue
+            parts = _vdjfolder_path_parts(rel_path)
+            if parts in parents:
                 continue
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if not name:
@@ -4093,6 +4703,12 @@ def _get_problematic_empty_playlists():
                     empty_playlists.append(name)
             except ET.ParseError:
                 pass
+        return empty_playlists
+    if st.unified and st.unified.playlists:
+        return [
+            name for name in empty_leaf_names(st.unified.playlists)
+            if name.lower() not in _EMPTY_SKIP_NAMES
+        ]
     return empty_playlists
 
 
@@ -4143,7 +4759,7 @@ def api_relocate_scan():
     if not search_paths:
         return jsonify({'error': 'Podaj co najmniej jedną ścieżkę do przeszukania'}), 400
 
-    missing = _get_problematic_missing(None)
+    missing, _skipped = _get_problematic_missing(None)
     if not missing:
         return jsonify({'candidates': [], 'notFound': [], 'message': 'Brak brakujących plików'})
 
@@ -4229,6 +4845,19 @@ def api_relocate_apply():
         sync_stats = _sync_vdjfolder_paths(replacements)
     else:
         sync_stats = {'folders_changed': 0, 'refs_updated': 0}
+        replacements = [
+            {'oldPath': old, 'newPath': new}
+            for old, new in path_map.items()
+        ]
+    if replacements:
+        _sync_unified_playlist_paths(replacements)
+        if st.unified is not None:
+            from vdjfolder import normalize_path as _norm
+            track_map = {_norm(item['oldPath']): item['newPath'] for item in replacements}
+            for track in st.unified.tracks:
+                new = track_map.get(_norm(getattr(track, "path", "") or ""))
+                if new:
+                    track.path = new
 
     return jsonify({
         'ok': True,
@@ -4282,8 +4911,95 @@ def api_problematic_missing():
     """Brakujące pliki – rekordy w bazie, plik nie istnieje na dysku."""
     _ensure_loaded()
     vdj_cache_path = (request.args.get('vdjCachePath') or '').strip() or None
-    missing = _get_problematic_missing(vdj_cache_path)
-    return jsonify({'missing': missing, 'summary': {'missing_count': len(missing)}})
+    missing, skipped_streaming = _get_problematic_missing(vdj_cache_path)
+    return jsonify({
+        'missing': missing,
+        'summary': {
+            'missing_count': len(missing),
+            'skipped_streaming': skipped_streaming,
+        },
+    })
+
+
+@app.route('/api/missing-lookup', methods=['POST'])
+def api_missing_lookup():
+    """Szuka przeniesionych plików na podpiętych dyskach. Model dysku nie widzi."""
+    _ensure_loaded()
+    from constants import AUDIO_EXTENSIONS
+    from missing_files import index_audio, pick_new_path, search_roots
+
+    data = request.get_json() or {}
+    extra = [p for p in (data.get("searchPaths") or []) if isinstance(p, str)]
+    missing, skipped_streaming = _get_problematic_missing(None)
+    if not missing:
+        return jsonify({
+            "found": [],
+            "unmounted": [],
+            "trash": [],
+            "still": [],
+            "charged": False,
+            "skippedStreaming": skipped_streaming,
+            "permission": "Nie ma brakujących plików do szukania. Token nie został zużyty.",
+            **_token_shop(),
+        })
+    from pimp_list import charge_token, tokens_spent
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    roots = search_roots(extra)
+    file_index = index_audio(roots, set(AUDIO_EXTENSIONS))
+    found = []
+    unmounted = []
+    trashed = []
+    still = []
+    for row in missing:
+        old = row.get("path") or ""
+        base = {
+            "idx": row.get("idx"),
+            "path": old,
+            "author": row.get("author") or "",
+            "title": row.get("title") or "",
+            "lists": row.get("lists") or [],
+            "duration": row.get("duration") or "",
+            "bpm": row.get("bpm") or "",
+            "key": row.get("key") or "",
+            "genre": row.get("genre") or "",
+        }
+        if row.get("volume"):
+            unmounted.append({**base, "volume": row["volume"]})
+            continue
+        if row.get("inTrash"):
+            trashed.append(base)
+            continue
+        stem = Path(old).stem.lower()
+        new_path = pick_new_path(old, file_index.get(stem, []))
+        if new_path:
+            found.append({**base, "newPath": new_path})
+        else:
+            still.append(base)
+    spent = charge_token()
+    shop = _token_shop()
+    return jsonify({
+        "found": found,
+        "unmounted": unmounted,
+        "trash": trashed,
+        "still": still,
+        "roots": [str(path) for path in roots],
+        "skippedStreaming": skipped_streaming,
+        "charged": True,
+        "tokensSpent": spent,
+        "needTokens": shop["balance"] == 0,
+        "permission": (
+            (
+                "Szukanie idzie na tym komputerze, w folderze muzyki, w Muzyce i na podpiętych dyskach. "
+                if platform.system() == "Windows"
+                else "Szukanie idzie na tym Macu, w folderze muzyki, w Muzyce i na podpiętych dyskach. "
+            )
+            + "Skrót Engine bez pliku na końcu nie liczy się jako znalezisko. "
+            "Model w chmurze tych plików nie widzi."
+        ),
+        **shop,
+    })
 
 
 @app.route('/api/problematic-empty-playlists', methods=['GET'])
@@ -4302,7 +5018,7 @@ def api_playlists():
     if st.vdjfolders:
         import xml.etree.ElementTree as ET
         for rel_path, content in st.vdjfolders.items():
-            if _is_my_library_path(rel_path):
+            if is_export_artifact(rel_path) or _is_my_library_path(rel_path):
                 continue
             name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
             if not name:
@@ -4319,14 +5035,20 @@ def api_playlists():
                 items.append({
                     "name": name,
                     "relPath": rel_path,
+                    "label": playlist_tree_label(rel_path, name),
                     "type": "filter" if filt else "playlist",
                 })
             except ET.ParseError:
                 pass
     if not items and st.unified and st.unified.playlists:
         for label, _pl in iter_playlist_entries(st.unified.playlists):
-            items.append({"name": label, "relPath": label, "type": "playlist"})
-    return jsonify({'playlists': sorted(items, key=lambda x: x['name'].lower())})
+            items.append({
+                "name": label,
+                "relPath": label,
+                "label": label.replace("%%", " / "),
+                "type": "playlist",
+            })
+    return jsonify({'playlists': sorted(items, key=lambda x: (x.get('label') or x['name']).lower())})
 
 
 @app.route('/api/playlist-tracks', methods=['GET'])
@@ -4356,10 +5078,15 @@ def api_playlist_tracks():
     is_filter_list = False
     if st.vdjfolders:
         import xml.etree.ElementTree as ET
+        chosen = _pick_vdj_rel(name)
         for rel_path, content in st.vdjfolders.items():
-            n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
-            if n != name:
-                continue
+            if chosen:
+                if rel_path != chosen:
+                    continue
+            else:
+                n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
+                if n != name:
+                    continue
             rel_path_found = rel_path
             try:
                 root = ET.fromstring(content)
@@ -4448,12 +5175,18 @@ def api_playlist_remove_from():
     from vdjfolder import normalize_path
     rel_path_found = None
     content = None
+    chosen = _pick_vdj_rel(name)
     for rel_path, c in st.vdjfolders.items():
-        n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
-        if n == name:
-            rel_path_found = rel_path
-            content = c
-            break
+        if chosen:
+            if rel_path != chosen:
+                continue
+        else:
+            n = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
+            if n != name:
+                continue
+        rel_path_found = rel_path
+        content = c
+        break
     if not rel_path_found:
         return jsonify({'error': 'Nie znaleziono playlisty'}), 404
     import xml.etree.ElementTree as ET
@@ -4922,6 +5655,14 @@ TIDAL_HEADERS = {
 }
 
 
+def _tidal_musical_key(track: dict) -> str:
+    note = str(track.get("key") or "").strip().replace("Sharp", "#").replace("Flat", "b")
+    scale = str(track.get("keyScale") or "").strip()
+    if note and scale and scale.lower() not in note.lower():
+        return f"{note} {scale}"
+    return note or scale
+
+
 def _check_tidal_track_available(track_id: str) -> Optional[bool]:
     """
     Sprawdza, czy utwór o danym ID jest nadal dostępny na Tidal.
@@ -4941,7 +5682,9 @@ def _check_tidal_track_available(track_id: str) -> Optional[bool]:
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return False
-        # 401/429/500 itd. – nie oznaczaj jako usunięte (unika fałszywych alarmów)
+        if e.code == 429:
+            return None
+        # 401/500 itd. – nie oznaczaj jako usunięte (unika fałszywych alarmów)
         return True
     except Exception:
         return None
@@ -4973,7 +5716,22 @@ def _tidal_search_tracks(query: str, limit: int = 5) -> tuple[list, Optional[str
             artist = ""
             if "artist" in t:
                 artist = t["artist"].get("name", "") if isinstance(t["artist"], dict) else str(t["artist"])
-            out.append({"id": str(aid), "title": t.get("title", ""), "artist": artist})
+            album = ""
+            raw_album = t.get("album")
+            if isinstance(raw_album, dict):
+                album = raw_album.get("title") or ""
+            elif raw_album:
+                album = str(raw_album)
+            out.append({
+                "id": str(aid),
+                "title": t.get("title", ""),
+                "version": (t.get("version") or "").strip(),
+                "artist": artist,
+                "album": album,
+                "duration": t.get("duration") or "",
+                "bpm": t.get("bpm") or "",
+                "key": _tidal_musical_key(t),
+            })
         return out, None
     except urllib.error.HTTPError as e:
         return [], f"Tidal API HTTP {e.code}: {e.reason}"
@@ -4997,6 +5755,262 @@ def api_tidal_search():
     if err:
         out["error"] = err
     return jsonify(out)
+
+
+def _tidal_tokens_or_block(count: int):
+    """Ile tokenów kosztuje pełne sprawdzenie. 402, gdy stan konta jest za niski."""
+    from pimp_list import has_tokens, tokens_for_thousand
+
+    tokens = tokens_for_thousand(count)
+    shop = _token_shop()
+    if tokens and not has_tokens(tokens):
+        return None, (jsonify({
+            "error": f"To sprawdzenie potrzebuje {tokens} tokenów.",
+            "charged": False,
+            "needTokens": True,
+            "tokens": tokens,
+            **shop,
+        }), 402)
+    return tokens, shop
+
+
+@app.route('/api/tidal-scan-quote', methods=['POST'])
+def api_tidal_scan_quote():
+    """Cena pełnego sprawdzenia, bez pobierania tokenu."""
+    _ensure_loaded()
+    data = request.get_json() or {}
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    tokens, shop = _tidal_tokens_or_block(count)
+    if tokens is None:
+        return shop
+    return jsonify({"ok": True, "tokens": tokens, "charged": False, **shop})
+
+
+@app.route('/api/tidal-scan-charge', methods=['POST'])
+def api_tidal_scan_charge():
+    """Pobiera tokeny dopiero po skończonym pełnym sprawdzeniu."""
+    _ensure_loaded()
+    from pimp_list import charge_tokens, tokens_spent
+
+    data = request.get_json() or {}
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    tokens, shop = _tidal_tokens_or_block(count)
+    if tokens is None:
+        return shop
+    if not tokens:
+        return jsonify({"ok": True, "charged": False, "tokens": 0, **shop})
+    spent = charge_tokens(tokens)
+    shop = _token_shop()
+    return jsonify({
+        "ok": True,
+        "charged": True,
+        "tokens": tokens,
+        "tokensSpent": spent,
+        "needTokens": shop["balance"] == 0,
+        **shop,
+    })
+
+
+def _disk_alternatives(author: str, title: str, limit: int = 40) -> list[dict]:
+    from file_analyzer import is_streaming
+    from pimp_list import same_recording
+
+    scored = []
+    for i, song in enumerate(st.songs):
+        path = song.get("FilePath", "") or ""
+        if not path or is_streaming(path) or _is_vdj_cache_path(path):
+            continue
+        song_title = song.get("Tags.Title") or ""
+        if not same_recording(title, song_title):
+            continue
+        scored.append((i, path, song))
+    out = []
+    seen = set()
+    for i, path, song in scored:
+        if path in seen:
+            continue
+        seen.add(path)
+        out.append({
+            "kind": "disk",
+            "idx": i,
+            "path": path,
+            "author": song.get("Tags.Author") or song.get("Tags.Artist") or "",
+            "title": song.get("Tags.Title") or "",
+            "duration": song.get("Infos.SongLength") or song.get("SongLength") or "",
+            "bpm": song.get("Tags.Bpm") or "",
+            "key": song.get("Tags.Key") or "",
+            "album": song.get("Tags.Album") or "",
+            "why": "Plik z dysku",
+            "score": 0,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.route('/api/tidal-replacements', methods=['POST'])
+def api_tidal_replacements():
+    """Zamienniki z dysku i z Tidal. Wchodzą w cenę sprawdzenia, drugiego tokenu nie biorą."""
+    _ensure_loaded()
+    from pimp_list import rank_replacements, same_recording, with_version
+
+    data = request.get_json() or {}
+    items = data.get("tracks") or []
+    if not isinstance(items, list):
+        return jsonify({"error": "Brak listy"}), 400
+    rows = []
+    for item in items[:8]:
+        if not isinstance(item, dict):
+            continue
+        author = (item.get("author") or "").strip()
+        title = (item.get("title") or "").strip()
+        old_id = str(item.get("tidalId") or "").strip()
+        disks = _disk_alternatives(author, title)
+        hits, _err = _tidal_search_tracks(f"{author} {title}".strip(), limit=8)
+        tidal = []
+        for hit in hits:
+            if str(hit.get("id") or "") == old_id:
+                continue
+            hit_title = hit.get("title") or ""
+            if not same_recording(title, hit_title):
+                continue
+            tidal.append({
+                "kind": "tidal",
+                "tidalId": str(hit.get("id") or ""),
+                "author": hit.get("artist") or "",
+                "title": with_version(hit_title, hit.get("version") or ""),
+                "duration": hit.get("duration") or "",
+                "bpm": hit.get("bpm") or "",
+                "key": hit.get("key") or "",
+                "album": hit.get("album") or "",
+                "why": "Tidal",
+            })
+        options, preferred = rank_replacements(
+            author,
+            title,
+            disks + tidal,
+            item.get("duration") or "",
+            item.get("bpm") or "",
+        )
+        rows.append({
+            "idx": item.get("idx"),
+            "options": options[:6],
+            "preferred": preferred if preferred < 6 else -1,
+        })
+    return jsonify({"rows": rows})
+
+
+@app.route('/api/tidal-replace-batch', methods=['POST'])
+def api_tidal_replace_batch():
+    """Podmienia brakujące Tidal na pierwszy wybrany zamiennik: plik z dysku albo nowe ID."""
+    _ensure_loaded()
+    _push_undo_state()
+    from file_analyzer import is_streaming
+    from pimp_list import streaming_path
+    from vdjfolder import normalize_path
+
+    data = request.get_json() or {}
+    updates = data.get("updates") or []
+    replacements = []
+    updated = 0
+    tags_inherited = 0
+    cues_copied = 0
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("idx"))
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx >= len(st.songs):
+            continue
+        old_path = st.songs[idx].get("FilePath", "") or ""
+        if not old_path:
+            continue
+        kind = (item.get("kind") or "").strip()
+        if kind == "disk":
+            new_path = normalize_path((item.get("newPath") or "").strip())
+            if not new_path or is_streaming(new_path):
+                continue
+            try:
+                exists = Path(new_path).is_file()
+            except OSError:
+                exists = False
+            if not exists:
+                continue
+            owned = any(normalize_path(s.get("FilePath") or "") == new_path for s in st.songs)
+            if not owned:
+                continue
+        elif kind == "tidal":
+            source = st.source or ""
+            if source == "rb":
+                source = "rekordbox"
+            new_path = streaming_path(source, str(item.get("tidalId") or ""))
+            if not new_path:
+                continue
+        else:
+            continue
+        if normalize_path(old_path) == normalize_path(new_path):
+            continue
+        from replace_inherit import inherit_record, same_length, write_inherited_file
+
+        source = st.songs[idx]
+        dests = [
+            song for i, song in enumerate(st.songs)
+            if i != idx and normalize_path(song.get("FilePath") or "") == new_path
+        ]
+        copy_analysis = any(same_length(source, dest) for dest in dests)
+        for dest in dests:
+            flags = inherit_record(source, dest)
+            if flags.get("tags"):
+                tags_inherited += 1
+            if flags.get("cues"):
+                cues_copied += 1
+        if kind == "disk":
+            try:
+                write_inherited_file(source, new_path, copy_analysis)
+            except Exception:
+                pass
+        st.songs[idx]["FilePath"] = new_path
+        replacements.append({"oldPath": old_path, "newPath": new_path, "oldIdx": idx})
+        from vdj_streaming import extract_tidal_id
+        old_tid = extract_tidal_id(old_path)
+        if old_tid:
+            for variant in (
+                f"streaming://tidal/{old_tid}",
+                f"netsearch://td{old_tid}",
+                f"td{old_tid}",
+                f"tidal:tracks:{old_tid}",
+                f"file://localhosttidal:tracks:{old_tid}",
+            ):
+                if normalize_path(variant) != normalize_path(old_path):
+                    replacements.append({"oldPath": variant, "newPath": new_path})
+        updated += 1
+    sync_stats = _sync_vdjfolder_paths(replacements) if replacements and st.vdjfolders else {
+        "folders_changed": 0,
+        "refs_updated": 0,
+    }
+    if replacements:
+        _sync_unified_playlist_paths(replacements)
+        if st.unified is not None:
+            track_map = {normalize_path(item["oldPath"]): item["newPath"] for item in replacements}
+            for track in st.unified.tracks:
+                new = track_map.get(normalize_path(getattr(track, "path", "") or ""))
+                if new:
+                    track.path = new
+    return jsonify({
+        "ok": True,
+        "updated": updated,
+        "tagsInherited": tags_inherited,
+        "cuesCopied": cues_copied,
+        "vdjfolders_sync": sync_stats,
+    })
 
 
 @app.route('/api/replace-with-tidal', methods=['POST'])
@@ -5042,6 +6056,17 @@ def api_remove_songs():
     data = request.get_json() or {}
     indices = sorted(set(int(i) for i in (data.get("indices") or []) if isinstance(i, (int, str)) and str(i).isdigit()), reverse=True)
     from vdjfolder import normalize_path, remove_paths_from_vdjfolder_content, path_match_keys
+    also_paths = {
+        normalize_path(raw.strip())
+        for raw in (data.get("alsoPaths") or [])
+        if isinstance(raw, str) and raw.strip()
+    }
+    if also_paths:
+        extra = [
+            i for i, song in enumerate(st.songs)
+            if normalize_path(song.get("FilePath") or "") in also_paths
+        ]
+        indices = sorted(set(indices) | set(extra), reverse=True)
     paths_to_remove = set()
     for i in indices:
         if 0 <= i < len(st.songs):
@@ -5073,7 +6098,16 @@ def api_remove_songs():
                 new_vdjfolders[rel_path] = content
         st.vdjfolders.clear()
         st.vdjfolders.update(new_vdjfolders)
-    return jsonify({"ok": True, "removed": removed, "count": len(st.songs), "vdjfolders_refs_removed": vdjfolders_refs_removed, "trash": trash.trash_summary()})
+    for raw in list(paths_to_remove):
+        _drop_path_from_unified(raw)
+    return jsonify({
+        "ok": True,
+        "removed": removed,
+        "removedIndices": sorted(indices_asc),
+        "count": len(st.songs),
+        "vdjfolders_refs_removed": vdjfolders_refs_removed,
+        "trash": trash.trash_summary(),
+    })
 
 
 @app.route('/api/tidal-track-list', methods=['GET'])
@@ -5098,6 +6132,10 @@ def api_tidal_track_list():
             'tidalId': tid,
             'author': s.get('Tags.Author', ''),
             'title': s.get('Tags.Title', ''),
+            'duration': s.get('Infos.SongLength') or s.get('SongLength') or '',
+            'bpm': s.get('Tags.Bpm') or '',
+            'key': s.get('Tags.Key') or '',
+            'album': s.get('Tags.Album') or '',
         })
     return jsonify({'tracks': tracks, 'count': len(tracks)})
 
@@ -5116,6 +6154,32 @@ def api_tidal_check_one():
     if available is None:
         out['error'] = 'Nie udało się połączyć z Tidal (sprawdź internet / certyfikaty SSL).'
     return jsonify(out)
+
+
+@app.route('/api/tidal-check-batch', methods=['POST'])
+def api_tidal_check_batch():
+    """Sprawdza paczkę ID naraz, w kilku wątkach. Jedno ID na raz było za wolne."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    data = request.get_json() or {}
+    ids = []
+    for raw in (data.get("tidalIds") or [])[:40]:
+        tid = str(raw or "").strip()
+        if tid.isdigit() and tid not in ids:
+            ids.append(tid)
+    if not ids:
+        return jsonify({"results": []})
+
+    def one(tid: str):
+        available = _check_tidal_track_available(tid)
+        if available is None:
+            available = _check_tidal_track_available(tid)
+        return {"tidalId": tid, "available": available}
+
+    workers = min(12, len(ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(one, ids))
+    return jsonify({"results": results})
 
 
 @app.route('/api/tidal-unavailable', methods=['GET'])
@@ -5172,11 +6236,10 @@ def api_tidal_credentials_info():
     try:
         from tidal_auth import has_tidal_credentials
         has = has_tidal_credentials()
-        cred_path = str(Path.home() / ".config" / "njr" / "tidal-credentials.json")
         return jsonify({
             'configured': has,
             'redirect_uri_hint': _tidal_redirect_uri() if has else None,
-            'hint': 'Utwórz aplikację na developer.tidal.com, pobierz client_id i client_secret, zapisz w ' + cred_path + ' jako {"client_id":"...","client_secret":"..."}. W aplikacji Tidal dodaj Redirect URI: http://127.0.0.1:5050/tidal-callback (oraz ten sam z aktualnym portem, jeśli ≠ 5050).',
+            'hint': '' if has else 'Połączenie z Tidal nie jest włączone w tej wersji programu.',
         })
     except ImportError:
         return jsonify({'configured': False, 'hint': 'Moduł tidal_auth niedostępny'})
@@ -5237,9 +6300,8 @@ def api_tidal_auth_url():
         port_warning = None
         if host and not host.endswith(':5050'):
             port_warning = (
-                f'Aplikacja działa na porcie innym niż 5050 ({host}). '
-                f'W developer.tidal.com dodaj Redirect URI: {redirect_uri} '
-                f'(błąd 11102 = niezgodny redirect URI).'
+                f'Port 5050 jest zajęty ({host}), więc Tidal może nie wrócić do programu. '
+                'Zamknij drugą kopię i spróbuj jeszcze raz.'
             )
         return jsonify({
             'url': url,
@@ -5566,6 +6628,283 @@ def _online_playlist_resolve_entries(mappings: list, online_tracks: list) -> lis
     return entries
 
 
+def _online_mmss(value) -> str:
+    try:
+        n = int(float(value))
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    return f"{n // 60}:{n % 60:02d}"
+
+
+def _online_disk_options(artist: str, title: str, limit: int = 12) -> list:
+    """Ten sam utwór tego samego wykonawcy. Limit liczy się po tym filtrze."""
+    from file_analyzer import is_streaming
+    from pimp_list import _same_artist, same_recording
+
+    out = []
+    for song in st.songs:
+        path = (song.get("FilePath") or "").strip()
+        if not path or is_streaming(path) or ".vdjcache" in path.lower():
+            continue
+        cand_title = (song.get("Tags.Title") or "").strip()
+        cand_artist = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+        if not same_recording(title, cand_title) or not _same_artist(artist, title, cand_artist, cand_title):
+            continue
+        length = song.get("Infos.SongLength") or song.get("Infos.Duration") or ""
+        out.append({
+            "kind": "disk",
+            "path": path,
+            "author": cand_artist,
+            "title": cand_title,
+            "duration": str(length or ""),
+            "bpm": song.get("Tags.Bpm") or "",
+            "key": song.get("Tags.Key") or "",
+            "album": song.get("Tags.Album") or "",
+            "source": "Dysk",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _fresh_playlist_name(name: str) -> str:
+    taken = set()
+    if st.unified and st.unified.playlists:
+        for label, playlist in iter_playlist_entries(st.unified.playlists):
+            taken.add(label)
+            taken.add(playlist.name)
+    if (st.source or "") == "vdj":
+        for rel in st.vdjfolders or {}:
+            taken.add(rel.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip())
+    base = name
+    n = 2
+    while name in taken:
+        name = f"{base} {n}"
+        n += 1
+    return name
+
+
+@app.route('/api/online-build', methods=['POST'])
+def api_online_build():
+    """
+    Link (Tidal, Spotify, YouTube) albo tekst Artysta - Tytuł.
+    Dopasowanie do dysku. Lista spoza Tidala dostaje też propozycje Tidal.
+    1 token po udanym wczytaniu i dopasowaniu. Błąd parsowania kosztuje 0.
+    """
+    _ensure_loaded()
+    from concurrent.futures import ThreadPoolExecutor
+
+    from online_playlist_parser import parse_manual_list, parse_playlist_url
+    from pimp_list import charge_token, rank_replacements, token_balance, with_version
+
+    data = request.get_json() or {}
+    mode = (data.get("mode") or "url").strip()
+    text = (data.get("text") or "").strip()
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    if not text:
+        return jsonify({"error": "Wklej link albo listę utworów", "charged": False, "rows": []}), 400
+    if mode == "text":
+        tracks = parse_manual_list(text)
+        source = "manual"
+        err = None if tracks else "Nie rozpoznano listy. Jedna linia: Artysta - Tytuł."
+    else:
+        tracks, err, source = parse_playlist_url(text)
+    if err:
+        return jsonify({"error": err, "charged": False, "rows": [], "source": source or ""})
+    if not tracks:
+        return jsonify({"error": "Na tej liście nie ma utworów.", "charged": False, "rows": []})
+    truncated = len(tracks) > 120
+    tracks = tracks[:120]
+    want_tidal = source != "tidal"
+    tidal_lists = [[] for _ in tracks]
+    if want_tidal:
+        queries = [f"{(t.get('artist') or '').strip()} {(t.get('title') or '').strip()}".strip() for t in tracks]
+
+        def _search(query: str):
+            if not query:
+                return []
+            hits, _err = _tidal_search_tracks(query, limit=6)
+            return hits or []
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            tidal_lists = list(pool.map(_search, queries))
+    rows = []
+    unmatched = []
+    for index, track in enumerate(tracks):
+        artist = (track.get("artist") or "").strip()
+        title = (track.get("title") or "").strip()
+        options = _online_disk_options(artist, title)
+        for hit in tidal_lists[index]:
+            display = with_version(hit.get("title") or "", hit.get("version") or "")
+            options.append({
+                "kind": "tidal",
+                "tidalId": str(hit.get("id") or ""),
+                "author": hit.get("artist") or "",
+                "title": display,
+                "duration": str(hit.get("duration") or ""),
+                "bpm": hit.get("bpm") or "",
+                "key": hit.get("key") or "",
+                "album": hit.get("album") or "",
+                "source": "Tidal",
+            })
+        ranked, preferred = rank_replacements(
+            artist, title, options,
+            duration=str(track.get("duration") or ""),
+            bpm="",
+        )
+        for opt in ranked:
+            opt["length"] = _online_mmss(opt.get("duration"))
+        row = {
+            "onlineIdx": index,
+            "artist": artist,
+            "title": title,
+            "length": _online_mmss(track.get("duration")),
+            "source": track.get("source") or source or "",
+            "externalId": str(track.get("externalId") or ""),
+            "options": ranked,
+            "preferred": preferred,
+        }
+        rows.append(row)
+        if not ranked:
+            unmatched.append({"artist": artist, "title": title, "source": row["source"]})
+    spent = charge_token()
+    return jsonify({
+        "rows": rows,
+        "unmatched": unmatched,
+        "source": source or "",
+        "truncated": truncated,
+        "charged": True,
+        "tokensSpent": spent,
+        **_token_shop(),
+    })
+
+
+@app.route('/api/online-playlist-save', methods=['POST'])
+def api_online_playlist_save():
+    """Nowa lista w drzewie wczytanej bazy. Plików nie pobiera i tokenu nie bierze."""
+    _ensure_loaded()
+    from pimp_list import streaming_path
+    from vdjfolder import create_vdjfolder_playlist, normalize_path
+
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip() or "Nowa lista"
+    items = data.get("items") or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "Zaznacz utwory, które mają wejść na listę"}), 400
+    paths = []
+    labels = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = (item.get("kind") or "").strip()
+        artist = (item.get("artist") or "").strip()
+        title = (item.get("title") or "").strip()
+        if kind == "disk":
+            path = (item.get("path") or "").strip()
+            known = any(
+                normalize_path(song.get("FilePath") or "") == normalize_path(path)
+                for song in st.songs
+            )
+            if not path or not known:
+                continue
+        elif kind == "tidal":
+            path = streaming_path(st.source or "serato", str(item.get("tidalId") or ""))
+            if not path:
+                continue
+        else:
+            continue
+        _pimp_ensure_song(path, artist, title)
+        paths.append(path)
+        labels.append((path, artist, title))
+    if not paths:
+        return jsonify({"error": "Nie ma czego zapisać"}), 400
+    name = _fresh_playlist_name(name)
+    _push_undo_state()
+    wrote = False
+    if (st.source or "") == "vdj":
+        rel_path = _vdjfolders_create_new_path(name)
+        st.vdjfolders[rel_path] = create_vdjfolder_playlist([p for p, _a, _t in labels], name)
+        wrote = True
+    if st.unified is not None:
+        if st.unified.playlists is None:
+            st.unified.playlists = []
+        st.unified.playlists.append(Playlist(name=name, track_ids=list(paths)))
+        wrote = True
+    if not wrote:
+        return jsonify({"error": "Wczytaj bazę, do której ma trafić lista"}), 400
+    return jsonify({"ok": True, "name": name, "count": len(paths)})
+
+
+@app.route('/api/orphan-playlist', methods=['POST'])
+def api_orphan_playlist():
+    """Dopisuje pliki spoza bazy i tworzy z nich playlistę. Eksport wrzuca ją do programu DJ."""
+    _ensure_loaded()
+    from vdjfolder import create_vdjfolder_playlist, normalize_path
+
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip() or "odnalezione"
+    name = name.replace("/", " ").replace("\\", " ").strip() or "odnalezione"
+    files = data.get("files") or []
+    if not isinstance(files, list) or not files:
+        return jsonify({"error": "Nie ma plików do listy"}), 400
+    from routes.files import _user_audio_allowed
+
+    _push_undo_state()
+    paths = []
+    seen = set()
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        raw = (item.get("path") or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        if not _user_audio_allowed(path):
+            continue
+        norm = normalize_path(str(path.resolve()))
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        artist = (item.get("author") or item.get("artist") or "").strip()
+        title = (item.get("title") or path.stem).strip()
+        idx = _pimp_ensure_song(norm, artist, title)
+        song = st.songs[idx]
+        for key, value in (
+            ("Tags.Title", title),
+            ("Tags.Author", artist),
+            ("Tags.Artist", artist),
+            ("Tags.Genre", item.get("genre") or ""),
+            ("Tags.Album", item.get("album") or ""),
+            ("Tags.Key", item.get("key") or ""),
+            ("Tags.Bpm", item.get("bpm") or ""),
+            ("Infos.SongLength", item.get("length") or ""),
+            ("Tags.Stars", item.get("rating") or ""),
+        ):
+            if value and not (song.get(key) or ""):
+                song[key] = value
+        paths.append(norm)
+    if not paths:
+        return jsonify({"error": "Żaden z tych plików nie da się dodać"}), 400
+    name = _fresh_playlist_name(name)
+    wrote = False
+    if (st.source or "") == "vdj":
+        rel_path = _vdjfolders_create_new_path(name)
+        st.vdjfolders[rel_path] = create_vdjfolder_playlist(paths, name)
+        wrote = True
+    if st.unified is not None:
+        if st.unified.playlists is None:
+            st.unified.playlists = []
+        st.unified.playlists.append(Playlist(name=name, track_ids=list(paths)))
+        wrote = True
+    if not wrote:
+        return jsonify({"error": "Wczytaj bazę, do której ma trafić lista"}), 400
+    return jsonify({"ok": True, "name": name, "count": len(paths)})
+
+
 @app.route('/api/online-playlist-create', methods=['POST'])
 def api_online_playlist_create():
     """
@@ -5673,14 +7012,8 @@ def api_online_playlist_download_backup():
 
 def _get_vdj_folders_path() -> Path:
     """Ścieżka do folderu VDJ Folders (gdzie vdjfolder musi być, żeby VDJ go rozpoznał)."""
-    import platform
-    home = Path.home()
-    if platform.system() == 'Darwin':  # macOS
-        return home / "Library" / "Application Support" / "VirtualDJ" / "Folders"
-    if platform.system() == 'Windows':
-        local = Path(os.environ.get('LOCALAPPDATA', home / 'AppData' / 'Local'))
-        return local / "VirtualDJ" / "Folders"
-    return home / ".virtualdj" / "Folders"
+    from platform_paths import vdj_root
+    return vdj_root() / "Folders"
 
 
 def _get_vdj_base_path() -> Path:
@@ -5766,6 +7099,65 @@ def _vdjfolders_create_new_path(name: str) -> str:
         if rel not in st.vdjfolders:
             return rel
     return f"{base}_new.vdjfolder"
+
+
+def _browser_audio_mime(ext: str) -> str:
+    return {
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".aac": "audio/aac",
+        ".wav": "audio/wav",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+    }.get((ext or "").lower(), "application/octet-stream")
+
+
+def _send_audio_file(p: Path):
+    """Odsłuch w oknie programu prosi o fragment pliku. Bez zakresu czas zostaje na 00:00."""
+    from flask import Response
+
+    size = p.stat().st_size
+    mime = _browser_audio_mime(p.suffix.lower())
+    start, end, status = 0, max(0, size - 1), 200
+    range_header = (request.headers.get("Range") or "").strip()
+    if size and range_header.startswith("bytes="):
+        piece = range_header[6:].split(",", 1)[0].strip()
+        left, _, right = piece.partition("-")
+        try:
+            if left == "" and right:
+                take = int(right)
+                start = max(0, size - take)
+                end = size - 1
+            else:
+                start = int(left) if left else 0
+                end = int(right) if right else size - 1
+            start = max(0, min(start, size - 1))
+            end = max(start, min(end, size - 1))
+            status = 206
+        except ValueError:
+            start, end, status = 0, size - 1, 200
+    length = (end - start + 1) if size else 0
+
+    def generate():
+        with open(p, "rb") as handle:
+            handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = handle.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    headers = {
+        "Content-Length": str(length),
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-store",
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return Response(generate(), status=status, mimetype=mime, direct_passthrough=True, headers=headers)
 
 
 def _resolve_audio_path(path: str, vdj_cache_path: Optional[str] = None) -> Optional[Path]:
@@ -5878,12 +7270,14 @@ def api_audio():
                 })
             from flask import Response
             cl = p.stat().st_size
-            mime = 'audio/mpeg' if ext == '.mp3' else ('audio/flac' if ext == '.flac' else 'application/octet-stream')
-            return Response(status=200, headers={'Content-Type': mime, 'Content-Length': str(cl)})
+            return Response(status=200, headers={
+                'Content-Type': _browser_audio_mime(ext),
+                'Content-Length': str(cl),
+                'Cache-Control': 'no-store',
+            })
         if ext in ('.vdjsample', '.vdjcache'):
             return _stream_vdj_as_ogg(p)
-        mime = 'audio/mpeg' if ext == '.mp3' else ('audio/flac' if ext == '.flac' else None)
-        return send_file(str(p), mimetype=mime, as_attachment=False)
+        return _send_audio_file(p)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -5907,12 +7301,54 @@ def api_duplicates():
         return jsonify({'error': str(e), 'type': type(e).__name__}), 500
 
 
+def _playlist_names_by_path() -> dict:
+    """Ścieżka → nazwy list, na których utwór jest (VDJ i bazy Serato / Engine / Rekordbox)."""
+    from vdjfolder import normalize_path
+    from unified_model import iter_playlist_entries
+
+    acc: dict[str, list[str]] = {}
+
+    def add(raw, name: str) -> None:
+        np = normalize_path(str(raw or ''))
+        label = (name or '').strip()
+        if not np or not label:
+            return
+        bucket = acc.setdefault(np, [])
+        if label not in bucket:
+            bucket.append(label)
+
+    if st.vdjfolders:
+        import xml.etree.ElementTree as ET
+        for rel_path, content in st.vdjfolders.items():
+            name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
+            if not name:
+                continue
+            try:
+                root = ET.fromstring(content)
+                if root.tag != "VirtualFolder":
+                    continue
+                for song in root.findall("song"):
+                    p = (song.get("path") or "").strip()
+                    if p and not p.startswith("netsearch:"):
+                        add(p, name)
+            except ET.ParseError:
+                pass
+    if st.unified and st.unified.playlists:
+        for label, pl in iter_playlist_entries(st.unified.playlists):
+            for tid in pl.track_ids or []:
+                add(tid, label)
+    return acc
+
+
 def _dup_rec(songs: list, i: int) -> dict:
     """Tworzy rekord duplikatu z pełnymi danymi do porównania (czas, BPM, rating, bitrate, playcount)."""
+    from vdj_path_mapping import extract_song_tidal_id
+
     s = songs[i]
+    path = s.get('FilePath', '') or ''
     return {
         'idx': i,
-        'path': s.get('FilePath', ''),
+        'path': path,
         'author': s.get('Tags.Author', ''),
         'title': s.get('Tags.Title', ''),
         'duration': s.get('Infos.SongLength') or s.get('Infos.Duration') or '',
@@ -5921,7 +7357,9 @@ def _dup_rec(songs: list, i: int) -> dict:
         'bitrate': s.get('Infos.Bitrate') or s.get('Tags.Bitrate') or '',
         'key': s.get('Tags.Key', ''),
         'genre': s.get('Tags.Genre', ''),
+        'album': s.get('Tags.Album', ''),
         'playcount': s.get('Infos.PlayCount') or s.get('PlayCount') or '',
+        'tidalId': extract_song_tidal_id(s) or '',
     }
 
 
@@ -5938,6 +7376,7 @@ def _api_duplicates_impl():
     from vdjfolder import normalize_path
     from vdj_streaming import extract_tidal_id, is_tidal_path
     from file_analyzer import is_streaming
+    from dup_search import cluster_recordings, duplicate_kind
 
     def _norm(s):
         try:
@@ -5960,19 +7399,16 @@ def _api_duplicates_impl():
 
     groups = []
     if method == 'tidal':
-        by_tidal_id = defaultdict(list)
-        for i, s in enumerate(st.songs):
-            path = s.get('FilePath', '') or ''
-            tid = extract_tidal_id(path)
-            if tid:
-                by_tidal_id[tid].append(i)
-        for tid, indices in by_tidal_id.items():
-            if len(indices) > 1:
-                groups.append([_dup_rec(st.songs, i) for i in indices])
+        from dup_search import tidal_duplicate_groups
+        for indices in tidal_duplicate_groups(st.songs):
+            groups.append([_dup_rec(st.songs, i) for i in indices])
     elif method == 'path':
         by_path = defaultdict(list)
         for i, s in enumerate(st.songs):
-            p = normalize_path(s.get('FilePath', '') or '')
+            raw = s.get('FilePath', '') or ''
+            if duplicate_kind(raw) == 'skip':
+                continue
+            p = normalize_path(raw)
             if p:
                 by_path[p].append(i)
         for path, indices in by_path.items():
@@ -5984,7 +7420,7 @@ def _api_duplicates_impl():
         by_hash = defaultdict(list)
         for i, s in enumerate(st.songs):
             fp = s.get('FilePath', '') or ''
-            if not fp or is_streaming(fp):
+            if duplicate_kind(fp) != 'file':
                 continue
             h = (s.get('Infos.FileHash') or '').strip()
             if not h:
@@ -6002,19 +7438,29 @@ def _api_duplicates_impl():
     else:  # similar
         by_key = defaultdict(list)
         for i, s in enumerate(st.songs):
+            path = s.get('FilePath', '') or ''
+            kind = duplicate_kind(path)
+            if kind == 'skip' and not _is_vdj_cache_path(path):
+                continue
             author = _norm(s.get('Tags.Author', ''))
             title = _norm(s.get('Tags.Title', ''))
-            if author or title:
-                key = (author, title)
-                by_key[key].append(i)
-        for key, indices in by_key.items():
-            if len(indices) > 1:
-                groups.append([_dup_rec(st.songs, i) for i in indices])
+            if not (author or title):
+                continue
+            rec = _dup_rec(st.songs, i)
+            rec['tidal_id'] = extract_tidal_id(path) or ''
+            by_key[(author, title)].append(rec)
+        for key, rows in by_key.items():
+            groups.extend(cluster_recordings(rows))
 
-    # Filtruj grupy według scope – zostaw tylko rekordy pasujące do zakresu
+    # Filtruj grupy według scope. „Tylko cache” zostawia parę cache + stream:
+    # sam plik .vdjcache nie jest duplikatem, dopóki nie widać drugiego wpisu.
     if scope != 'all':
         filtered_groups = []
         for group in groups:
+            if scope == 'cache':
+                if any(_is_vdj_cache_path(rec.get('path', '') or rec.get('FilePath', '')) for rec in group):
+                    filtered_groups.append(group)
+                continue
             kept = [rec for rec in group if _matches_scope(rec.get('path', '') or rec.get('FilePath', ''))]
             if len(kept) > 1:
                 filtered_groups.append(kept)
@@ -6022,26 +7468,7 @@ def _api_duplicates_impl():
 
     total = sum(len(g) - 1 for g in groups)  # ile można usunąć (zostawiamy 1 per grupa)
 
-    # path → lista nazw playlist (w ilu listach jest utwór)
-    path_to_playlists = {}
-    if st.vdjfolders:
-        import xml.etree.ElementTree as ET
-        for rel_path, content in st.vdjfolders.items():
-            name = rel_path.split("/")[-1].split("\\")[-1].replace(".vdjfolder", "").strip()
-            if not name:
-                continue
-            try:
-                root = ET.fromstring(content)
-                if root.tag != "VirtualFolder":
-                    continue
-                for song in root.findall("song"):
-                    p = (song.get("path") or "").strip()
-                    if p and not p.startswith("netsearch:"):
-                        np = normalize_path(p)
-                        if np:
-                            path_to_playlists.setdefault(np, []).append(name)
-            except ET.ParseError:
-                pass
+    path_to_playlists = _playlist_names_by_path()
 
     vdj_cache_path = (request.args.get('vdjCachePath') or '').strip() or None
     for group in groups:
@@ -6058,6 +7485,10 @@ def _api_duplicates_impl():
                 rec['pathSource'] = _path_source(path_val or '')
                 rec['isOnDisk'] = rec['pathSource'] == 'dysk'
                 _enrich_song_for_display(rec, vdj_cache_path)
+                if rec.get('fileMissing') or (
+                    duplicate_kind(path_val or '') == 'skip' and not _is_vdj_cache_path(path_val or '')
+                ):
+                    rec['_drop'] = True
             except Exception:
                 rec['pathDisplay'] = str(rec.get('path', ''))[:80]
                 rec['pathStatus'] = None
@@ -6065,8 +7496,143 @@ def _api_duplicates_impl():
                 rec['playlists_count'] = 0
                 rec['pathSource'] = 'dysk'
                 rec['isOnDisk'] = False
+                if duplicate_kind(str(rec.get('path') or '')) == 'skip' and not _is_vdj_cache_path(str(rec.get('path') or '')):
+                    rec['_drop'] = True
 
-    return jsonify({'groups': groups, 'totalDuplicates': total, 'method': method})
+    groups = [
+        [rec for rec in group if not rec.get('_drop')]
+        for group in groups
+    ]
+    groups = [group for group in groups if len(group) > 1]
+    total = sum(len(g) - 1 for g in groups)
+
+    from dup_marks import classify_group
+    hints = []
+    for group in groups:
+        try:
+            hints.append(classify_group(group))
+        except Exception:
+            hints.append(None)
+
+    return jsonify({'groups': groups, 'hints': hints, 'totalDuplicates': total, 'method': method})
+
+
+@app.route('/api/compare-audio', methods=['POST'])
+def api_compare_audio():
+    """Próbka dźwięku około 50 s: czy dwa pliki z biblioteki to ten sam utwór."""
+    _ensure_loaded()
+    from vdjfolder import normalize_path
+    from audio_match import compare_pair
+
+    data = request.get_json() or {}
+    items = data.get('items') or []
+    if not isinstance(items, list):
+        return jsonify({'error': 'Wymagane items'}), 400
+    allowed = {normalize_path(s.get('FilePath') or '') for s in st.songs}
+    results = []
+    for item in items[:40]:
+        if not isinstance(item, dict):
+            results.append({'same': None, 'score': None})
+            continue
+        a = normalize_path((item.get('a') or '').strip())
+        b = normalize_path((item.get('b') or '').strip())
+        if not a or not b or a not in allowed or b not in allowed:
+            results.append({'same': None, 'score': None})
+            continue
+        try:
+            dur = float(item.get('duration') or 0)
+        except (TypeError, ValueError):
+            dur = 0
+        try:
+            sec = float(item.get('sec') or 0)
+        except (TypeError, ValueError):
+            sec = 0
+        raw_a = next((s.get('FilePath') for s in st.songs if normalize_path(s.get('FilePath') or '') == a), a)
+        raw_b = next((s.get('FilePath') for s in st.songs if normalize_path(s.get('FilePath') or '') == b), b)
+        results.append(compare_pair(raw_a, raw_b, sec or None, dur or None))
+    return jsonify({'results': results})
+
+
+@app.route('/api/duplicate-marks', methods=['POST'])
+def api_duplicate_marks():
+    """Zielony / czerwony albo brak zaznaczenia. Nic nie usuwa."""
+    _ensure_loaded()
+    from dup_marks import classify_group, tidal_name_groups, version_buckets
+    from vdjfolder import normalize_path
+
+    data = request.get_json() or {}
+    groups = data.get('groups') or []
+    verdicts = []
+    seen = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        verdicts.append(classify_group(group))
+        for row in group:
+            if isinstance(row, dict):
+                seen.add(normalize_path(row.get('path') or row.get('FilePath') or ''))
+
+    names = _playlist_names_by_path()
+    library = []
+    for i, _song in enumerate(st.songs):
+        rec = _dup_rec(st.songs, i)
+        raw = rec.get('path') or ''
+        np = normalize_path(raw)
+        lists = names.get(np, [])
+        rec['playlists'] = lists
+        rec['playlists_count'] = len(lists)
+        rec['pathSource'] = _path_source(raw)
+        rec['isStreaming'] = rec['pathSource'] != 'dysk'
+        rec['isOnDisk'] = rec['pathSource'] == 'dysk'
+        rec['FilePath'] = raw
+        library.append(rec)
+    extra = []
+    for bucket in version_buckets(library):
+        paths = {normalize_path(r.get('path') or '') for r in bucket}
+        if paths and paths <= seen:
+            continue
+        verdict = classify_group(bucket)
+        verdict['section'] = 'review'
+        verdict['label'] = 'wysokie'
+        verdict['note'] = (
+            'Wysokie prawdopodobieństwo: tytuł jest blisko, dopisek (np. Radio Edit) jest tylko przy części. '
+            'Nic nie zaznaczam — odsłuchaj.'
+        )
+        verdict['rows'] = [{'path': (r.get('path') or ''), 'mark': '', 'reason': verdict['note']} for r in bucket]
+        extra.append({'group': bucket, 'verdict': verdict})
+    for item in tidal_name_groups(library):
+        paths = {normalize_path(r.get('path') or '') for r in item['group']}
+        if paths and paths <= seen:
+            continue
+        extra.append(item)
+        if len(extra) >= 120:
+            break
+    return jsonify({'verdicts': verdicts, 'extra': extra})
+
+
+@app.route('/api/duplicate-advice', methods=['POST'])
+def api_duplicate_advice():
+    """Jedna podpowiedź dla całego wyniku. 1 token po udanej analizie."""
+    _ensure_loaded()
+    from dup_marks import advise_group
+    from pimp_list import charge_token, token_balance
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    data = request.get_json() or {}
+    groups = data.get("groups") or []
+    if not isinstance(groups, list) or not groups:
+        return jsonify({"error": "Najpierw wyszukaj duplikaty", "charged": False, "advices": []}), 400
+    advices = []
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        advices.append(advise_group(group))
+    if not advices:
+        return jsonify({"error": "Brak grup do porównania", "charged": False, "advices": []})
+    charge_token()
+    return jsonify({"advices": advices, "charged": True, **_token_shop()})
 
 
 @app.route('/api/remove-duplicates', methods=['POST'])
@@ -6203,6 +7769,14 @@ def api_merge_duplicate_group():
     data = request.get_json() or {}
     keep_idx = data.get('keepIdx')
     remove_indices = data.get('removeIndices', [])
+    keep_path = (data.get('keepPath') or '').strip()
+    remove_paths = [p for p in (data.get('removePaths') or []) if isinstance(p, str) and p.strip()]
+    if keep_idx is None and keep_path:
+        from vdjfolder import normalize_path
+        want = normalize_path(keep_path)
+        remove_norm = {normalize_path(p) for p in remove_paths}
+        keep_idx = next((i for i, s in enumerate(st.songs) if normalize_path(s.get('FilePath') or '') == want), None)
+        remove_indices = [i for i, s in enumerate(st.songs) if normalize_path(s.get('FilePath') or '') in remove_norm]
     if keep_idx is None:
         return jsonify({'error': 'Wymagane keepIdx'}), 400
     try:
@@ -6242,28 +7816,89 @@ def api_merge_duplicate_group():
                 keep_idx -= 1
             continue
 
-        stats = _sync_vdjfolder_paths([{
+        repl = {
             'oldPath': path_remove,
             'newPath': path_keep,
             'oldIdx': remove_idx,
-        }])
+        }
+        stats = _sync_vdjfolder_paths([repl])
         total_sync['folders_changed'] += stats.get('folders_changed', 0)
         total_sync['refs_updated'] += stats.get('refs_updated', 0)
+        total_sync['unified_refs'] = total_sync.get('unified_refs', 0) + _sync_unified_playlist_paths([repl], total_sync)
+        if bool(data.get('deleteFiles')):
+            note = _trash_replaced_file(path_remove, path_keep)
+            total_sync.setdefault('file_notes', []).append(note)
+            if note.get('trashed'):
+                total_sync['files_trashed'] = total_sync.get('files_trashed', 0) + 1
 
         st.songs.pop(remove_idx)
         actually_removed += 1
         if keep_idx > remove_idx:
             keep_idx -= 1
 
-    return jsonify({
+    result = {
         'ok': True,
         'removed': actually_removed,
         'kept_idx': keep_idx,
-        'playlists_updated': total_sync.get('folders_changed', 0),
+        'playlists_updated': total_sync.get('folders_changed', 0) + total_sync.get('unified_refs', 0),
+        'lists_collapsed': total_sync.get('collapsed', 0),
+        'files_trashed': total_sync.get('files_trashed', 0),
+        'file_notes': total_sync.get('file_notes', []),
         'refs_updated': total_sync.get('refs_updated', 0),
-        'vdjfolders_sync': total_sync,
         'count': len(st.songs),
+    }
+    _action_log('scal-duplikat', {
+        'keep': path_keep,
+        'removed_records': actually_removed,
+        'lists_moved': result['playlists_updated'],
+        'lists_collapsed': result['lists_collapsed'],
+        'files_trashed': result['files_trashed'],
+        'file_notes': result['file_notes'],
     })
+    return jsonify(result)
+
+
+def _action_log(event: str, payload: dict) -> None:
+    """Dziennik zmian na czas rozwoju. Nie zmienia bazy."""
+    import json
+    from datetime import datetime
+
+    try:
+        from platform_paths import app_support_dir
+        folder = app_support_dir() / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        line = {"time": datetime.now().isoformat(timespec="seconds"), "event": event, **payload}
+        with (folder / "dzialania.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _trash_replaced_file(path_remove: str, path_keep: str) -> dict:
+    """Przenosi zastąpiony plik z dysku do kosza. Streamingu nie rusza."""
+    from file_analyzer import is_streaming
+    from vdjfolder import normalize_path
+    import session_trash as trash
+
+    if not path_remove or is_streaming(path_remove):
+        return {'path': path_remove, 'trashed': False, 'why': 'streaming, nie ma pliku'}
+    if normalize_path(path_remove) == normalize_path(path_keep):
+        return {'path': path_remove, 'trashed': False, 'why': 'ten sam plik co zostawiony'}
+    path = Path(path_remove).expanduser()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    if Path.home().resolve() not in resolved.parents:
+        return {'path': path_remove, 'trashed': False, 'why': 'poza katalogiem domowym'}
+    if not resolved.is_file():
+        return {'path': path_remove, 'trashed': False, 'why': 'pliku nie ma na dysku'}
+    try:
+        trash.move_file_to_system_trash(resolved)
+        trash.add_file_trash(str(resolved), source='duplicate-merge')
+    except Exception as exc:
+        return {'path': path_remove, 'trashed': False, 'why': f'kosz odrzucił: {exc}'}
+    return {'path': path_remove, 'trashed': True, 'why': 'kosz'}
 
 
 # Typowe sekwencje mojibake
@@ -6386,7 +8021,10 @@ def api_apply_encoding_fixes():
     _push_undo_state()
     data = request.get_json() or {}
     changes = data.get('changes', [])
-    tag_map = {'author': 'Tags.Author', 'title': 'Tags.Title', 'genre': 'Tags.Genre', 'user1': 'Tags.User1', 'user2': 'Tags.User2'}
+    tag_map = {
+        'author': 'Tags.Author', 'title': 'Tags.Title', 'album': 'Tags.Album',
+        'genre': 'Tags.Genre', 'user1': 'Tags.User1', 'user2': 'Tags.User2',
+    }
     applied = 0
     for c in changes:
         idx = c.get('idx')
@@ -6396,8 +8034,365 @@ def api_apply_encoding_fixes():
             continue
         key = tag_map[field]
         st.songs[idx][key] = str(new_val)
+        if field == 'author':
+            st.songs[idx]['Tags.Artist'] = str(new_val)
         applied += 1
     return jsonify({'ok': True, 'applied': applied, 'count': len(st.songs)})
+
+
+def _playlist_artist_index() -> dict:
+    """Ścieżka -> licznik wykonawców wpisanych na playlistach, bez Various Artists."""
+    import xml.etree.ElementTree as ET
+    from collections import Counter
+
+    from tag_text import is_various_artist
+    from vdjfolder import normalize_path
+
+    bags: dict[str, Counter] = {}
+    for content in (getattr(st, "vdjfolders", None) or {}).values():
+        if not isinstance(content, str) or "<song" not in content.lower():
+            continue
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError:
+            continue
+        for el in root.iter("song"):
+            artist = (el.get("artist") or "").strip()
+            path = normalize_path(el.get("path") or "")
+            if not path or not artist or is_various_artist(artist):
+                continue
+            bags.setdefault(path, Counter())[artist] += 1
+    return bags
+
+
+def _best_playlist_artist(counter) -> str:
+    if not counter:
+        return ""
+    best = counter.most_common(2)
+    if len(best) == 1 or best[0][1] > best[1][1]:
+        return best[0][0]
+    return ""
+
+
+def _tag_track_view(idx: int, song: dict) -> dict:
+    from vdj_streaming import extract_tidal_id
+
+    author = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+    title = (song.get("Tags.Title") or "").strip()
+    album = (song.get("Tags.Album") or "").strip()
+    path = (song.get("FilePath") or "").strip()
+    return {
+        "idx": idx,
+        "author": author,
+        "title": title,
+        "album": album,
+        "authorAfter": author,
+        "titleAfter": title,
+        "albumAfter": album,
+        "why": [],
+        "path": path,
+        "pathSource": _path_source(path),
+        "tidalId": extract_tidal_id(path) or "",
+        "length": song.get("Infos.SongLength") or song.get("Infos.Duration") or song.get("SongLength") or "",
+        "bpm": song.get("Tags.Bpm") or "",
+        "key": song.get("Tags.Key") or "",
+        "rating": song.get("Tags.Stars") or song.get("Infos.Rating") or song.get("Tags.Rating") or "",
+        "lists": song.get("listsDisplay") or "",
+    }
+
+
+def _apply_playlist_artists(by_idx: dict, index: dict) -> None:
+    from tag_text import is_various_artist
+    from vdjfolder import normalize_path
+
+    for i, song in enumerate(st.songs):
+        author = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+        if not is_various_artist(author):
+            continue
+        artist = _best_playlist_artist(index.get(normalize_path(song.get("FilePath") or "")))
+        if not artist or artist == author:
+            continue
+        track = by_idx.get(i)
+        if track is None:
+            track = _tag_track_view(i, song)
+            by_idx[i] = track
+        track["authorAfter"] = artist
+        note = "Na playliście jest wpisany ten wykonawca."
+        if note not in track["why"]:
+            track["why"].append(note)
+
+
+_TITLE_AI_BATCH = 120
+
+
+def _tag_ai_candidates(limit: int = _TITLE_AI_BATCH) -> list[dict]:
+    from tag_text import looks_caps, looks_mojibake, looks_wrong
+
+    coding, caps, other = [], [], []
+    for i, song in enumerate(st.songs):
+        author = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+        title = (song.get("Tags.Title") or "").strip()
+        album = (song.get("Tags.Album") or "").strip()
+        parts = (author, title, album)
+        if not any(looks_wrong(part) for part in parts):
+            continue
+        row = {"idx": i, "author": author, "title": title, "album": album}
+        if any(looks_mojibake(part) for part in parts):
+            coding.append(row)
+        elif any(looks_caps(part) for part in parts):
+            caps.append(row)
+        else:
+            other.append(row)
+    return (coding + caps + other)[:limit]
+
+
+def _gap_catalog() -> list[dict]:
+    from tag_text import is_blank_tag, is_gap
+    from vdj_streaming import extract_tidal_id
+
+    items = []
+    for i, song in enumerate(st.songs):
+        author = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+        title = (song.get("Tags.Title") or "").strip()
+        if not is_gap(author, title):
+            continue
+        path = (song.get("FilePath") or "").strip()
+        items.append({
+            "idx": i,
+            "author": "" if is_blank_tag(author) else author,
+            "title": "" if is_blank_tag(title) else title,
+            "album": (song.get("Tags.Album") or "").strip(),
+            "authorAfter": "" if is_blank_tag(author) else author,
+            "titleAfter": "" if is_blank_tag(title) else title,
+            "why": "",
+            "suggested": False,
+            "path": path,
+            "pathSource": _path_source(path),
+            "tidalId": extract_tidal_id(path) or "",
+            "length": song.get("Infos.SongLength") or song.get("Infos.Duration") or song.get("SongLength") or "",
+            "bpm": song.get("Tags.Bpm") or "",
+            "key": song.get("Tags.Key") or "",
+            "rating": song.get("Tags.Stars") or song.get("Infos.Rating") or song.get("Tags.Rating") or "",
+        })
+    return items
+
+
+def _split_source(row: dict) -> str:
+    import os
+    title = (row.get("title") or "").strip()
+    if title:
+        return title
+    name = os.path.basename(row.get("path") or "")
+    return os.path.splitext(name)[0].replace("_", " ").strip()
+
+
+def _gap_split_candidates(limit: int = _TITLE_AI_BATCH) -> list[tuple[dict, str]]:
+    from tag_text import looks_like_joined
+
+    ranked = []
+    for row in _gap_catalog():
+        source = _split_source(row)
+        if not looks_like_joined(source, row["author"]):
+            continue
+        low = source.lower()
+        first = 0 if any(word in low for word in ("feat", "official", "video", "teledysk", "[", "youtube")) else 1
+        ranked.append((first, row["idx"], source))
+    ranked.sort()
+    picked = {idx: source for _rank, idx, source in ranked[:limit]}
+    by_idx = {row["idx"]: row for row in _gap_catalog()}
+    return [(by_idx[idx], picked[idx]) for idx in picked]
+
+
+def _tag_bundle_prompt(rows: list[dict], splits: list[tuple[dict, str]]) -> str:
+    blocks = [
+        "Przeczytaj tabele naraz i oddaj jeden JSON.",
+        'Kształt: {"fixes": [{"idx": 1, "field": "title", "after": "tekst", "why": "krótko"}], '
+        '"splits": [{"idx": 2, "author": "wykonawca", "title": "tytuł", "why": "krótko"}]}.',
+        "Jak w danej tabeli nic nie wymaga zmiany, oddaj w tym polu []. Nie dopisuj idx spoza tabeli.",
+    ]
+    if rows:
+        blocks.append(
+            "fixes: popraw oczywiste błędy w polach wykonawca, tytuł i album. "
+            "Złe kodowanie (Ã© ma być é, Ã³ ma być ó, Å‚ ma być ł), "
+            "capslock na normalny zapis, ortografia, brak spacji, zlepione słowa. "
+            "Skróty DJ, feat i BPM zostaw. Nie zmieniaj sensu, remiksu ani kolejności. "
+            "Puste pole zostaw puste. Nie wymyślaj brakującego wykonawcy ani tytułu. "
+            "field to author, title albo album."
+        )
+        blocks.append("idx\twykonawca\ttytuł\talbum")
+        blocks.extend(
+            f'{row["idx"]}\t{row["author"]}\t{row["title"]}\t{row["album"]}' for row in rows
+        )
+    else:
+        blocks.append("fixes: brak tabeli, oddaj [].")
+    if splits:
+        blocks.append(
+            "splits: pole wykonawcy jest puste, a tytuł zawiera wykonawcę i nazwę utworu. Rozdziel je. "
+            "feat. zostaje przy wykonawcy. Remix, Edit i Radio Edit zostaw w tytule. "
+            "Zdejmij dopisek YouTube: Official Music Video, Official Video oraz rok w nawiasie albo [2001]. "
+            "Jak nie da się tego pewnie rozdzielić, pomiń idx. "
+            "Przykład: Liroy feat. Lionel Richie – Hello (Official Music Video) [2001] "
+            "→ author Liroy feat. Lionel Richie, title Hello."
+        )
+        blocks.append("idx\ttytuł")
+        blocks.extend(f"{row['idx']}\t{source}" for row, source in splits)
+    else:
+        blocks.append("splits: brak tabeli, oddaj [].")
+    return "\n".join(blocks)
+
+
+def _merge_gap_splits(splits: list[dict]) -> list[dict]:
+    by_idx = {item["idx"]: item for item in splits}
+    gaps = _gap_catalog()
+    for row in gaps:
+        split = by_idx.get(row["idx"])
+        if not split or split["title"] == row["title"]:
+            continue
+        row["authorAfter"] = split["author"]
+        row["titleAfter"] = split["title"]
+        row["why"] = split.get("why") or "Rozdzielone z tytułu."
+        row["suggested"] = True
+    gaps.sort(key=lambda row: (not row["suggested"], row["idx"]))
+    return gaps
+
+
+@app.route('/api/tag-ai-fixes', methods=['POST'])
+def api_tag_ai_fixes():
+    """Ortografia, wielkość liter i brak spacji. 1 token, gdy model odda wynik."""
+    _ensure_loaded()
+    from ai_flash import flash_preview
+    from pimp_list import charge_token
+    from tag_text import parse_tag_bundle
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    playlist_artists = _playlist_artist_index()
+    rows = _tag_ai_candidates()
+    split_rows = _gap_split_candidates()
+    wanted = {row["idx"]: row for row in rows}
+    known_splits = {row["idx"] for row, _source in split_rows}
+    fixes = []
+    splits = []
+    answered = False
+    if rows or split_rows:
+        try:
+            result = flash_preview(
+                _tag_bundle_prompt(rows, split_rows),
+                max_chars=48000,
+                timeout=55,
+            )
+        except ValueError as exc:
+            return jsonify({
+                "error": str(exc),
+                "charged": False,
+                "tracks": [],
+                "gaps": _merge_gap_splits([]),
+            }), 400
+        answered = True
+        parsed_fixes, parsed_splits = parse_tag_bundle(result.get("answer") or "")
+        for item in parsed_fixes:
+            row = wanted.get(item["idx"])
+            if row is None:
+                continue
+            before = row[item["field"]]
+            if not before or before == item["after"]:
+                continue
+            fixes.append(item)
+        splits = [item for item in parsed_splits if item["idx"] in known_splits]
+    by_idx = {}
+    if answered:
+        for item in fixes:
+            track = by_idx.get(item["idx"])
+            if track is None:
+                track = _tag_track_view(item["idx"], st.songs[item["idx"]])
+                by_idx[item["idx"]] = track
+            track[item["field"] + "After"] = item["after"]
+            if item.get("why"):
+                track["why"].append(item["why"])
+    _apply_playlist_artists(by_idx, playlist_artists)
+    gaps = _merge_gap_splits(splits)
+    tracks = list(by_idx.values())
+    charged = bool(fixes or splits)
+    if charged:
+        charge_token()
+    note = ""
+    if not tracks and not any(row["suggested"] for row in gaps):
+        note = "Model nie znalazł pewnej poprawki. Token nie zszedł."
+    return jsonify({
+        "tracks": tracks,
+        "gaps": gaps,
+        "scanned": len(rows),
+        "charged": charged,
+        "note": note,
+        **_token_shop(),
+    })
+
+
+@app.route('/api/tag-gaps', methods=['GET'])
+def api_tag_gaps():
+    """Tytuł bez wykonawcy albo wykonawca bez tytułu. Tokenu nie bierze."""
+    _ensure_loaded()
+    from tag_text import is_blank_tag, is_gap
+    from vdj_streaming import extract_tidal_id
+
+    items = []
+    for i, song in enumerate(st.songs):
+        author = (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip()
+        title = (song.get("Tags.Title") or "").strip()
+        if not is_gap(author, title):
+            continue
+        path = (song.get("FilePath") or "").strip()
+        items.append({
+            "idx": i,
+            "author": "" if is_blank_tag(author) else author,
+            "title": "" if is_blank_tag(title) else title,
+            "album": (song.get("Tags.Album") or "").strip(),
+            "path": path,
+            "pathSource": _path_source(path),
+            "tidalId": extract_tidal_id(path) or "",
+            "length": song.get("Infos.SongLength") or song.get("Infos.Duration") or song.get("SongLength") or "",
+            "bpm": song.get("Tags.Bpm") or "",
+            "key": song.get("Tags.Key") or "",
+            "rating": song.get("Tags.Stars") or song.get("Infos.Rating") or song.get("Tags.Rating") or "",
+        })
+        if len(items) >= 300:
+            break
+    return jsonify({"items": items, "count": len(items), "capped": len(items) >= 300})
+
+
+@app.route('/api/fill-tags', methods=['POST'])
+def api_fill_tags():
+    """Wpisuje brakujący tytuł, wykonawcę albo album. Pliku na dysku nie rusza."""
+    _ensure_loaded()
+    data = request.get_json() or {}
+    changes = data.get("changes") or []
+    if not isinstance(changes, list) or not changes:
+        return jsonify({"error": "Nie ma czego zapisać"}), 400
+    fields = {"author": "Tags.Author", "title": "Tags.Title", "album": "Tags.Album"}
+    _push_undo_state()
+    applied = 0
+    for item in changes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("idx"))
+        except (TypeError, ValueError):
+            continue
+        if idx < 0 or idx >= len(st.songs):
+            continue
+        song = st.songs[idx]
+        touched = False
+        for name, key in fields.items():
+            if name not in item:
+                continue
+            song[key] = str(item.get(name) or "").strip()
+            touched = True
+        if "author" in item:
+            song["Tags.Artist"] = song.get("Tags.Author") or ""
+        if touched:
+            applied += 1
+    return jsonify({"ok": True, "applied": applied})
 
 
 def _same_after_normalize(a: str, b: str) -> bool:
@@ -6405,137 +8400,53 @@ def _same_after_normalize(a: str, b: str) -> bool:
     return ' '.join((a or '').split()) == ' '.join((b or '').split())
 
 
-def _clean_title(value: str, pattern: str) -> str:
-    """
-    Czyści tytuł z linków, nawiasów, znaczników.
-    pattern: 'urls' | 'brackets' | 'remix' | 'all'
-    """
-    import re
-    s = (value or '').strip()
-    if not s:
-        return s
-
-    if pattern in ('urls', 'all'):
-        # Linki: http://, https://, www.
-        s = re.sub(r'https?://[^\s]+', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'www\.[^\s]+', '', s, flags=re.IGNORECASE)
-        # E-mail
-        s = re.sub(r'[\w.-]+@[\w.-]+\.\w+', '', s)
-
-    if pattern in ('brackets', 'all'):
-        # Nawiasy okrągłe: (Official Video), (HD), (Video), (Lyrics), (Audio), [HD], [4K], itd.
-        s = re.sub(r'\([^)]*official[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\([^)]*video[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\([^)]*audio[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\([^)]*lyric[s]?[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\([^)]*hd[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\([^)]*4k[^)]*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\[[^\]]*hd[^\]]*\]', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\[[^\]]*4k[^\]]*\]', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\[[^\]]*official[^\]]*\]', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*explicit\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*clean\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*sped\s+up\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*slowed[^)]*\)', '', s, flags=re.IGNORECASE)
-
-    if pattern in ('remix', 'all'):
-        # Wersje w nawiasach – usuń. NIE usuwać "Song Club Mix" / "Song Remix" (bez nawiasów – prawidłowe opisy).
-        # (Radio Edit), (Club Mix), (Tiesto Remix) itd. – tylko gdy w (nawiasach)
-        s = re.sub(r'\(\s*radio\s*edit\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*radio\s*remix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*radio\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*club\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*dub\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*original\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*extended\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*instrumental\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*vocal\s*mix\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*album\s*version\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*single\s*version\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*radio\s*version\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*club\s*version\s*\)', '', s, flags=re.IGNORECASE)
-        s = re.sub(r'\(\s*edit\s*\)', '', s, flags=re.IGNORECASE)
-        # (Remix), (Tiesto Remix), (David Guetta Remix) – \s* pozwala na brak spacji przed remix
-        s = re.sub(r'\(\s*[^)]*remix[^)]*\)', '', s, flags=re.IGNORECASE)
-
-    # Usuń puste nawiasy, wielokrotne spacje, trim
-    s = re.sub(r'\[\s*\]', '', s)
-    s = re.sub(r'\(\s*\)', '', s)
-    s = re.sub(r'\s+', ' ', s).strip()
-    s = re.sub(r'^[\s\-–—,;:]+|[\s\-–—,;:]+$', '', s)
-    return s
-
-
-def _extract_removed_phrases(before: str, after: str) -> list[str]:
-    """
-    Zwraca listę fraz usuniętych z before (zawartość nawiasów okrągłych/kwadratowych,
-    która była w before a zniknęła w after).
-    """
-    import re
-    before = (before or '').strip()
-    after = (after or '').strip()
-    if not before or before == after:
-        return []
-    before_lower = before.lower()
-    after_lower = after.lower()
-    removed = []
-    for m in re.finditer(r'[(\[]([^)\]]+)[)\]]', before):
-        content = m.group(1).strip()
-        if content and content.lower() in before_lower and content.lower() not in after_lower:
-            removed.append(content)
-    return removed
-
-
-def _should_skip_by_ignore(before: str, after: str, ignore_phrases: list[str]) -> bool:
-    """
-    True jeśli usunięta fraza (zawartość nawiasów) dokładnie pasuje do którejś
-    z fraz do zostawienia. Dopasowanie dokładne (case-insensitive) – unika
-    nadmiernego filtrowania przy substring (np. „Mix” nie wyklucza „Original Mix”).
-    """
-    removed = _extract_removed_phrases(before, after)
-    ignore_set = {p.strip().lower() for p in (ignore_phrases or []) if p and p.strip()}
-    for r in removed:
-        if r.lower() in ignore_set:
-            return True
-    return False
+def _clean_title(value: str, pattern: str = "all") -> str:
+    """Zdejmuje śmieci z tytułu. Wersja utworu zostaje. pattern jest z poprzedniego UI i nic już nie zmienia."""
+    from title_clean import clean_junk
+    return clean_junk(value)
 
 
 @app.route('/api/clean-title-suggestions', methods=['GET'])
 def api_clean_title_suggestions():
-    """
-    Wykrywa tytuły/artystów do czyszczenia (linki, nawiasy, wersje).
-    GET ?pattern=urls|brackets|remix|all&field=title|author|both&ignore=phrase1\\nphrase2
-    ignore: frazy do zostawienia (po nowej linii lub przecinku)
-    Zwraca: { items: [{ idx, field, before, after }, ...] }
-    """
+    """Jeden skan: mail, link, hashtag i dopisek YouTube w tytule albo wykonawcy."""
     _ensure_loaded()
-    pattern = (request.args.get('pattern') or 'all').lower()
-    if pattern not in ('urls', 'brackets', 'remix', 'all'):
-        pattern = 'all'
-    field = (request.args.get('field') or 'title').lower()
-    if field not in ('title', 'author', 'both'):
-        field = 'title'
-    ignore_raw = request.args.get('ignore') or ''
-    ignore_phrases = [p.strip() for p in ignore_raw.replace(',', '\n').splitlines() if p.strip()]
+    from title_clean import clean_junk, diff_marks
+    from vdj_streaming import extract_tidal_id
 
     items = []
-    key_title = 'Tags.Title'
-    key_author = 'Tags.Author'
-    key_artist = 'Tags.Artist'  # fallback (VDJ/Rekordbox)
-    for i, s in enumerate(st.songs):
-        if field in ('title', 'both'):
-            val = str(s.get(key_title, '') or '').strip()
-            cleaned = _clean_title(val, pattern)
-            if cleaned and cleaned.strip() and not _same_after_normalize(cleaned, val):
-                if not _should_skip_by_ignore(val, cleaned, ignore_phrases):
-                    items.append({'idx': i, 'field': 'title', 'before': val, 'after': cleaned})
-        if field in ('author', 'both'):
-            val = str(s.get(key_author, '') or s.get(key_artist, '') or '').strip()
-            cleaned = _clean_title(val, pattern)
-            if cleaned and cleaned.strip() and not _same_after_normalize(cleaned, val):
-                if not _should_skip_by_ignore(val, cleaned, ignore_phrases):
-                    items.append({'idx': i, 'field': 'author', 'before': val, 'after': cleaned})
-    return jsonify({'items': items, 'count': len(items), 'pattern': pattern, 'field': field})
+    total = 0
+    for i, song in enumerate(st.songs):
+        title = str(song.get('Tags.Title') or '').strip()
+        author = str(song.get('Tags.Author') or song.get('Tags.Artist') or '').strip()
+        title_after = clean_junk(title) if title else title
+        author_after = clean_junk(author) if author else author
+        title_changed = bool(title_after) and not _same_after_normalize(title_after, title)
+        author_changed = bool(author_after) and not _same_after_normalize(author_after, author)
+        if not title_changed and not author_changed:
+            continue
+        total += 1
+        if len(items) >= 500:
+            continue
+        path = (song.get('FilePath') or '').strip()
+        items.append({
+            'idx': i,
+            'titleBefore': title,
+            'titleAfter': title_after if title_changed else title,
+            'titleMarks': diff_marks(title, title_after) if title_changed else [],
+            'authorBefore': author,
+            'authorAfter': author_after if author_changed else author,
+            'authorMarks': diff_marks(author, author_after) if author_changed else [],
+            'titleChanged': title_changed,
+            'authorChanged': author_changed,
+            'path': path,
+            'pathSource': _path_source(path),
+            'tidalId': extract_tidal_id(path) or '',
+            'length': song.get('Infos.SongLength') or song.get('Infos.Duration') or song.get('SongLength') or '',
+            'bpm': song.get('Tags.Bpm') or '',
+            'key': song.get('Tags.Key') or '',
+            'rating': song.get('Tags.Stars') or song.get('Infos.Rating') or song.get('Tags.Rating') or '',
+        })
+    return jsonify({'items': items, 'count': total, 'capped': total > len(items)})
 
 
 @app.route('/api/apply-clean-title', methods=['POST'])
@@ -6619,6 +8530,77 @@ def _levenshtein(a: str, b: str) -> int:
     return prev[-1]
 
 
+def _levenshtein_within(a: str, b: str, limit: int = 2) -> bool:
+    """Czy dwie nazwy różnią się co najwyżej o limit znaków. Przerywa wcześniej."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > limit:
+        return False
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        best = curr[0]
+        for j, cb in enumerate(b):
+            ins = curr[j] + 1
+            delete = prev[j + 1] + 1
+            sub = prev[j] + (ca != cb)
+            val = ins if ins <= delete and ins <= sub else (delete if delete <= sub else sub)
+            curr.append(val)
+            if val < best:
+                best = val
+        if best > limit:
+            return False
+        prev = curr
+    return prev[-1] <= limit
+
+
+def _merge_fuzzy_name_groups(by_group: dict) -> dict:
+    """Łączy literówki. Nie porównuje całej bazy i nie skleja łańcucha dalekich nazw."""
+    buckets: dict[str, list[str]] = {}
+    for key in by_group:
+        if 4 <= len(key) <= 48:
+            buckets.setdefault(key[:3], []).append(key)
+    parent = {key: key for key in by_group}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: str, right: str) -> None:
+        pl, pr = find(left), find(right)
+        if pl != pr:
+            parent[pr] = pl
+
+    for group in buckets.values():
+        if len(group) < 2 or len(group) > 250:
+            continue
+        group.sort(key=len)
+        leaders: list[str] = []
+        for key in group:
+            joined = False
+            for lead in leaders:
+                if abs(len(lead) - len(key)) <= 2 and _levenshtein_within(lead, key):
+                    union(lead, key)
+                    joined = True
+                    break
+            if not joined:
+                leaders.append(key)
+    merged: dict = {}
+    for key, data in by_group.items():
+        root = find(key)
+        slot = merged.get(root)
+        if slot is None:
+            merged[root] = {'variants': set(data['variants']), 'items': list(data['items'])}
+        else:
+            slot['variants'].update(data['variants'])
+            slot['items'].extend(data['items'])
+    return merged
+
+
 def _path_source(path: str) -> str:
     """Zwraca: 'tidal' | 'cache' | 'dysk'."""
     if not path:
@@ -6699,34 +8681,8 @@ def api_normalize_suggestions():
                 'isStreaming': is_streaming, 'isCache': is_cache,
             })
 
-    # Opcjonalne łączenie grup po podobieństwie kluczy (Levenshtein ≤ 2, różnica długości ≤ 2)
     if fuzzy and len(by_group) > 1:
-        keys = list(by_group.keys())
-        parent = {k: k for k in keys}
-
-        def _find(x):
-            if parent[x] != x:
-                parent[x] = _find(parent[x])
-            return parent[x]
-
-        def _union(x, y):
-            px, py = _find(x), _find(y)
-            if px != py:
-                parent[py] = px
-
-        for i, k1 in enumerate(keys):
-            for k2 in keys[i + 1:]:
-                if abs(len(k1) - len(k2)) <= 2 and _levenshtein(k1, k2) <= 2:
-                    _union(k1, k2)
-
-        merged = {}
-        for k in keys:
-            root = _find(k)
-            if root not in merged:
-                merged[root] = {'variants': set(), 'items': []}
-            merged[root]['variants'] |= by_group[k]['variants']
-            merged[root]['items'].extend(by_group[k]['items'])
-        by_group = merged
+        by_group = _merge_fuzzy_name_groups(by_group)
 
     groups = []
     for key, data in by_group.items():
@@ -6760,6 +8716,57 @@ def api_normalize_suggestions():
 
     total_items = sum(len(g['items']) for g in groups)
     return jsonify({'groups': groups, 'count': total_items})
+
+
+@app.route('/api/normalize-advice', methods=['POST'])
+def api_normalize_advice():
+    """Jedna podpowiedź pisowni dla grup na ekranie. 1 token, gdy model wskaże formę."""
+    _ensure_loaded()
+    from ai_flash import flash_preview
+    from normalize_advice import advice_prompt, parse_normalize_advice
+    from pimp_list import charge_token
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    data = request.get_json() or {}
+    raw_groups = data.get("groups") or []
+    if not isinstance(raw_groups, list) or not raw_groups:
+        return jsonify({"error": "Najpierw wyszukaj grupy nazw.", "charged": False, "advices": []}), 400
+    packed = []
+    allowed = {}
+    for group in raw_groups[:120]:
+        if not isinstance(group, dict):
+            continue
+        try:
+            gi = int(group.get("gi"))
+        except (TypeError, ValueError):
+            continue
+        variants = []
+        for name in group.get("variants") or []:
+            text = str(name or "").strip()
+            if text and text not in variants:
+                variants.append(text)
+        if len(variants) < 2:
+            continue
+        packed.append({"gi": gi, "field": group.get("field") or "author", "variants": variants})
+        allowed[gi] = set(variants)
+    if not packed:
+        return jsonify({"error": "Brak grup do porównania.", "charged": False, "advices": []}), 400
+    try:
+        result = flash_preview(advice_prompt(packed), max_chars=48000, timeout=55)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "charged": False, "advices": []}), 400
+    advices = parse_normalize_advice(result.get("answer") or "", allowed)
+    if not advices:
+        return jsonify({
+            "advices": [],
+            "charged": False,
+            "note": "Model nie wskazał pewnej pisowni. Token nie zszedł.",
+            **_token_shop(),
+        })
+    charge_token()
+    return jsonify({"advices": advices, "charged": True, **_token_shop()})
 
 
 @app.route('/api/remixes', methods=['GET'])
@@ -7034,6 +9041,96 @@ def _split_artist_title(s: str):
     return None
 
 
+def _split_ai_candidates(limit: int = 200) -> list[dict]:
+    from tag_text import looks_like_split_candidate
+
+    rows = []
+    for i, song in enumerate(st.songs):
+        view = _tag_track_view(i, song)
+        if looks_like_split_candidate(view["author"]) or looks_like_split_candidate(view["title"]):
+            rows.append(view)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+@app.route('/api/split-author-title-ai', methods=['POST'])
+def api_split_author_title_ai():
+    """Rozdziela wykonawcę i tytuł. 1 token, gdy model odda pewną poprawkę."""
+    _ensure_loaded()
+    from ai_flash import flash_preview
+    from pimp_list import charge_token, token_balance
+    from tag_text import parse_gap_splits, rejects_name_split
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    rows = _split_ai_candidates()
+    if not rows:
+        return jsonify({
+            "tracks": [],
+            "charged": False,
+            "note": "Nie widzę pól, w których wykonawca i tytuł są zlepione.",
+        })
+    suggestions = []
+    answered = False
+    last_error = ""
+    by_idx = {row["idx"]: row for row in rows}
+    lines = [f'{row["idx"]}\t{row["author"]}\t{row["title"]}' for row in rows]
+    prompt = (
+        "W polu wykonawcy albo tytułu jest zlepiony wykonawca i tytuł. Rozdziel je tylko wtedy, gdy to pewne. "
+        "Nazwa z myślnikiem zostaje w całości: In-Grid, IN-GRID, Jay-Z, A-ha, Ne-Yo, T-Pain, Pan-Pot. "
+        "„IN - GRID” to wykonawca, nie dwa pola. Nie zamieniaj takiej nazwy na artist IN i title GRID. "
+        "„Wykonawca - Topic” to kanał YouTube, a Topic nie jest tytułem. Pomiń taki wiersz, gdy tytuł już jest. "
+        "Remix, Edit i Radio Edit zostają w tytule. "
+        "Gdy tytuł już jest osobnym polem bez myślnika, nie nadpisuj go kawałkiem wykonawcy. "
+        "Kolejność bywa odwrotna: długi polski tytuł po lewej, wykonawca po prawej. "
+        "Jak nie jesteś pewien, pomiń idx. "
+        "Odpowiedź to sam JSON: "
+        '[{"idx": 1, "author": "wykonawca", "title": "tytuł", "why": "krótko"}].\n'
+        "idx\twykonawca\ttytuł\n"
+        + "\n".join(lines)
+    )
+    try:
+        result = flash_preview(
+            prompt,
+            max_chars=48000,
+            timeout=55,
+        )
+    except ValueError as exc:
+        last_error = str(exc)
+    else:
+        answered = True
+        known = set(by_idx)
+        for item in parse_gap_splits(result.get("answer") or ""):
+            row = by_idx.get(item["idx"])
+            if row is None or item["idx"] not in known:
+                continue
+            if item["author"] == row["author"] and item["title"] == row["title"]:
+                continue
+            if rejects_name_split(row["author"], row["title"], item["author"], item["title"]):
+                continue
+            suggestions.append(item)
+    if not answered:
+        return jsonify({"error": last_error or "Model nie odpowiedział.", "charged": False, "tracks": []}), 400
+    tracks = []
+    seen = set()
+    for item in suggestions:
+        if item["idx"] in seen:
+            continue
+        seen.add(item["idx"])
+        track = dict(by_idx[item["idx"]])
+        track["authorAfter"] = item["author"]
+        track["titleAfter"] = item["title"]
+        track["why"] = [item["why"]] if item.get("why") else ["Rozdzielone na wykonawcę i tytuł."]
+        tracks.append(track)
+    charged = bool(tracks)
+    if charged:
+        charge_token()
+    note = "" if tracks else "Model nie znalazł pewnego rozdzielenia. Token nie zszedł."
+    return jsonify({"tracks": tracks, "scanned": len(rows), "charged": charged, "note": note, **_token_shop()})
+
+
 @app.route('/api/split-author-title-suggestions', methods=['GET'])
 def api_split_author_title_suggestions():
     """
@@ -7189,15 +9286,724 @@ def api_audio_file():
             return jsonify({'error': 'Format nieobsługiwany'}), 400
         if ext in ('.vdjsample', '.vdjcache'):
             return _stream_vdj_as_ogg(p)
-        mime = 'audio/mpeg' if ext == '.mp3' else ('audio/flac' if ext == '.flac' else None)
-        return send_file(str(p), mimetype=mime, as_attachment=False)
+        return _send_audio_file(p)
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 400
 
 
+def _pimp_library_rows() -> list[dict]:
+    from file_analyzer import is_streaming
+
+    rows = []
+    for i, song in enumerate(st.songs):
+        path = (song.get("FilePath") or song.get("path") or "").strip()
+        rows.append({
+            "idx": i,
+            "path": path,
+            "author": (song.get("Tags.Author") or song.get("Tags.Artist") or "").strip(),
+            "title": (song.get("Tags.Title") or "").strip(),
+            "genre": song.get("Tags.Genre") or "",
+            "user1": song.get("Tags.User1") or "",
+            "user2": song.get("Tags.User2") or "",
+            "bpm": song.get("Scan.Bpm") or song.get("Tags.Bpm") or song.get("bpm") or 0,
+            "year": song.get("Tags.Year") or song.get("Year") or song.get("Infos.Year") or "",
+            "playcount": song.get("Infos.PlayCount") or song.get("PlayCount") or song.get("playCount") or 0,
+            "streaming": bool(path and is_streaming(path)),
+            "cache": _is_vdj_cache_path(path),
+        })
+    return rows
+
+
+def _pimp_playlist_indexes(name: str) -> tuple[str, list[int]]:
+    """Zwraca (playlist|filter, indeksy utworów z tej listy)."""
+    from vdjfolder import normalize_path
+    from vdj_streaming import extract_tidal_id, is_tidal_path
+
+    path_to_idx = {}
+    for i, song in enumerate(st.songs):
+        path = (song.get("FilePath") or "").strip()
+        if not path:
+            continue
+        path_to_idx[normalize_path(path)] = i
+        if is_tidal_path(path):
+            tid = extract_tidal_id(path)
+            if tid:
+                path_to_idx.setdefault(f"td{tid}", i)
+                path_to_idx.setdefault(f"netsearch://td{tid}", i)
+                path_to_idx.setdefault(f"streaming://tidal/{tid}", i)
+    if st.vdjfolders:
+        import xml.etree.ElementTree as ET
+        chosen = _pick_vdj_rel(name)
+        for rel_path, content in st.vdjfolders.items():
+            if chosen:
+                if rel_path != chosen:
+                    continue
+            elif not vdj_rel_matches(rel_path, name):
+                continue
+            root = ET.fromstring(content)
+            filt = root.get("filter") or root.get("Filter") or ""
+            if filt:
+                indexes = [i for i, song in enumerate(st.songs) if _song_matches_filter(filt, song)]
+                return "filter", indexes
+            indexes = []
+            for song_elem in root.findall("song"):
+                path = (song_elem.get("path") or "").strip()
+                idx = path_to_idx.get(normalize_path(path)) if path else None
+                if idx is not None:
+                    indexes.append(idx)
+            return "playlist", indexes
+    if st.unified and st.unified.playlists:
+        for label, playlist in iter_playlist_entries(st.unified.playlists):
+            if label != name:
+                continue
+            if (getattr(playlist, "filter_text", "") or "").strip():
+                return "filter", []
+            indexes = []
+            for path in playlist.track_ids or []:
+                idx = path_to_idx.get(normalize_path(str(path)))
+                if idx is not None:
+                    indexes.append(idx)
+            return "playlist", indexes
+    raise ValueError("Nie znaleziono playlisty")
+
+
+def _vdj_text_same(left: str, right: str) -> bool:
+    def body(text: str) -> str:
+        raw = (text or "").lstrip()
+        if raw.startswith("<?xml"):
+            nl = raw.find("\n")
+            raw = raw[nl + 1:] if nl >= 0 else ""
+        return raw.replace("\r\n", "\n").strip()
+    return body(left) == body(right)
+
+
+def _fold_vdj_export_artifacts(folders: dict) -> dict:
+    """Utwory z fałszywej kopii VDJ.subfolders dokładam do prawdziwej listy i kopię zdejmuję."""
+    import xml.etree.ElementTree as ET
+
+    real = {rel: content for rel, content in (folders or {}).items() if not is_export_artifact(rel)}
+    for rel, content in (folders or {}).items():
+        if not is_export_artifact(rel) or not content:
+            continue
+        stem = rel.replace("\\", "/").rsplit("/", 1)[-1]
+        if stem.lower().endswith(".vdjfolder"):
+            stem = stem[: -len(".vdjfolder")]
+        target = next((candidate for candidate in real if vdj_rel_matches(candidate, stem)), None)
+        if not target:
+            continue
+        try:
+            extra = ET.fromstring(content)
+            base = ET.fromstring(real[target])
+        except ET.ParseError:
+            continue
+        if extra.get("filter") or extra.get("Filter") or base.get("filter") or base.get("Filter"):
+            continue
+        have = {normalize_path(elem.get("path") or "") for elem in base.findall("song")}
+        changed = False
+        for elem in extra.findall("song"):
+            path = (elem.get("path") or "").strip()
+            key = normalize_path(path)
+            if not path or key in have:
+                continue
+            base.append(elem)
+            have.add(key)
+            changed = True
+        if changed:
+            real[target] = ET.tostring(base, encoding="unicode")
+    return real
+
+
+def _pick_vdj_rel(query: str) -> Optional[str]:
+    """Prawdziwy plik listy. Kopia z VDJ.subfolders wraca do MyLists/nazwa.vdjfolder."""
+    folders = st.vdjfolders or {}
+    hits = [
+        rel for rel in folders
+        if vdj_rel_matches(rel, query) and not is_export_artifact(rel)
+    ]
+    if not hits:
+        stem = (query or "").replace("\\", "/").rsplit("/", 1)[-1]
+        if stem.lower().endswith(".vdjfolder"):
+            stem = stem[: -len(".vdjfolder")]
+        hits = [
+            rel for rel in folders
+            if stem and vdj_rel_matches(rel, stem) and not is_export_artifact(rel)
+        ]
+    if not hits:
+        return None
+    exact = [rel for rel in hits if rel.replace("\\", "/") == (query or "").replace("\\", "/")]
+    return (exact or hits)[0]
+
+
+def _pimp_find_vdj(name: str) -> Optional[str]:
+    return _pick_vdj_rel(name)
+
+
+def _pimp_find_unified(name: str):
+    if not st.unified or not st.unified.playlists:
+        return None
+    by_name = []
+    for label, playlist in iter_playlist_entries(st.unified.playlists):
+        if label == name:
+            return playlist
+        if playlist.name == name:
+            by_name.append(playlist)
+    if len(by_name) == 1:
+        return by_name[0]
+    return None
+
+
+def _pimp_ensure_song(path: str, artist: str, title: str) -> int:
+    from unified_model import Track
+    from vdj_streaming import extract_tidal_id
+    from vdjfolder import normalize_path
+
+    want = normalize_path(path)
+    tid = extract_tidal_id(path)
+    for i, song in enumerate(st.songs):
+        current = (song.get("FilePath") or "").strip()
+        if normalize_path(current) == want or (tid and extract_tidal_id(current) == tid):
+            return i
+    st.songs.append({
+        "FilePath": path,
+        "Tags.Author": artist,
+        "Tags.Title": title,
+    })
+    if st.unified is not None:
+        st.unified.tracks.append(Track(path=path, artist=artist, title=title))
+    return len(st.songs) - 1
+
+
+def _pimp_append_vdj(rel_path: str, path: str, artist: str, title: str) -> None:
+    import xml.etree.ElementTree as ET
+    from vdjfolder import normalize_path
+
+    root = ET.fromstring(st.vdjfolders[rel_path])
+    if root.get("filter") or root.get("Filter"):
+        raise ValueError("To jest lista filtrów. Wybierz zwykłą playlistę.")
+    want = normalize_path(path)
+    for elem in root.findall("song"):
+        if normalize_path(elem.get("path") or "") == want:
+            return
+    attrib = {"path": path, "artist": artist, "title": title, "idx": "0"}
+    if path.startswith("netsearch://td"):
+        attrib["netsearchId"] = "td" + path[len("netsearch://td"):]
+    ET.SubElement(root, "song", attrib)
+    st.vdjfolders[rel_path] = ET.tostring(root, encoding="unicode")
+
+
+def _pimp_append_unified(playlist, path: str) -> None:
+    from vdjfolder import normalize_path
+
+    if (getattr(playlist, "filter_text", "") or "").strip():
+        raise ValueError("To jest lista filtrów. Wybierz zwykłą playlistę.")
+    want = normalize_path(path)
+    ids = list(playlist.track_ids or [])
+    if any(normalize_path(str(tid)) == want for tid in ids):
+        return
+    ids.append(path)
+    playlist.track_ids = ids
+
+
+def _converter_install_id() -> str:
+    from platform_paths import app_support_dir
+    folder = app_support_dir()
+    path = folder / "install-id"
+    try:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        folder.mkdir(parents=True, exist_ok=True)
+        import uuid
+        text = str(uuid.uuid4())
+        path.write_text(text, encoding="utf-8")
+        return text
+    except OSError:
+        return "local"
+
+
+@app.route('/api/account/status', methods=['GET'])
+def api_account_status():
+    from njr_account import status
+    return jsonify(status())
+
+
+@app.route('/api/account/login', methods=['POST'])
+def api_account_login():
+    from njr_account import AccountError, login
+    data = request.get_json() or {}
+    try:
+        return jsonify(login(data.get("email") or "", data.get("password") or ""))
+    except AccountError as exc:
+        return jsonify({"signedIn": False, "error": exc.message}), exc.status
+
+
+@app.route('/api/account/google/start', methods=['POST'])
+def api_account_google_start():
+    from njr_account import AccountError, google_start
+    try:
+        return jsonify(google_start())
+    except AccountError as exc:
+        return jsonify({"error": exc.message}), exc.status
+
+
+@app.route('/api/account/google/poll', methods=['GET'])
+def api_account_google_poll():
+    from njr_account import AccountError, google_poll
+    try:
+        return jsonify(google_poll(request.args.get("state") or ""))
+    except AccountError as exc:
+        return jsonify({"pending": False, "error": exc.message}), exc.status
+
+
+@app.route('/api/account/logout', methods=['POST'])
+def api_account_logout():
+    from njr_account import logout
+    from pimp_list import set_token_balance
+    logout()
+    set_token_balance(None)
+    return jsonify({"signedIn": False})
+
+
+@app.route('/api/account/checkout', methods=['POST'])
+def api_account_checkout():
+    from njr_account import AccountError, checkout_pack
+    data = request.get_json() or {}
+    try:
+        return jsonify({"url": checkout_pack(data.get("pack") or "")})
+    except AccountError as exc:
+        from njr_account import site_base, install_id
+        from urllib.parse import quote
+        return jsonify({
+            "error": exc.message,
+            "buyUrl": site_base() + "/kup/tokeny?install=" + quote(install_id(), safe=""),
+        }), exc.status
+
+
+def _reject_without_tokens(need: int = 1):
+    from pimp_list import has_tokens
+    if has_tokens(need):
+        return None
+    return jsonify({
+        "error": "Brak tokenów na koncie. Darmowa wersja działa bez AI.",
+        "needTokens": True,
+        "charged": False,
+        **_token_shop(),
+    }), 402
+
+
+def _token_shop() -> dict:
+    from njr_account import PACKS
+    from pimp_list import token_balance
+    install = _converter_install_id()
+    return {
+        "balance": token_balance(),
+        "packs": list(PACKS),
+        "buyUrl": f"https://nowajakoscrozrywki.pl/kup/tokeny?install={install}",
+    }
+
+
+def _pimp_tracks(name: str):
+    mode, indexes = _pimp_playlist_indexes(name)
+    library = _pimp_library_rows()
+    tracks = [library[i] for i in indexes if 0 <= i < len(library)]
+    return mode, tracks
+
+
+def _pimp_read_block(count: int):
+    from pimp_list import has_tokens, pimp_read_tokens
+
+    need = pimp_read_tokens(count)
+    if need and not has_tokens(need):
+        word = "token" if need == 1 else "tokenów"
+        return need, (jsonify({
+            "error": f"Ten odczyt potrzebuje {need} {word}.",
+            "charged": False,
+            "needTokens": True,
+            "readTokens": need,
+            "trackCount": count,
+            **_token_shop(),
+        }), 402)
+    return need, None
+
+
+@app.route('/api/pimp-quote', methods=['GET'])
+def api_pimp_quote():
+    """Cena odczytu playlisty. Tokenu nie bierze."""
+    _ensure_loaded()
+    from pimp_list import pimp_read_tokens
+
+    name = (request.args.get("playlist") or "").strip()
+    if not name:
+        return jsonify({"error": "Wybierz playlistę"}), 400
+    try:
+        _mode, tracks = _pimp_tracks(name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": f"Nie da się odczytać listy: {exc}"}), 400
+    count = len(tracks)
+    return jsonify({
+        "trackCount": count,
+        "readTokens": pimp_read_tokens(count),
+        "perToken": 300,
+        "charged": False,
+    })
+
+
+@app.route('/api/pimp-summary', methods=['POST'])
+def api_pimp_summary():
+    """Podsumowanie listy. 1 token za każde rozpoczęte 300 utworów."""
+    _ensure_loaded()
+    from pimp_list import facts, local_summary, pimp_slices, summary_prompt, tokens_spent
+
+    data = request.get_json() or {}
+    name = (data.get("playlist") or data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Wybierz playlistę"}), 400
+    try:
+        mode, tracks = _pimp_tracks(name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": f"Nie da się odczytać listy: {exc}"}), 400
+    info = facts(tracks)
+    plain = local_summary(name, info)
+    need = 0
+    payload = {
+        "playlist": name,
+        "trackCount": len(tracks),
+        "canAdd": mode == "playlist",
+        "local": plain,
+        "summary": plain,
+        "tokensSpent": tokens_spent(),
+        "mixed": info["mixed"],
+        "readTokens": 0,
+    }
+    if not tracks:
+        payload["summary"] = plain + " Lista nie ma utworów do opisania."
+        return jsonify(payload)
+    need, blocked = _pimp_read_block(len(tracks))
+    if blocked:
+        return blocked
+    try:
+        from ai_flash import flash_preview
+        slices = pimp_slices(tracks)
+        parts = []
+        model = ""
+        for index, chunk in enumerate(slices, start=1):
+            prompt = summary_prompt(name, info, chunk)
+            if len(slices) > 1:
+                prompt = f"To część {index} z {len(slices)} tej samej playlisty. Opisz tylko tę część.\n" + prompt
+            result = flash_preview(prompt, max_chars=len(prompt), timeout=80)
+            text = (result.get("answer") or "").strip()
+            if not text:
+                raise ValueError("Model nie oddał opisu.")
+            parts.append(text)
+            model = result.get("model") or model
+        if len(parts) == 1:
+            text = parts[0]
+        else:
+            merge = (
+                "Złącz te opisy jednej playlisty w 4–6 zdań po polsku. "
+                "Bez listy utworów i bez rad, co dodać.\n\n"
+                + "\n\n".join(parts)
+            )
+            result = flash_preview(merge, max_chars=len(merge), timeout=50)
+            text = (result.get("answer") or "").strip()
+            model = result.get("model") or model
+            if not text:
+                text = "\n\n".join(parts)
+    except ValueError as exc:
+        payload["aiError"] = str(exc)
+        return jsonify(payload)
+    if text:
+        from pimp_list import charge_tokens
+        charge_tokens(need)
+        payload["summary"] = text
+        payload["model"] = model
+        payload["charged"] = True
+        payload["readTokens"] = need
+        payload.update(_token_shop())
+    return jsonify(payload)
+
+
+@app.route('/api/pimp-suggest', methods=['POST'])
+def api_pimp_suggest():
+    """Jedna paczka do 20 propozycji. Odczyt listy: 1 token za każde rozpoczęte 300."""
+    _ensure_loaded()
+    from pimp_list import (
+        disk_candidates,
+        facts,
+        materialize,
+        parse_model_json,
+        suggest_prompt,
+        tokens_spent,
+        track_key,
+        charge_tokens,
+    )
+
+    data = request.get_json() or {}
+    name = (data.get("playlist") or "").strip()
+    note = data.get("note") or ""
+    exclude_raw = data.get("exclude") or []
+    if not name:
+        shop = _token_shop()
+        return jsonify({"error": "Wybierz playlistę", "charged": False, "tokensSpent": tokens_spent(), **shop}), 400
+    try:
+        _mode, tracks = _pimp_tracks(name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "charged": False, "tokensSpent": tokens_spent()}), 404
+    if not tracks:
+        return jsonify({
+            "error": "Ta lista nie ma utworów do odczytu.",
+            "charged": False,
+            "tokensSpent": tokens_spent(),
+        }), 400
+    need, blocked = _pimp_read_block(len(tracks))
+    if blocked:
+        return blocked
+    info = facts(tracks)
+    on_list = {track_key(row.get("author") or "", row.get("title") or "") for row in tracks}
+    exclude = set()
+    for row in exclude_raw:
+        if isinstance(row, dict):
+            exclude.add(track_key(str(row.get("artist") or row.get("author") or ""), str(row.get("title") or "")))
+    library = _pimp_library_rows()
+    candidates = disk_candidates(library, on_list | exclude, info, playlist_rows=tracks)
+    try:
+        from ai_flash import flash_preview
+        prompt = suggest_prompt(
+            name, info, tracks, note, candidates,
+            exclude_raw if isinstance(exclude_raw, list) else [],
+        )
+        result = flash_preview(prompt, max_chars=len(prompt), timeout=90)
+        parsed = parse_model_json(result.get("answer") or "")
+        model = result.get("model") or ""
+        climate, suggestions = materialize(
+            parsed, candidates, library, on_list, exclude, playlist_rows=tracks,
+        )
+        suggestions = suggestions[:20]
+    except (ValueError, json.JSONDecodeError) as exc:
+        return jsonify({
+            "error": f"{exc} Token nie został zużyty.",
+            "charged": False,
+            "tokensSpent": tokens_spent(),
+            "trackCount": len(tracks),
+            "readTokens": need,
+        }), 400
+    if not suggestions:
+        return jsonify({
+            "error": "Model nie podał przebojów, które da się dodać. Token nie został zużyty.",
+            "charged": False,
+            "tokensSpent": tokens_spent(),
+            "trackCount": len(tracks),
+            "readTokens": need,
+        }), 400
+    spent = charge_tokens(need)
+    shop = _token_shop()
+    return jsonify({
+        "climate": climate,
+        "suggestions": suggestions,
+        "charged": True,
+        "tokensSpent": spent,
+        "readTokens": need,
+        "trackCount": len(tracks),
+        "needTokens": shop["balance"] == 0,
+        "model": model,
+        **shop,
+    })
+
+
+def _drop_path_from_unified(path: str) -> None:
+    from vdjfolder import normalize_path
+
+    if st.unified is None:
+        return
+    want = normalize_path(path)
+    if not want:
+        return
+    st.unified.tracks = [
+        track for track in st.unified.tracks
+        if normalize_path(getattr(track, "path", "") or "") != want
+    ]
+
+    def walk(nodes) -> None:
+        for playlist in nodes or []:
+            playlist.track_ids = [
+                tid for tid in (playlist.track_ids or [])
+                if normalize_path(str(tid)) != want
+            ]
+            walk(getattr(playlist, "children", None) or [])
+
+    walk(st.unified.playlists)
+
+
+@app.route('/api/pimp-discard', methods=['POST'])
+def api_pimp_discard():
+    """Plik z propozycji: kosz systemowy, zniknięcie z kolekcji i ze wszystkich list."""
+    _ensure_loaded()
+    import session_trash as trash
+    from file_analyzer import is_streaming
+    from vdjfolder import normalize_path, path_match_keys, remove_paths_from_vdjfolder_content
+
+    data = request.get_json() or {}
+    path = (data.get("path") or "").strip()
+    if not path or is_streaming(path):
+        return jsonify({"error": "Ten wiersz nie jest plikiem na dysku."}), 400
+    want = normalize_path(path)
+    idx = None
+    song = None
+    for i, item in enumerate(st.songs):
+        if normalize_path(item.get("FilePath") or "") == want:
+            idx = i
+            song = item
+            break
+    if song is None:
+        return jsonify({"error": "Nie ma tego pliku w kolekcji."}), 404
+    deleted, errors = trash.delete_files_to_trash([path], source="pimp-discard")
+    if not deleted:
+        return jsonify({"error": errors[0] if errors else "Nie udało się przenieść pliku do kosza."}), 400
+    _push_undo_state()
+    paths_to_remove = path_match_keys(path, song)
+    vdj_refs = trash.capture_vdjfolder_removals(paths_to_remove) if paths_to_remove else []
+    refs = [row for row in vdj_refs if want and f'path="{normalize_path(song.get("FilePath") or "")}"' in (row.get("song_xml") or "")]
+    trash.add_db_track_trash(song, original_index=idx, vdjfolder_refs=refs, source="pimp-discard")
+    st.songs.pop(idx)
+    if st.vdjfolders and paths_to_remove:
+        updated = {}
+        for rel_path, content in st.vdjfolders.items():
+            new_content, _count = remove_paths_from_vdjfolder_content(content, paths_to_remove)
+            updated[rel_path] = new_content
+        st.vdjfolders.clear()
+        st.vdjfolders.update(updated)
+    _drop_path_from_unified(path)
+    return jsonify({"ok": True, "idx": idx, "trash": trash.trash_summary()})
+
+
+@app.route('/api/pimp-add', methods=['POST'])
+def api_pimp_add():
+    """Dopisuje zaznaczone propozycje do playlisty. Plików nie pobiera."""
+    _ensure_loaded()
+    from pimp_list import pick_tidal_hit, streaming_path
+    from vdjfolder import normalize_path
+
+    data = request.get_json() or {}
+    name = (data.get("playlist") or "").strip()
+    items = data.get("items") or []
+    if not name or not isinstance(items, list):
+        return jsonify({"error": "Podaj playlistę i zaznaczone utwory"}), 400
+    try:
+        mode, _indexes = _pimp_playlist_indexes(name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    if mode != "playlist":
+        return jsonify({"error": "To jest lista filtrów. Wybierz zwykłą playlistę."}), 400
+    vdj_rel = _pimp_find_vdj(name)
+    playlist = _pimp_find_unified(name)
+    if not vdj_rel and playlist is None:
+        return jsonify({"error": "Nie znaleziono playlisty"}), 404
+    _push_undo_state()
+    added = []
+    skipped = []
+    for item in items[:40]:
+        if not isinstance(item, dict):
+            continue
+        kind = (item.get("kind") or "").strip()
+        artist = (item.get("artist") or "").strip()
+        title = (item.get("title") or "").strip()
+        if kind == "disk":
+            path = (item.get("path") or "").strip()
+            known = None
+            for song in st.songs:
+                if normalize_path(song.get("FilePath") or "") == normalize_path(path):
+                    known = song
+                    break
+            if known is None:
+                skipped.append(f"{artist} – {title}: nie ma takiego pliku w bazie")
+                continue
+            artist = artist or (known.get("Tags.Author") or "")
+            title = title or (known.get("Tags.Title") or "")
+        elif kind == "tidal":
+            if (st.source or "").lower() == "engine":
+                skipped.append(
+                    f"{artist} – {title}: Engine DJ nie dodaje utworów z Tidal. Na listę wchodzą tylko pliki z dysku."
+                )
+                continue
+            found, err = _tidal_search_tracks(f"{artist} {title}", limit=5)
+            if err:
+                skipped.append(f"{artist} – {title}: {err}")
+                continue
+            hit = pick_tidal_hit(found, artist, title)
+            if hit is None:
+                skipped.append(f"{artist} – {title}: Tidal nie ma tej wersji")
+                continue
+            path = streaming_path(st.source, hit.get("id") or "")
+            if not path:
+                skipped.append(f"{artist} – {title}: brak identyfikatora Tidal")
+                continue
+            artist = hit.get("artist") or artist
+            title = hit.get("title") or title
+        else:
+            continue
+        _pimp_ensure_song(path, artist, title)
+        if vdj_rel:
+            _pimp_append_vdj(vdj_rel, path, artist, title)
+        if playlist is not None:
+            _pimp_append_unified(playlist, path)
+        if (st.source or "") == "serato":
+            from serato_library_sqlite import append_track_to_live_playlist
+            saved = append_track_to_live_playlist(
+                name, path, artist=artist, title=title
+            )
+            if not saved.get("ok"):
+                error = saved.get("error") or "nie zapisano na liście Serato"
+                busy = "zajęta" in error or "Zamknij Serato" in error
+                if (
+                    not busy
+                    and playlist is not None
+                    and list(playlist.track_ids or [])
+                    and playlist.track_ids[-1] == path
+                ):
+                    playlist.track_ids = list(playlist.track_ids[:-1])
+                if busy:
+                    error = "Serato jest otwarte. Utwór zostaje na liście w programie. Zamknij Serato i zapisz jeszcze raz."
+                skipped.append(f"{artist} – {title}: {error}")
+                continue
+        added.append({"artist": artist, "title": title, "kind": kind, "path": path})
+    return jsonify({
+        "ok": True,
+        "added": added,
+        "count": len(added),
+        "skipped": skipped,
+    })
+
+
+@app.route('/api/ai-preview', methods=['POST'])
+def api_ai_preview():
+    """Test Flasha. 1 token, gdy model odda tekst."""
+    from ai_flash import flash_preview
+    from pimp_list import charge_token
+
+    blocked = _reject_without_tokens()
+    if blocked:
+        return blocked
+    data = request.get_json() or {}
+    prompt = (data.get('prompt') or '').strip()
+    try:
+        result = flash_preview(prompt)
+    except ValueError as exc:
+        return jsonify({'error': str(exc), 'charged': False}), 400
+    if (result.get("answer") or "").strip():
+        charge_token()
+        result["charged"] = True
+        result.update(_token_shop())
+    return jsonify({'ok': True, **result})
+
+
 if __name__ == '__main__':
     import os
     use_reloader = os.environ.get('VDJ_NO_RELOAD') != '1'
-    app.run(host='127.0.0.1', port=5050, debug=True, use_reloader=use_reloader)
+    app.run(host='127.0.0.1', port=5050, debug=True, use_reloader=use_reloader, threaded=True)

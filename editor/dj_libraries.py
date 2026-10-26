@@ -3,15 +3,29 @@ Gdzie leży aktualna baza każdego programu DJ i jak zrobić z niej kopię.
 
 Import czyta to miejsce. Eksport zapisuje z powrotem w to samo miejsce.
 Przed jednym i drugim powstaje kopia, którą można przywrócić.
+Zostają tylko trzy ostatnie kopie na program. Starsze są usuwane,
+żeby pełne bazy (zwłaszcza Engine) nie zapełniały dysku.
 """
 from __future__ import annotations
 
 import json
 import platform
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+
+# Przywracanie bierze najnowszą kopię. Trzy ostatnie wystarczą, żeby cofnąć
+# ostatni zapis i jeszcze dwa wcześniejsze. Każda kopia to pełna baza.
+BACKUP_KEEP = 3
+_STAMP_RE = re.compile(r"^\d{8}_\d{6}(?:_\d+)?$")
+_MONTHS = (
+    "stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca",
+    "lipca", "sierpnia", "września", "października", "listopada", "grudnia",
+)
+_RB_SIDE_XML = {"automixplaylist6.xml", "masterplaylists6.xml"}
 
 
 SYSTEMS = (
@@ -59,7 +73,9 @@ def locate_all(home: Optional[Path] = None) -> list[dict]:
     root = backup_root(home)
     for key, _label in SYSTEMS:
         row = locate(key, home)
-        row["hasBackup"] = _latest_backup_dir(key, root) is not None
+        copies = list_backups(key, home)
+        row["hasBackup"] = bool(copies)
+        row["backups"] = copies
         rows.append(row)
     return rows
 
@@ -139,7 +155,8 @@ def _locate_rekordbox(base: Path) -> dict:
         folder = base / "Library" / "Pioneer" / "rekordbox"
     master = folder / "master.db"
     xml_files = sorted(folder.glob("*.xml"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []
-    xml = xml_files[0] if xml_files else None
+    library_xml = [path for path in xml_files if _is_rekordbox_library_xml(path)]
+    xml = library_xml[0] if library_xml else None
     note = ""
     if master.is_file() and xml is None:
         note = (
@@ -244,9 +261,17 @@ def create_backup(system: str, home: Optional[Path] = None) -> dict:
     sources = [Path(p) for p in info["backupFiles"]]
     if not sources:
         raise ValueError(info["note"] or f"Nie znaleziono bazy {info['label']}.")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dest = backup_root(home) / system / stamp
-    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.mkdir(parents=True)
+    except OSError as exc:
+        raise ValueError(
+            "Nie mogę zapisać kopii w "
+            f"{dest.parent}. macOS nie wpuszcza tego procesu do folderu kopii "
+            f"({exc.strerror}). Zamknij konwerter i uruchom go z Terminala: "
+            "cd ~/Documents/njr-konwerter/editor && python3 app.py"
+        ) from exc
     copied = []
     for src in sources:
         target_name = f"{len(copied):02d}_{src.name}"
@@ -259,6 +284,7 @@ def create_backup(system: str, home: Optional[Path] = None) -> dict:
         "files": copied,
     }
     (dest / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    prune_backups(system, home)
     return {
         "ok": True,
         "dir": str(dest),
@@ -266,6 +292,138 @@ def create_backup(system: str, home: Optional[Path] = None) -> dict:
         "files": len(copied),
         "label": info["label"],
     }
+
+
+def backup_day_label(stamp: str) -> str:
+    """20261016_141009 → „16 października 2026, 14:10”."""
+    core = (stamp or "")[:15]
+    try:
+        moment = datetime.strptime(core, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return stamp or "kopia"
+    month = _MONTHS[moment.month - 1]
+    return f"{moment.day} {month} {moment.year}, {moment.hour:02d}:{moment.minute:02d}"
+
+
+def _known_system(system: str) -> str:
+    key = (system or "").strip().lower()
+    if key not in {name for name, _label in SYSTEMS}:
+        raise ValueError(f"Nieznany system: {system}")
+    return key
+
+
+def _backup_folder(system: str, stamp: str, home: Optional[Path] = None) -> Path:
+    key = _known_system(system)
+    if not _STAMP_RE.match(stamp or ""):
+        raise ValueError("Nie ma takiej kopii.")
+    root = (backup_root(home) / key).resolve()
+    folder = (root / stamp).resolve()
+    if folder.parent != root or not (folder / "manifest.json").is_file():
+        raise ValueError("Nie ma takiej kopii.")
+    return folder
+
+
+def list_backups(system: str, home: Optional[Path] = None) -> list[dict]:
+    """Kopie od najnowszej. Pusta lista, gdy programu jeszcze nie kopiowano."""
+    key = _known_system(system)
+    folder = backup_root(home) / key
+    if not folder.is_dir():
+        return []
+    rows = []
+    for path in folder.iterdir():
+        if not path.is_dir() or not (path / "manifest.json").is_file():
+            continue
+        try:
+            manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        size = 0
+        files = 0
+        for item in manifest.get("files") or []:
+            src = path / str(item.get("file") or "")
+            if src.is_file():
+                files += 1
+                size += src.stat().st_size
+        stamp = str(manifest.get("created") or path.name)
+        rows.append({
+            "stamp": path.name,
+            "label": backup_day_label(stamp),
+            "files": files,
+            "bytes": size,
+        })
+    rows.sort(key=lambda row: row["stamp"], reverse=True)
+    return rows
+
+
+def delete_backup(system: str, stamp: str, home: Optional[Path] = None) -> dict:
+    """Kasuje jedną kopię konwertera. Bazy programu DJ nie rusza."""
+    folder = _backup_folder(system, stamp, home)
+    label = backup_day_label(stamp)
+    shutil.rmtree(folder)
+    return {"ok": True, "stamp": stamp, "label": label, "system": _known_system(system)}
+
+
+def _is_rekordbox_library_xml(path: Path) -> bool:
+    if path.name.lower() in _RB_SIDE_XML:
+        return False
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:800]
+    except OSError:
+        return False
+    return "DJ_PLAYLISTS" in head
+
+
+def materialize_backup(system: str, stamp: str, dest: Path, home: Optional[Path] = None) -> Path:
+    """Odtwarza pliki kopii pod oryginalnymi nazwami i zwraca ścieżkę do otwarcia."""
+    folder = _backup_folder(system, stamp, home)
+    manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+    dest.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for item in manifest.get("files") or []:
+        src = folder / str(item.get("file") or "")
+        name = Path(str(item.get("src") or "")).name
+        if not src.is_file() or not name:
+            continue
+        target = dest / name
+        shutil.copy2(src, target)
+        written.append(target)
+    if not written:
+        raise ValueError("Kopia jest pusta.")
+    by_name = {path.name.lower(): path for path in written}
+    if "master.sqlite" in by_name:
+        return dest
+    if "database v2" in by_name or "databasev2" in by_name:
+        return dest
+    if "m.db" in by_name:
+        return by_name["m.db"]
+    if "database.xml" in by_name:
+        return by_name["database.xml"]
+    nml = next((path for path in written if path.name.lower() == "collection.nml"), None)
+    if nml is not None:
+        return nml
+    library_xml = [path for path in written if path.suffix.lower() == ".xml" and _is_rekordbox_library_xml(path)]
+    if library_xml:
+        return library_xml[0]
+    if "master.db" in by_name:
+        raise ValueError(
+            "Ta kopia to master.db Rekordboxa. Konwerter otwiera kolekcję z pliku XML, a w tej kopii go nie ma."
+        )
+    raise ValueError("W tej kopii nie ma bazy, którą konwerter potrafi otworzyć.")
+
+
+def prune_backups(system: str, home: Optional[Path] = None, keep: int = BACKUP_KEEP) -> list[str]:
+    """Usuwa starsze kopie programu. Zostaje `keep` najnowszych katalogów ze stemplem."""
+    folder = backup_root(home) / system
+    if not folder.is_dir():
+        return []
+    dirs = sorted(p for p in folder.iterdir() if p.is_dir() and (p / "manifest.json").is_file())
+    if keep < 0:
+        keep = 0
+    removed = []
+    for old in dirs[: max(0, len(dirs) - keep)]:
+        shutil.rmtree(old)
+        removed.append(str(old))
+    return removed
 
 
 def _latest_backup_dir(system: str, root: Path) -> Optional[Path]:

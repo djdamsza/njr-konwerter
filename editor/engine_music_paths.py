@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import re
+import stat
+import unicodedata
 from pathlib import Path
 
 
@@ -113,10 +115,77 @@ def prefer_patriot_music_path(
         source_file_bytes=file_bytes,
     )
     rel = (best.get("path") or "").replace("\\", "/")
-    if not rel or rel in occupied:
+    if not rel.startswith("Music/") or rel in occupied:
         return None
     occupied.add(rel)
     return rel
+
+
+def file_identity(path: Path) -> str | None:
+    """Ten sam plik na dysku, także gdy tekst ścieżki różni się zapisem Unicode."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return f"{st.st_dev}:{st.st_ino}"
+
+
+def _path_text_keys(path: Path) -> list[str]:
+    raw = str(path)
+    keys = [raw, unicodedata.normalize("NFC", raw), unicodedata.normalize("NFD", raw)]
+    out: list[str] = []
+    for key in keys:
+        if key and key not in out:
+            out.append(key)
+    return out
+
+
+def index_engine_music_by_source(engine_dir: Path) -> dict[str, str]:
+    """
+    Plik źródłowy → istniejąca ścieżka Music/ w bibliotece Engine.
+
+    Drugi sync tego samego nagrania zostawia stary wpis (waveform, analiza),
+    zamiast dokładać drugi skrót pod inną nazwą artysty. Kluczem jest plik
+    na dysku, nie sam tekst ścieżki.
+    """
+    base = engine_dir.expanduser().resolve()
+    music = base / "Music"
+    found: dict[str, str] = {}
+    if not music.is_dir():
+        return found
+    for dirpath, _dirnames, filenames in os.walk(music):
+        for name in filenames:
+            dest = Path(dirpath) / name
+            if not dest.is_symlink() and not dest.is_file():
+                continue
+            try:
+                target = dest.resolve()
+                if not target.is_file():
+                    continue
+                rel = dest.relative_to(base).as_posix()
+            except (OSError, ValueError):
+                continue
+            if not rel.startswith("Music/"):
+                continue
+            ident = file_identity(target)
+            if ident:
+                found.setdefault(ident, rel)
+            for key in _path_text_keys(target):
+                found.setdefault(key, rel)
+    return found
+
+
+def _existing_music_rel(existing: dict[str, str], abs_file: Path) -> str | None:
+    ident = file_identity(abs_file)
+    if ident and existing.get(ident):
+        return existing[ident]
+    for key in _path_text_keys(abs_file):
+        hit = existing.get(key)
+        if hit:
+            return hit
+    return None
 
 
 def music_rel_for_export(
@@ -129,8 +198,14 @@ def music_rel_for_export(
     file_bytes: int = 0,
     occupied: set[str],
     pat_index: dict[str, list[dict]] | None = None,
+    existing_by_source: dict[str, str] | None = None,
 ) -> str:
-    """Ścieżka Music/ — najpierw zgodna z Patriot (jeśli podłączony), potem nowa."""
+    """Ścieżka Music/ — najpierw istniejący skrót, potem Patriot, potem nowa."""
+    if existing_by_source:
+        hit = _existing_music_rel(existing_by_source, abs_file)
+        if hit and hit.startswith("Music/"):
+            occupied.add(hit)
+            return hit
     aligned = prefer_patriot_music_path(
         abs_file.name,
         title=title,

@@ -19,7 +19,9 @@ from pathlib import Path
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
 
-ENGINE_PRIME = Path.home() / "Library/Application Support/AIR Music Technology/EnginePrime"
+from platform_paths import engine_prime_dir, plain_quit
+
+ENGINE_PRIME = engine_prime_dir()
 OLD_PROCESSOR_DIRS = (
     "bin.v1.0.0.backup",
     "bin.old.20260714_220401",
@@ -238,7 +240,7 @@ def clean_engine_hidden_cache(
         if is_engine_desktop_running():
             return {
                 "ok": False,
-                "error": "Zamknij Engine DJ (Cmd+Q) i powtórz czyszczenie.",
+                "error": plain_quit("Zamknij Engine DJ (Cmd+Q) i powtórz czyszczenie."),
                 "before": before_scan,
             }
         actions.append({"action": "quit_engine"})

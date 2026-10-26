@@ -46,8 +46,18 @@ class TestReplacePathsInVdjfolder(unittest.TestCase):
         self.assertIn('path="td1669834"', out)
         self.assertIn('netsearchId="td1669834"', out)
 
-
-class TestRepairFromDatabase(unittest.TestCase):
+    def test_same_list_collapses_to_one(self):
+        keep = "/Users/test/keep.mp3"
+        content = f'''<?xml version="1.0" encoding="UTF-8"?>
+<VirtualFolder Name="Test">
+\t<song path="{keep}" artist="A" title="T" idx="0" />
+\t<song path="/Users/test/drop.mp3" artist="A" title="T" idx="1" />
+</VirtualFolder>'''
+        lookup = build_path_replacement_lookup("/Users/test/drop.mp3", keep)
+        out, n = replace_paths_in_vdjfolder_content(content, lookup)
+        self.assertGreaterEqual(n, 1)
+        self.assertEqual(out.count(keep), 1)
+        self.assertNotIn("drop.mp3", out)
     def test_repairs_stale_netsearch_via_link_id(self):
         songs = [
             {

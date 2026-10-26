@@ -1,11 +1,11 @@
 #!/bin/bash
-# Budowanie NJR konwerter do testów
-# Wynik: dist/NJR-konwerter (macOS) lub dist/NJR-konwerter.exe (Windows)
+# Budowanie Imprezja Playlist Pro do testów
+# Wynik: dist/Imprezja Playlist Pro.app (macOS) lub dist/Imprezja Playlist Pro.exe (Windows)
 
 set -e
 cd "$(dirname "$0")/.."
 
-echo "=== NJR konwerter – build do testów ==="
+echo "=== Imprezja Playlist Pro – build do testów ==="
 
 # Wirtualne środowisko (opcjonalnie)
 if [ -d "venv" ]; then
@@ -21,6 +21,5 @@ echo "Budowanie z PyInstaller..."
 python3 -m PyInstaller njr.spec
 
 echo ""
-echo "Gotowe: dist/NJR-konwerter"
-echo "Uruchom: ./dist/NJR-konwerter"
+echo "Gotowe: dist/Imprezja Playlist Pro.app albo dist/Imprezja Playlist Pro.exe"
 echo ""

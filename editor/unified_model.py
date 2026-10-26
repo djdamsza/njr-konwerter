@@ -81,6 +81,24 @@ def iter_playlist_entries(playlists: list, prefix: tuple[str, ...] = ()):
         yield " / ".join(parts), pl
 
 
+def empty_leaf_names(playlists: list) -> list[str]:
+    """Puste listy z utworami. Folder, który trzyma inne listy, nie wchodzi."""
+    names = []
+
+    def walk(nodes) -> None:
+        for pl in nodes or []:
+            if getattr(pl, "is_folder", False) or getattr(pl, "children", None):
+                walk(getattr(pl, "children", None))
+                continue
+            if getattr(pl, "filter_text", ""):
+                continue
+            if not getattr(pl, "track_ids", None):
+                names.append(pl.name)
+
+    walk(playlists)
+    return names
+
+
 def count_playlist_entries(playlists: list) -> int:
     """Liczba list z utworami w całym drzewie, nie tylko na pierwszym poziomie."""
     return sum(1 for _label, _pl in iter_playlist_entries(playlists))

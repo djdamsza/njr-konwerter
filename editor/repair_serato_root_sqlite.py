@@ -16,9 +16,10 @@ EDITOR = Path(__file__).resolve().parent
 if str(EDITOR) not in sys.path:
     sys.path.insert(0, str(EDITOR))
 
+from platform_paths import serato_sqlite_dir
 from serato_library_sqlite import repair_serato_library_paths
 
-LIB = Path.home() / "Library/Application Support/Serato/Library"
+LIB = serato_sqlite_dir()
 ROOT = LIB / "root.sqlite"
 
 

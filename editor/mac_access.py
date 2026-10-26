@@ -18,7 +18,7 @@ def offer_library_access(folder: Path, label: str) -> None:
     safe_label = label.replace("\\", "\\\\").replace('"', '\\"')
     script = f'''
 set folderPath to "{safe_folder}"
-set choice to button returned of (display dialog "NJR Konwerter nie może odczytać biblioteki {safe_label} w:" & return & folderPath & return & return & "Zamknij ten program DJ (Cmd+Q). Jeśli system nie zapytał o zgodę, włącz Pełny dostęp do dysku dla Terminala albo aplikacji, z której uruchamiasz NJR." buttons {{"Anuluj", "Otwórz folder", "Otwórz ustawienia"}} default button "Otwórz ustawienia" with title "Dostęp do biblioteki")
+set choice to button returned of (display dialog "Imprezja Playlist Pro nie może odczytać biblioteki {safe_label} w:" & return & folderPath & return & return & "Zamknij ten program DJ (Cmd+Q). Jeśli system nie zapytał o zgodę, włącz Pełny dostęp do dysku dla Terminala albo aplikacji, z której uruchamiasz Imprezja Playlist Pro." buttons {{"Anuluj", "Otwórz folder", "Otwórz ustawienia"}} default button "Otwórz ustawienia" with title "Dostęp do biblioteki")
 if choice is "Otwórz folder" then
   do shell script "open " & quoted form of folderPath
 else if choice is "Otwórz ustawienia" then

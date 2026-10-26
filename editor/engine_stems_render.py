@@ -19,8 +19,10 @@ import time
 from pathlib import Path
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
+from platform_paths import plain_quit
 from engine_stems import (
     DEFAULT_PATRIOT_ENGINE,
+    _patriot_missing,
     STEMS_BATCH_PARENT,
     STEMS_BATCH_PLAYLIST,
     get_library_uuid,
@@ -218,7 +220,37 @@ def wait_for_stems_files(
     }
 
 
+def _windows_engine_exe() -> Path | None:
+    import os
+    roots = [
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+    ]
+    for root in roots:
+        if not root:
+            continue
+        candidate = Path(root) / "Engine DJ" / "Engine DJ.exe"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def launch_engine_desktop(*, wait_ready_sec: float = 45.0) -> dict:
+    if platform.system() == "Windows":
+        exe = _windows_engine_exe()
+        if exe is None:
+            return {"ok": False, "error": "Nie znaleziono Engine DJ.exe w Program Files."}
+        if is_engine_desktop_running():
+            return {"ok": True, "already_running": True}
+        subprocess.Popen([str(exe)])
+        deadline = time.time() + wait_ready_sec
+        while time.time() < deadline:
+            if is_engine_desktop_running():
+                time.sleep(3.0)
+                return {"ok": True, "already_running": False}
+            time.sleep(0.5)
+        return {"ok": False, "error": f"{ENGINE_APP_NAME} nie wystartował w {wait_ready_sec}s"}
     if platform.system() != "Darwin":
         return {"ok": False, "error": "Automatyczny render Engine DJ jest tylko na macOS."}
     if is_engine_desktop_running():
@@ -234,6 +266,16 @@ def launch_engine_desktop(*, wait_ready_sec: float = 45.0) -> dict:
 
 
 def quit_engine_desktop(*, wait_sec: float = 45.0) -> dict:
+    if platform.system() == "Windows":
+        if not is_engine_desktop_running():
+            return {"ok": True, "was_running": False}
+        subprocess.run(["taskkill", "/IM", "Engine DJ.exe"], check=False, capture_output=True, text=True)
+        deadline = time.time() + wait_sec
+        while time.time() < deadline:
+            if not is_engine_desktop_running():
+                return {"ok": True, "was_running": True}
+            time.sleep(0.5)
+        return {"ok": False, "error": f"{ENGINE_APP_NAME} nadal działa po {wait_sec}s — zamknij okno programu."}
     if platform.system() != "Darwin":
         return {"ok": True, "skipped": True}
     if not is_engine_desktop_running():
@@ -251,7 +293,7 @@ def quit_engine_desktop(*, wait_sec: float = 45.0) -> dict:
         time.sleep(0.5)
     return {
         "ok": False,
-        "error": f"{ENGINE_APP_NAME} nadal działa po {wait_sec}s — zamknij ręcznie (Cmd+Q).",
+        "error": plain_quit(f"{ENGINE_APP_NAME} nadal działa po {wait_sec}s — zamknij ręcznie (Cmd+Q)."),
     }
 
 
@@ -421,7 +463,9 @@ def run_auto_stems_pipeline(
     lub osiągnięto max_batches.
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or patriot_engine is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
 
     if not patriot_engine.is_dir():
         return {"ok": False, "error": f"Brak Patriot: {patriot_engine}"}
@@ -553,7 +597,9 @@ def watch_and_migrate_stems(
   Ctrl+C aby zatrzymać watcher (render Engine DJ może dalej działać).
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or patriot_engine is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
 
     stable_sizes: dict[str, int] = {}
     totals = {

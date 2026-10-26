@@ -43,6 +43,13 @@ def run_test(name, fn):
         }
 
 def main():
+    account = Path(os.environ.get("TMPDIR") or "/tmp") / "njr-api-test-account"
+    account.mkdir(parents=True, exist_ok=True)
+    os.environ["NJR_ACCOUNT_DIR"] = str(account)
+    (account / "account-session.json").write_text(
+        json.dumps({"deviceToken": "test-device", "email": "test@example.com"}),
+        encoding="utf-8",
+    )
     client = app.test_client()
     errors = []
     loaded = False

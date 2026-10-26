@@ -10,10 +10,10 @@ Plik binarny po buildzie leży w `releases/` — kopiujesz go na VPS / hosting (
 
    ```bash
    cd releases
-   shasum -a 256 NJR-konwerter* > SHA256SUMS.txt
+   shasum -a 256 Imprezja-Playlist-Pro* > SHA256SUMS.txt
    ```
 
-   Na Linuxie: `sha256sum NJR-konwerter* > SHA256SUMS.txt`.
+   Na Linuxie: `sha256sum Imprezja-Playlist-Pro* > SHA256SUMS.txt`.
 
 ## 2. Katalog na serwerze
 
@@ -21,8 +21,8 @@ Przykład:
 
 ```text
 /var/www/twoja-domena/downloads/njr/
-  NJR-konwerter-1.0.0
-  NJR-konwerter-1.0.0.exe
+  Imprezja-Playlist-Pro-1.0.14-macos-arm64.dmg
+  Imprezja-Playlist-Pro-1.0.14-windows-x64.exe
   SHA256SUMS.txt
 ```
 
@@ -31,7 +31,7 @@ Przykład:
 Szablon: [`scripts/deploy-to-server.example.sh`](scripts/deploy-to-server.example.sh).
 
 ```bash
-scp releases/NJR-konwerter-1.0.0.exe user@serwer:/var/www/.../downloads/njr/
+scp "releases/Imprezja-Playlist-Pro-1.0.14-windows-x64.exe" user@serwer:/var/www/.../downloads/njr/
 rsync -avz --progress releases/ user@serwer:/var/www/.../downloads/njr/
 ```
 

@@ -10,7 +10,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-SERATO_LIBRARY_DIR = Path.home() / "Library/Application Support/Serato/Library"
+from platform_paths import plain_quit, serato_sqlite_dir
+
+SERATO_LIBRARY_DIR = serato_sqlite_dir()
 SERATO_DB_V2_NAMES = ("database V2", "DatabaseV2")
 
 
@@ -60,7 +62,7 @@ def is_engine_running() -> tuple[bool, str]:
     from engine_libdjinterop import is_engine_desktop_running
 
     if is_engine_desktop_running():
-        return True, "Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) przed synchronizacją."
+        return True, plain_quit("Engine DJ Desktop jest uruchomiony — zamknij (Cmd+Q) przed synchronizacją.")
     return False, ""
 
 
@@ -144,7 +146,7 @@ def sync_guard_blockers(
         running, msg = is_engine_running()
         if running:
             issues.append(("Engine DJ", msg))
-            checklist.append("Zamknij Engine DJ (Cmd+Q)")
+            checklist.append(plain_quit("Zamknij Engine DJ (Cmd+Q)"))
 
     if not issues:
         return False, "", checklist

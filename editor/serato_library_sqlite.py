@@ -17,9 +17,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Optional
 
+from platform_paths import plain_quit, serato_sqlite_dir, vdj_root
 from vdj_streaming import extract_tidal_id, is_serato_tidal_path
 
-SERATO_LIBRARY_DIR = Path.home() / "Library/Application Support/Serato/Library"
+SERATO_LIBRARY_DIR = serato_sqlite_dir()
 TIDAL_SQLITE = SERATO_LIBRARY_DIR / "tidal.sqlite"
 
 # tidal.sqlite: space_id 2 = Serato Library (lokalne crates z streamingiem)
@@ -787,6 +788,72 @@ def _ensure_root_container_path_chain(
     return chain
 
 
+def _portable_file_plays(portable_id: str) -> bool:
+    """Prawdziwy plik. Kosz i skrót z Music/Media.localized Serato i tak nie odtwarza."""
+    from serato_parser import serato_path_exists_on_disk
+
+    pid = (portable_id or "").replace("\\", "/")
+    if not pid or pid.startswith("streaming:"):
+        return False
+    if "/.Trash/" in pid or "Media.localized" in pid:
+        return False
+    return serato_path_exists_on_disk(pid)
+
+
+def _adopt_missing_same_filename(con: sqlite3.Connection, portable_id: str) -> Optional[int]:
+    """
+    Zamiast drugiego wpisu o tej samej nazwie: przepnij istniejący, którego plik zniknął.
+    Listy zostają przy tym samym utworze i zaczynają wskazywać na znaleziony plik.
+    """
+    name = Path(portable_id).name
+    if not name or not _portable_file_plays(portable_id):
+        return None
+    rows = con.execute(
+        "SELECT id, portable_id FROM asset WHERE file_name=? COLLATE NOCASE",
+        (name,),
+    ).fetchall()
+    missing = [aid for aid, pid in rows if pid and not _portable_file_plays(pid)]
+    if len(missing) != 1:
+        return None
+    aid = missing[0]
+    abs_path = Path(portable_id) if portable_id.startswith("/") else Path("/") / portable_id
+    size = abs_path.stat().st_size if abs_path.is_file() else None
+    con.execute(
+        "UPDATE asset SET revision=revision+1, portable_id=?, is_missing=0, "
+        "file_size=COALESCE(?, file_size) WHERE id=?",
+        (portable_id.lstrip("/"), size, aid),
+    )
+    return aid
+
+
+def _drop_missing_same_filename_from_container(
+    con: sqlite3.Connection,
+    container_id: int,
+    keeper_id: int,
+    file_name: str,
+) -> int:
+    """Zdejmuje z listy martwe duplikaty tej samej nazwy pliku."""
+    if not file_name:
+        return 0
+    rows = con.execute(
+        """
+        SELECT ca.id, a.id, a.portable_id
+        FROM container_asset ca
+        JOIN space_asset sa ON sa.id = ca.space_asset_id
+        JOIN asset a ON a.id = sa.asset_id
+        WHERE ca.container_id=? AND a.file_name=? COLLATE NOCASE AND a.id!=?
+        """,
+        (container_id, file_name, keeper_id),
+    ).fetchall()
+    removed = 0
+    for ca_id, _aid, pid in rows:
+        if _portable_file_plays(pid):
+            continue
+        con.execute("DELETE FROM container_asset WHERE id=?", (ca_id,))
+        removed += 1
+    return removed
+
+
 def _find_or_create_local_asset(con: sqlite3.Connection, portable_id: str) -> int:
     """Znajdź asset lokalny po portable_id; jeśli brak — minimalny wpis (Serato uzupełni metadane)."""
     row = con.execute(
@@ -945,7 +1012,7 @@ def install_local_tracks_into_root_library(
     except sqlite3.Error as e:
         return {
             "ok": False,
-            "error": f"Nie można otworzyć root.sqlite ({e}). Zamknij Serato (Cmd+Q).",
+            "error": plain_quit(f"Nie można otworzyć root.sqlite ({e}). Zamknij Serato (Cmd+Q)."),
         }
 
     master_link_jobs: list[tuple[list[str], int]] = []
@@ -973,9 +1040,15 @@ def install_local_tracks_into_root_library(
                     "SELECT id FROM asset WHERE portable_id=? COLLATE NOCASE",
                     (pid,),
                 ).fetchone()
-                aid = _find_or_create_local_asset(con, pid)
-                if not existed:
+                adopted = None if existed else _adopt_missing_same_filename(con, pid)
+                if existed:
+                    aid = existed[0]
+                elif adopted:
+                    aid = adopted
+                else:
+                    aid = _find_or_create_local_asset(con, pid)
                     created += 1
+                _drop_missing_same_filename_from_container(con, leaf_cid, aid, Path(pid).name)
                 sa_id = _ensure_root_space_asset(con, aid)
                 next_order += 1
                 if _link_container_asset(con, leaf_cid, sa_id, next_order):
@@ -1130,6 +1203,9 @@ def _build_local_basename_index(search_roots: list[Path]) -> dict[str, list[str]
             for f in root.rglob("*"):
                 if not f.is_file() or f.suffix.lower() not in audio:
                     continue
+                text = str(f).replace("\\", "/")
+                if "/.Trash/" in text or "Media.localized" in text:
+                    continue
                 rel = to_serato_relative_path(str(f.resolve()))
                 key = f.name.lower()
                 if rel not in index[key]:
@@ -1192,6 +1268,8 @@ def _resolve_root_portable_id(
             s += 50_000
         if pid.startswith("Users/test/Desktop/"):
             s += 10_000
+        if ".Trash/" in pid or "Media.localized" in pid:
+            s -= 2_000_000
         if any(p.search(pid) for p in stale):
             s -= 100_000
         return s
@@ -1436,6 +1514,238 @@ def repair_root_sqlite_path_links(
     return stats
 
 
+def _merge_master_asset_into(con: sqlite3.Connection, *, loser_id: int, winner_id: int) -> dict:
+    """Przepina listy w master.sqlite z martwego duplikatu na plik, który jest na dysku."""
+    if loser_id == winner_id:
+        return {"merged": False, "moved": 0, "deleted_ca": 0}
+    winner_spaces = {
+        space_id: sa_id
+        for sa_id, space_id in con.execute(
+            "SELECT id, space_id FROM space_asset WHERE asset_id=?",
+            (winner_id,),
+        )
+    }
+    for sa_id, space_id in con.execute(
+        "SELECT id, space_id FROM space_asset WHERE asset_id=?",
+        (loser_id,),
+    ):
+        if space_id not in winner_spaces:
+            cur = con.execute(
+                "INSERT INTO space_asset (asset_id, space_id) VALUES (?, ?)",
+                (winner_id, space_id),
+            )
+            winner_spaces[space_id] = cur.lastrowid
+        _ = sa_id
+    moved = deleted = 0
+    rows = con.execute(
+        "SELECT id, location_container_id, space_asset_id FROM container_asset WHERE asset_id=?",
+        (loser_id,),
+    ).fetchall()
+    for ca_id, loc_id, sa_id in rows:
+        space_row = con.execute(
+            "SELECT space_id FROM space_asset WHERE id=?",
+            (sa_id,),
+        ).fetchone()
+        space_id = space_row[0] if space_row else None
+        new_sa = winner_spaces.get(space_id) if space_id is not None else None
+        if new_sa is None and winner_spaces:
+            new_sa = next(iter(winner_spaces.values()))
+        dup = con.execute(
+            "SELECT id FROM container_asset WHERE location_container_id=? AND asset_id=? AND id!=? LIMIT 1",
+            (loc_id, winner_id, ca_id),
+        ).fetchone()
+        if dup or new_sa is None:
+            con.execute("DELETE FROM container_asset WHERE id=?", (ca_id,))
+            deleted += 1
+            continue
+        con.execute(
+            "UPDATE container_asset SET asset_id=?, space_asset_id=? WHERE id=?",
+            (winner_id, new_sa, ca_id),
+        )
+        moved += 1
+    con.execute("DELETE FROM container_asset WHERE asset_id=?", (loser_id,))
+    con.execute("DELETE FROM space_asset WHERE asset_id=?", (loser_id,))
+    con.execute("DELETE FROM dj_asset_metadata WHERE asset_id=?", (loser_id,))
+    con.execute("DELETE FROM asset WHERE id=?", (loser_id,))
+    return {"merged": True, "moved": moved, "deleted_ca": deleted}
+
+
+def _filename_key(file_name: str, portable_id: str) -> str:
+    name = (file_name or "").strip()
+    if not name:
+        name = Path((portable_id or "").replace("\\", "/")).name
+    return name.lower()
+
+
+def repair_master_duplicate_files(
+    library_dir: Optional[Path] = None,
+    *,
+    dry_run: bool = False,
+) -> dict:
+    """
+    W master.sqlite (to widać w Serato) scala wpisy o tej samej nazwie pliku.
+    Listy przechodzą na kopię, której plik jest na dysku. Drugi wpis znika z kolekcji.
+    Pojedynczy brakujący plik dostaje nową ścieżkę tylko wtedy, gdy na dysku jest jeden odpowiednik.
+    """
+    lib = _library_dir(library_dir)
+    db_path = lib / "master.sqlite"
+    if not db_path.is_file():
+        return {"ok": False, "error": f"Brak {db_path}"}
+    try:
+        con = sqlite3.connect(str(db_path), timeout=60)
+    except sqlite3.Error as exc:
+        return {"ok": False, "error": str(exc)}
+    con.execute("PRAGMA foreign_keys=ON")
+    stats = {
+        "ok": True,
+        "dry_run": dry_run,
+        "retargeted": 0,
+        "merged": 0,
+        "crate_refs_moved": 0,
+        "redirects": [],
+    }
+    home = Path.home()
+    basename_index = _build_local_basename_index([
+        home / "Desktop" / "muzyka dj",
+        home / "Desktop",
+        home / "Music",
+        home / "Downloads",
+    ])
+    rows = con.execute(
+        "SELECT id, portable_id, file_name, is_missing FROM asset "
+        "WHERE portable_id NOT LIKE 'streaming:%'"
+    ).fetchall()
+    groups: dict[str, list[tuple]] = defaultdict(list)
+    for row in rows:
+        key = _filename_key(row[2] or "", row[1] or "")
+        if key:
+            groups[key].append(row)
+    try:
+        if not dry_run:
+            con.execute("BEGIN IMMEDIATE")
+        for _name, group in groups.items():
+            playable = [row for row in group if _portable_file_plays(row[1])]
+            dead = [row for row in group if not _portable_file_plays(row[1])]
+            if playable:
+                playable.sort(key=lambda row: (
+                    0 if "/muzyka dj/" in (row[1] or "") else 1,
+                    0 if (row[1] or "").startswith("Users/") and "/Downloads/" not in (row[1] or "") else 1,
+                    row[0],
+                ))
+                winner = playable[0]
+                for loser in dead:
+                    stats["redirects"].append((loser[1], winner[1]))
+                    stats["merged"] += 1
+                    if dry_run:
+                        continue
+                    merged = _merge_master_asset_into(con, loser_id=loser[0], winner_id=winner[0])
+                    stats["crate_refs_moved"] += merged.get("moved", 0)
+                continue
+            if len(group) != 1:
+                continue
+            aid, pid, fname, _missing = group[0]
+            best, exists = _resolve_root_portable_id(
+                pid, file_name=fname or "", basename_index=basename_index
+            )
+            if not exists or not best or best == pid or not _portable_file_plays(best):
+                continue
+            clash = con.execute(
+                "SELECT id FROM asset WHERE portable_id=? COLLATE NOCASE AND id!=? LIMIT 1",
+                (best, aid),
+            ).fetchone()
+            if clash:
+                stats["redirects"].append((pid, best))
+                stats["merged"] += 1
+                if not dry_run:
+                    merged = _merge_master_asset_into(con, loser_id=aid, winner_id=clash[0])
+                    stats["crate_refs_moved"] += merged.get("moved", 0)
+                continue
+            stats["redirects"].append((pid, best))
+            stats["retargeted"] += 1
+            if dry_run:
+                continue
+            abs_path = Path("/") / best if not best.startswith("/") else Path(best)
+            size = abs_path.stat().st_size if abs_path.is_file() else None
+            con.execute(
+                "UPDATE asset SET revision=revision+1, portable_id=?, is_missing=0, "
+                "file_size=COALESCE(?, file_size) WHERE id=?",
+                (best.lstrip("/"), size, aid),
+            )
+        if not dry_run:
+            now = int(time.time())
+            con.execute(
+                "UPDATE location SET revision=revision+1, last_sync_time=? WHERE id=1",
+                (now,),
+            )
+            con.commit()
+        else:
+            con.rollback()
+    except sqlite3.Error as exc:
+        con.rollback()
+        return {"ok": False, "error": str(exc), **{k: v for k, v in stats.items() if k != "redirects"}}
+    finally:
+        con.close()
+    return stats
+
+
+def rewrite_serato_blob_paths(content: bytes, redirects: dict[str, str]) -> tuple[bytes, int]:
+    """Podmienia ptrk/pfil w database V2 albo .crate. Nie kasuje wpisów."""
+    from serato_parser import _rewrite_paths_in_container
+
+    def transform(old: str) -> str:
+        key = (old or "").replace("\\", "/").lstrip("/")
+        new = redirects.get(key)
+        if not new or new == key:
+            return old
+        if old.startswith("/"):
+            return "/" + new.lstrip("/")
+        return new.lstrip("/")
+
+    return _rewrite_paths_in_container(content, transform)
+
+
+def apply_serato_path_redirects(
+    redirects: list[tuple[str, str]],
+    *,
+    serato_dir: Optional[Path] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Ta sama podmiana ścieżek w plikach .crate i database V2, żeby sync nie wrócił do Pobranych."""
+    mapping: dict[str, str] = {}
+    for old, new in redirects:
+        old_key = (old or "").replace("\\", "/").lstrip("/")
+        new_key = (new or "").replace("\\", "/").lstrip("/")
+        if old_key and new_key and old_key != new_key:
+            mapping[old_key] = new_key
+    stats = {"ok": True, "files": 0, "paths": 0, "dry_run": dry_run}
+    if not mapping:
+        return stats
+    base = Path(serato_dir) if serato_dir else Path.home() / "Music" / "_Serato_"
+    targets = []
+    db_file = base / "database V2"
+    if db_file.is_file():
+        targets.append(db_file)
+    sub = base / "Subcrates"
+    if sub.is_dir():
+        targets.extend(path for path in sub.glob("*.crate") if path.is_file())
+    for path in targets:
+        raw = path.read_bytes()
+        updated, changed = rewrite_serato_blob_paths(raw, mapping)
+        if not changed or updated == raw:
+            continue
+        stats["files"] += 1
+        stats["paths"] += changed
+        if dry_run:
+            continue
+        if path.name in ("database V2", "Database V2"):
+            from serato_parser import commit_database_v2
+
+            commit_database_v2(path, updated)
+        else:
+            path.write_bytes(updated)
+    return stats
+
+
 def repair_database_v2_paths(
     serato_dir: Optional[Path] = None,
     *,
@@ -1461,7 +1771,9 @@ def repair_database_v2_paths(
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     bak = Path(str(db_file) + f".pre-repair-{ts}.bak")
     bak.write_bytes(raw)
-    db_file.write_bytes(cleaned)
+    from serato_parser import commit_database_v2
+
+    commit_database_v2(db_file, cleaned)
     stats["backup"] = str(bak)
     return stats
 
@@ -1489,7 +1801,7 @@ def repair_tidal_sqlite_metadata(
         return {"ok": False, "error": f"Brak {db_path}"}
 
     meta_dir = (Path(serato_dir) if serato_dir else Path.home() / "Music" / "_Serato_") / "Metadata" / "Tidal"
-    vdj_path = vdj_database or (Path.home() / "Library/Application Support/VirtualDJ/database.xml")
+    vdj_path = vdj_database or (vdj_root() / "database.xml")
     songs: list[dict] = []
     if vdj_path.is_file():
         try:
@@ -1673,6 +1985,457 @@ def resolve_tidal_metadata_for_install(
     return out
 
 
+_BLANK_TAG_FIELDS = (
+    "artist",
+    "name",
+    "album",
+    "genre",
+    "comments",
+    "label",
+    "remixer",
+    "grouping",
+    "composer",
+    "year",
+    "key",
+)
+_BLANK_EXTRA_FIELDS = (
+    "bpm",
+    "length_sec",
+    "length_ms",
+    "rating",
+    "key_value",
+    "time_added",
+)
+
+
+def _portable_meta_key(portable_id: str) -> str:
+    return (portable_id or "").replace("\\", "/").lstrip("/").lower()
+
+
+def _meta_value_useful(field: str, value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if field in ("bpm", "length_sec", "length_ms", "rating") and not value:
+        return False
+    if field == "key_value" and int(value) < 0:
+        return False
+    return True
+
+
+def _read_asset_metadata_index(db_path: Path) -> dict[str, dict]:
+    """portable_id → metadane, tylko gdy jest artysta albo tytuł."""
+    if not db_path.is_file():
+        return {}
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error:
+        return {}
+    try:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+        wanted = [name for name in _BLANK_TAG_FIELDS + _BLANK_EXTRA_FIELDS if name in cols]
+        if "portable_id" not in cols or not wanted:
+            return {}
+        index: dict[str, dict] = {}
+        for row in con.execute(
+            f"SELECT portable_id, {', '.join(wanted)} FROM asset "
+            "WHERE portable_id NOT LIKE 'streaming:%'"
+        ):
+            key = _portable_meta_key(row[0])
+            if not key:
+                continue
+            meta = {wanted[i]: row[i + 1] for i in range(len(wanted))}
+            # Sam tytuł bez artysty to zwykle nazwa pliku po czyszczeniu, nie tag.
+            if _meta_value_useful("artist", meta.get("artist")) and _meta_value_useful(
+                "name", meta.get("name")
+            ):
+                index[key] = meta
+        return index
+    finally:
+        con.close()
+
+
+def _backup_metadata_index(library_dir: Path) -> dict[str, dict]:
+    """Najnowsze niepuste metadane z root.sqlite-backup-*.zip. Puste pole nie kasuje starszego."""
+    import tempfile
+    import zipfile
+
+    index: dict[str, dict] = {}
+    backup_dir = library_dir / "Backups"
+    if not backup_dir.is_dir():
+        return index
+    zips = sorted(backup_dir.glob("root.sqlite-backup-*.zip"))
+    for zp in zips:
+        try:
+            with zipfile.ZipFile(zp) as zf:
+                member = next((n for n in zf.namelist() if n.endswith("root.sqlite")), "")
+                if not member:
+                    continue
+                raw = zf.read(member)
+        except (OSError, zipfile.BadZipFile):
+            continue
+        tmp = Path(tempfile.mkstemp(suffix=".sqlite")[1])
+        try:
+            tmp.write_bytes(raw)
+            incoming = _read_asset_metadata_index(tmp)
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        for key, meta in incoming.items():
+            slot = index.setdefault(key, {})
+            for field, value in meta.items():
+                if _meta_value_useful(field, value):
+                    slot[field] = value
+    return index
+
+
+def _apply_metadata_index(
+    con: sqlite3.Connection,
+    index: dict[str, dict],
+    *,
+    dry_run: bool,
+) -> int:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    tag_fields = [name for name in _BLANK_TAG_FIELDS if name in cols]
+    extra_fields = [name for name in _BLANK_EXTRA_FIELDS if name in cols]
+    if "artist" not in cols or "name" not in cols:
+        return 0
+    _register_serato_sql(con)
+    restored = 0
+    rows = con.execute(
+        "SELECT id, portable_id, artist, name FROM asset "
+        "WHERE portable_id NOT LIKE 'streaming:%'"
+    ).fetchall()
+    for aid, pid, artist, name in rows:
+        if (artist or "").strip() or (name or "").strip():
+            continue
+        meta = index.get(_portable_meta_key(pid))
+        if not meta:
+            continue
+        if not (
+            _meta_value_useful("artist", meta.get("artist"))
+            or _meta_value_useful("name", meta.get("name"))
+        ):
+            continue
+        restored += 1
+        if dry_run:
+            continue
+        sets: list[str] = []
+        params: list = []
+        for field in tag_fields:
+            if field not in meta or not _meta_value_useful(field, meta.get(field)):
+                continue
+            sets.append(f"{field}=?")
+            params.append(meta[field])
+        if sets:
+            params.append(aid)
+            con.execute(f"UPDATE asset SET {', '.join(sets)} WHERE id=?", params)
+        extra_sets = ["time_modified=?"]
+        extra_params: list = [int(time.time())]
+        for field in extra_fields:
+            if field not in meta or not _meta_value_useful(field, meta.get(field)):
+                continue
+            extra_sets.append(f"{field}=?")
+            extra_params.append(meta[field])
+        extra_params.append(aid)
+        con.execute(
+            f"UPDATE asset SET {', '.join(extra_sets)} WHERE id=?",
+            extra_params,
+        )
+    return restored
+
+
+def restore_blank_serato_asset_metadata(
+    library_dir: Optional[Path] = None,
+    *,
+    snapshot_paths: Optional[list[Path]] = None,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Przywraca artystę, tytuł, BPM i tonację rekordom, które Serato wyczyścił
+    po zmianie pliku. Puste pole w kopii nie nadpisuje tego, co już jest.
+    Nie rusza utworu, który ma już artystę albo tytuł.
+    """
+    lib = _library_dir(library_dir)
+    if snapshot_paths is None and (library_dir is None or Path(library_dir) == _library_dir(None)):
+        if serato_is_likely_running():
+            return {"ok": False, "error": "Zamknij Serato (Cmd+Q) przed przywracaniem tagów."}
+    index: dict[str, dict] = {}
+    for snap in snapshot_paths or []:
+        for key, meta in _read_asset_metadata_index(Path(snap)).items():
+            slot = index.setdefault(key, {})
+            for field, value in meta.items():
+                if _meta_value_useful(field, value):
+                    slot[field] = value
+    if snapshot_paths is None:
+        for key, meta in _backup_metadata_index(lib).items():
+            slot = index.setdefault(key, {})
+            for field, value in meta.items():
+                if _meta_value_useful(field, value):
+                    slot[field] = value
+    stats = {"ok": True, "dry_run": dry_run, "sources": len(index), "restored": {}}
+    if not index:
+        return stats
+    for db_name in ("master.sqlite", "root.sqlite"):
+        db_path = lib / db_name
+        if not db_path.is_file():
+            continue
+        try:
+            con = sqlite3.connect(str(db_path), timeout=60)
+        except sqlite3.Error as exc:
+            return {"ok": False, "error": str(exc), **stats}
+        try:
+            if not dry_run:
+                con.execute("BEGIN IMMEDIATE")
+            count = _apply_metadata_index(con, index, dry_run=dry_run)
+            stats["restored"][db_name] = count
+            if dry_run:
+                con.rollback()
+            else:
+                con.commit()
+        except sqlite3.Error as exc:
+            con.rollback()
+            return {"ok": False, "error": str(exc), **stats}
+        finally:
+            con.close()
+    return stats
+
+
+def refresh_library_tags_from_songs(
+    songs: Optional[list[dict]],
+    paths: list[str],
+    *,
+    library_dir: Optional[Path] = None,
+) -> dict:
+    """
+    Po zapisie tagów do pliku uzupełnia istniejący rekord w bazie.
+    Pusta wartość z listy nie kasuje artysty ani tytułu, które już są.
+    """
+    from serato_parser import canonical_serato_relative_path, _song_bpm_display
+
+    lib = _library_dir(library_dir)
+    by_key: dict[str, dict] = {}
+    for song in songs or []:
+        raw = (song.get("FilePath") or "").strip()
+        if not raw:
+            continue
+        rel = canonical_serato_relative_path(raw) or raw
+        by_key[_portable_meta_key(rel)] = song
+    targets: list[tuple[str, dict]] = []
+    for raw in paths or []:
+        rel = canonical_serato_relative_path(raw) or raw
+        key = _portable_meta_key(rel)
+        song = by_key.get(key)
+        if song:
+            targets.append((raw, song))
+    if not targets:
+        return {"ok": True, "updated": 0}
+    updated = 0
+    for db_name in ("master.sqlite", "root.sqlite"):
+        db_path = lib / db_name
+        if not db_path.is_file():
+            continue
+        try:
+            con = sqlite3.connect(str(db_path), timeout=60)
+        except sqlite3.Error as exc:
+            return {"ok": False, "error": str(exc), "updated": updated}
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            _register_serato_sql(con)
+            cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+            for raw, song in targets:
+                rel = canonical_serato_relative_path(raw) or raw
+                row = None
+                for candidate in (rel.lstrip("/"), rel):
+                    row = con.execute(
+                        "SELECT id, artist, name, album, key, bpm, length_sec "
+                        "FROM asset WHERE portable_id=? COLLATE NOCASE",
+                        (candidate,),
+                    ).fetchone()
+                    if row:
+                        break
+                if not row:
+                    continue
+                aid, artist, name, album_now, key_now, bpm_now, length_now = row
+                title = (song.get("Tags.Title") or song.get("Tags.Name") or "").strip()
+                author = (song.get("Tags.Artist") or song.get("Tags.Author") or "").strip()
+                album = (song.get("Tags.Album") or "").strip()
+                key = (song.get("Tags.Key") or "").strip()
+                bpm = _song_bpm_display(song)
+                try:
+                    length = float(song.get("Infos.SongLength") or 0)
+                except (TypeError, ValueError):
+                    length = 0.0
+                sets = ["revision=revision+1", "time_modified=?"]
+                params: list = [int(time.time())]
+                if author and not (artist or "").strip() and "artist" in cols:
+                    sets.append("artist=?")
+                    params.append(author)
+                if title and not (name or "").strip() and "name" in cols:
+                    sets.append("name=?")
+                    params.append(title)
+                if album and not (album_now or "").strip() and "album" in cols:
+                    sets.append("album=?")
+                    params.append(album)
+                if key and not (key_now or "").strip() and "key" in cols:
+                    sets.append("key=?")
+                    params.append(key)
+                if bpm > 0 and not bpm_now and "bpm" in cols:
+                    sets.append("bpm=?")
+                    params.append(bpm)
+                if length > 0 and not length_now and "length_sec" in cols:
+                    sets.append("length_sec=?")
+                    params.append(int(length))
+                if length > 0 and not length_now and "length_ms" in cols:
+                    sets.append("length_ms=?")
+                    params.append(int(length * 1000))
+                try:
+                    size = Path(raw).stat().st_size
+                except OSError:
+                    size = None
+                if size and "file_size" in cols:
+                    sets.append("file_size=?")
+                    params.append(size)
+                if len(sets) <= 2 and size is None:
+                    continue
+                params.append(aid)
+                con.execute(f"UPDATE asset SET {', '.join(sets)} WHERE id=?", params)
+                updated += 1
+            con.commit()
+        except sqlite3.Error as exc:
+            con.rollback()
+            return {"ok": False, "error": str(exc), "updated": updated}
+        finally:
+            con.close()
+    return {"ok": True, "updated": updated}
+
+
+def restore_library_tags_stripped_by_v2_import(
+    *,
+    library_dir: Optional[Path] = None,
+    serato_dir: Optional[Path] = None,
+    dry_run: bool = False,
+) -> dict:
+    """
+    database V2 bez tytułu i artysty jest źródłem, z którego Serato przy starcie
+    czyści te pola w master.sqlite. Uzupełnia brakujące pola i puste rekordy SQLite.
+    """
+    import tempfile
+
+    from serato_parser import (
+        _iter_top_level_raw,
+        _otrk_path_and_flags,
+        file_tags_as_v2_fields,
+        resolve_serato_stored_path,
+        restore_missing_v2_text_tags,
+        serato_path_identity_key,
+        v2_text_tags_by_path,
+    )
+
+    lib = _library_dir(library_dir)
+    base = Path(serato_dir) if serato_dir else Path.home() / "Music" / "_Serato_"
+    if library_dir is None and serato_dir is None and serato_is_likely_running():
+        return {"ok": False, "error": "Zamknij Serato (Cmd+Q) przed uzupełnianiem tagów."}
+    db_file = base / "database V2"
+    if not db_file.is_file():
+        db_file = base / "Database V2"
+    if not db_file.is_file():
+        return {"ok": False, "error": f"Brak database V2 w {base}"}
+    content = db_file.read_bytes()
+    tags_by_path: dict[str, dict[str, str]] = {}
+    donor = base / "database V2.pre-upsert-meta-20260827_211919.bak"
+    if donor.is_file():
+        tags_by_path.update(v2_text_tags_by_path(donor.read_bytes()))
+    looked = 0
+    for name, data in _iter_top_level_raw(content):
+        if name != "otrk":
+            continue
+        path, has_title, has_artist = _otrk_path_and_flags(data)
+        if not path or (has_title and has_artist):
+            continue
+        looked += 1
+        absolute = resolve_serato_stored_path(path)
+        file_tags = file_tags_as_v2_fields(absolute) if absolute else {}
+        if not file_tags:
+            continue
+        key = serato_path_identity_key(path)
+        merged = dict(tags_by_path.get(key) or {})
+        merged.update(file_tags)
+        tags_by_path[key] = merged
+    updated, stats = restore_missing_v2_text_tags(content, tags_by_path)
+    stats["looked_up_files"] = looked
+    stats["ok"] = True
+    stats["dry_run"] = dry_run
+    if not dry_run and updated != content:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        backup = Path(str(db_file) + f".pre-tag-fill-{stamp}.bak")
+        backup.write_bytes(content)
+        from serato_parser import commit_database_v2
+
+        commit_database_v2(db_file, updated)
+        stats["backup"] = str(backup)
+    # Te same tagi do pustych rekordów, które Serato pokazuje.
+    snap = Path(tempfile.mkstemp(suffix=".sqlite")[1])
+    try:
+        con = sqlite3.connect(str(snap))
+        con.execute(
+            """
+            CREATE TABLE asset (
+                id INTEGER PRIMARY KEY,
+                portable_id TEXT,
+                artist TEXT, name TEXT, album TEXT, genre TEXT, year TEXT, key TEXT,
+                bpm REAL, length_sec INTEGER, length_ms INTEGER
+            )
+            """
+        )
+        rows = []
+        for key, tags in tags_by_path.items():
+            title = (tags.get("tsng") or "").strip()
+            artist = (tags.get("tart") or "").strip()
+            if not title or not artist:
+                continue
+            bpm = 0.0
+            try:
+                bpm = float(tags.get("tbpm") or 0)
+            except ValueError:
+                bpm = 0.0
+            rows.append((
+                key,
+                artist,
+                title,
+                tags.get("talb") or "",
+                tags.get("tgen") or "",
+                (tags.get("ttyr") or "")[:4],
+                tags.get("tkey") or "",
+                bpm if bpm > 0 else None,
+            ))
+        con.executemany(
+            "INSERT INTO asset (portable_id, artist, name, album, genre, year, key, bpm) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        con.commit()
+        con.close()
+        sqlite_stats = restore_blank_serato_asset_metadata(
+            lib,
+            snapshot_paths=[snap],
+            dry_run=dry_run,
+        )
+        stats["sqlite"] = sqlite_stats.get("restored")
+        if not sqlite_stats.get("ok", True):
+            stats["ok"] = False
+            stats["error"] = sqlite_stats.get("error")
+    finally:
+        try:
+            snap.unlink()
+        except OSError:
+            pass
+    return stats
+
+
 def finalize_serato_sqlite_after_install(
     *,
     library_dir: Optional[Path] = None,
@@ -1684,20 +2447,46 @@ def finalize_serato_sqlite_after_install(
     Bezpieczna finalizacja po instalacji VDJ → Serato (Serato zamknięte):
     - metadane Tidal w tidal.sqlite
     - deduplikacja ścieżek root.sqlite (bez kasowania orphanów / bez database V2)
+    - to samo w master.sqlite, bo Serato pokazuje master, nie root
+    - podmiana starych ścieżek w .crate i database V2
     - naprawa FK master.sqlite
     """
+    v2_tags = restore_library_tags_stripped_by_v2_import(
+        library_dir=library_dir,
+        serato_dir=serato_dir,
+        dry_run=dry_run,
+    )
+    tags = restore_blank_serato_asset_metadata(
+        library_dir=library_dir,
+        dry_run=dry_run,
+    )
     tidal = repair_tidal_sqlite_metadata(
         library_dir=library_dir,
         serato_dir=serato_dir,
         dry_run=dry_run,
     )
     root = repair_root_sqlite_path_links(library_dir=library_dir, dry_run=dry_run)
+    linked = repair_master_duplicate_files(library_dir=library_dir, dry_run=dry_run)
+    crates = apply_serato_path_redirects(
+        linked.get("redirects") or [],
+        serato_dir=serato_dir,
+        dry_run=dry_run,
+    )
     master = repair_master_sqlite_foreign_keys(library_dir=library_dir)
-    ok = bool(tidal.get("ok")) and bool(root.get("ok")) and bool(master.get("ok"))
+    ok = (
+        bool(tidal.get("ok"))
+        and bool(root.get("ok"))
+        and bool(linked.get("ok"))
+        and bool(master.get("ok"))
+    )
     return {
-        "ok": ok,
+        "ok": ok and bool(tags.get("ok", True)) and bool(v2_tags.get("ok", True)),
+        "v2_tags": v2_tags,
+        "asset_tags": tags,
         "tidal_metadata": tidal,
         "root_paths": root,
+        "master_links": {k: v for k, v in linked.items() if k != "redirects"},
+        "crates": crates,
         "master_fk": master,
     }
 
@@ -1715,11 +2504,23 @@ def repair_serato_library_paths(
     przy starcie; równoległa edycja powoduje UNIQUE constraint / import failed.
     """
     root_stats = repair_root_sqlite_path_links(library_dir, dry_run=dry_run)
+    master_stats = repair_master_duplicate_files(library_dir, dry_run=dry_run)
+    crate_stats = apply_serato_path_redirects(
+        master_stats.get("redirects") or [],
+        serato_dir=serato_dir,
+        dry_run=dry_run,
+    )
     v2_stats = {"ok": True, "skipped": True}
     if include_database_v2:
         v2_stats = repair_database_v2_paths(serato_dir, dry_run=dry_run)
-    ok = bool(root_stats.get("ok")) and bool(v2_stats.get("ok"))
-    return {"ok": ok, "root_sqlite": root_stats, "database_v2": v2_stats}
+    ok = bool(root_stats.get("ok")) and bool(master_stats.get("ok")) and bool(v2_stats.get("ok"))
+    return {
+        "ok": ok,
+        "root_sqlite": root_stats,
+        "master_sqlite": {k: v for k, v in master_stats.items() if k != "redirects"},
+        "crates": crate_stats,
+        "database_v2": v2_stats,
+    }
 
 
 def verify_master_sqlite_foreign_keys(
@@ -2272,7 +3073,7 @@ def install_tidal_streaming_into_serato_library(
     except sqlite3.Error as e:
         return {
             "ok": False,
-            "error": f"Nie można otworzyć tidal.sqlite ({e}). Zamknij Serato (Cmd+Q) i spróbuj ponownie.",
+            "error": plain_quit(f"Nie można otworzyć tidal.sqlite ({e}). Zamknij Serato (Cmd+Q) i spróbuj ponownie."),
         }
 
     master_link_jobs: list[tuple[list[str], int]] = []
@@ -2553,7 +3354,7 @@ def remove_vdj_serato_library_tree(
         result["ok"] = False
         result.setdefault(
             "error",
-            "Nie można otworzyć bazy Serato — zamknij Serato (Cmd+Q) i spróbuj ponownie.",
+            plain_quit("Nie można otworzyć bazy Serato — zamknij Serato (Cmd+Q) i spróbuj ponownie."),
         )
 
     sub = base / "Subcrates"
@@ -2581,3 +3382,722 @@ def remove_vdj_serato_library_tree(
     result["crates_removed"] = len(removed_crates)
     result["crate_names"] = removed_crates[:20]
     return result
+
+
+def _container_name_path(con: sqlite3.Connection, container_id: int) -> list[str]:
+    names: list[str] = []
+    seen: set[int] = set()
+    current = container_id
+    while current and current not in seen:
+        seen.add(current)
+        row = con.execute(
+            "SELECT parent_id, name FROM container WHERE id=?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            break
+        names.append(row[1] or "")
+        current = row[0]
+    names.reverse()
+    if names and names[0] in {"Serato Library root", "Root"}:
+        names = names[1:]
+    return names
+
+
+def playlist_name_parts(name: str) -> list[str]:
+    """Nazwa listy z programu („MyLists / gatunki / TECHNO _1”) albo stem pliku crate."""
+    text = (name or "").strip()
+    if not text:
+        return []
+    if "%%" in text:
+        return [part.strip() for part in text.split("%%") if part.strip()]
+    if " / " in text:
+        return [part.strip() for part in text.split(" / ") if part.strip()]
+    return [text]
+
+
+def container_matches_playlist(path: list[str], parts: list[str]) -> bool:
+    """Ta sama lista oraz jej kopie, które Serato trzyma w folderze Serato."""
+    if not parts or not path:
+        return False
+    if path == parts:
+        return True
+    if len(path) <= len(parts) or path[-len(parts):] != parts:
+        return False
+    return all(segment == "Serato" for segment in path[:-len(parts)])
+
+
+def _path_lookup_keys(path: str) -> list[str]:
+    from serato_parser import serato_path_identity_key, to_serato_relative_path
+
+    keys: list[str] = []
+    for candidate in (
+        serato_path_identity_key(path),
+        to_serato_relative_path(path),
+        (path or "").strip(),
+    ):
+        key = (candidate or "").strip().lower()
+        if key and key not in keys:
+            keys.append(key)
+    tid = extract_tidal_id(path)
+    if tid:
+        for candidate in (f"streaming://tidal/{tid}", f"tidal:tracks:{tid}"):
+            key = candidate.lower()
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _asset_index(con: sqlite3.Connection) -> dict[str, int]:
+    index: dict[str, int] = {}
+    for asset_id, portable in con.execute("SELECT id, portable_id FROM asset"):
+        key = (portable or "").strip().lower()
+        if key and key not in index:
+            index[key] = int(asset_id)
+    return index
+
+
+def _serato_str_norm(value) -> str | None:
+    if value is None:
+        return None
+    import unicodedata
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return text.casefold()
+
+
+def _register_serato_sql(con: sqlite3.Connection) -> None:
+    """Triggery bazy Serato wołają te funkcje przy dopisaniu utworu."""
+    con.create_function("serato_str_norm", 1, _serato_str_norm, deterministic=True)
+    con.create_function(
+        "serato_raw_key_string_to_key_type",
+        1,
+        lambda _key: -1,
+        deterministic=True,
+    )
+
+
+def _next_external_id(con: sqlite3.Connection, location_id: int) -> int:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    if "external_id" not in cols:
+        return 1
+    if "location_id" in cols:
+        current = con.execute(
+            "SELECT COALESCE(MAX(external_id), 0) FROM asset WHERE location_id=?",
+            (location_id,),
+        ).fetchone()[0]
+    else:
+        current = con.execute(
+            "SELECT COALESCE(MAX(external_id), 0) FROM asset"
+        ).fetchone()[0]
+    return int(current or 0) + 1
+
+
+def _streaming_location_id(con: sqlite3.Connection) -> int:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    if "portable_id" in cols and "location_id" in cols:
+        row = con.execute(
+            "SELECT location_id FROM asset WHERE portable_id LIKE 'streaming://tidal/%' AND location_id IS NOT NULL LIMIT 1"
+        ).fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+    return 4
+
+
+def _file_location_id(con: sqlite3.Connection) -> int:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    if "location_id" in cols and "portable_id" in cols:
+        row = con.execute(
+            """
+            SELECT location_id FROM asset
+            WHERE portable_id NOT LIKE 'streaming://%' AND location_id IS NOT NULL
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+    return 1
+
+
+def _insert_asset(con: sqlite3.Connection, values: dict) -> int:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(asset)")}
+    fields = [key for key in values if key in cols]
+    if not fields:
+        raise sqlite3.Error("Baza Serato nie ma tabeli utworów.")
+    con.execute(
+        f"INSERT INTO asset ({', '.join(fields)}) VALUES ({', '.join('?' for _ in fields)})",
+        [values[key] for key in fields],
+    )
+    return int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def _ensure_library_asset(
+    con: sqlite3.Connection,
+    path: str,
+    *,
+    artist: str = "",
+    title: str = "",
+) -> int | None:
+    """Dopisuje utwór do biblioteki Serato, jeśli lista ma go dostać, a bazy go nie ma."""
+    found = _asset_id_for_path(con, path)
+    if found is not None:
+        return found
+    tid = extract_tidal_id(path)
+    now = int(time.time())
+    if tid:
+        portable = f"streaming://tidal/{tid}"
+        location_id = _streaming_location_id(con)
+        asset_id = _insert_asset(
+            con,
+            {
+                "external_id": _next_external_id(con, location_id),
+                "location_id": location_id,
+                "portable_id": portable,
+                "file_name": portable,
+                "type": "audio",
+                "format": "streaming",
+                "artist": artist or "",
+                "name": title or f"Tidal {tid}",
+                "album": "",
+                "year": "",
+                "genre": "",
+                "key": "",
+                "time_added": now,
+                "time_modified": now,
+                "third_party_type": 3,
+                "type_specific_data": '{"is_video":false,"status":0,"is_available":true}',
+            },
+        )
+        return asset_id
+    from serato_parser import canonical_serato_relative_path
+
+    relative = canonical_serato_relative_path(path)
+    if not relative or "://" in relative[:32]:
+        return None
+    candidate = Path("/" + relative) if not relative.startswith("/") else Path(relative)
+    if not candidate.is_file():
+        direct = Path(path)
+        if direct.is_file():
+            candidate = direct
+            relative = canonical_serato_relative_path(str(direct))
+        else:
+            return None
+    suffix = candidate.suffix.lower().lstrip(".")
+    if suffix not in {"mp3", "m4a", "mp4", "wav", "aiff", "aif", "flac", "ogg"}:
+        return None
+    location_id = _file_location_id(con)
+    try:
+        size = candidate.stat().st_size
+    except OSError:
+        size = None
+    return _insert_asset(
+        con,
+        {
+            "external_id": _next_external_id(con, location_id),
+            "location_id": location_id,
+            "portable_id": relative,
+            "file_name": candidate.name,
+            "file_size": size,
+            "type": "audio",
+            "format": suffix,
+            "artist": artist or "",
+            "name": title or candidate.stem,
+            "album": "",
+            "year": "",
+            "genre": "",
+            "key": "",
+            "time_added": now,
+            "time_modified": now,
+            "third_party_type": 0,
+            "is_missing": 0,
+        },
+    )
+
+
+def _asset_id_for_path(con: sqlite3.Connection, path: str) -> int | None:
+    keys = _path_lookup_keys(path)
+    if not keys:
+        return None
+    for key in keys:
+        row = con.execute(
+            "SELECT id FROM asset WHERE portable_id=? COLLATE NOCASE",
+            (key,),
+        ).fetchone()
+        if row:
+            return int(row[0])
+    return None
+
+
+def _container_paths(con: sqlite3.Connection) -> dict[int, list[str]]:
+    rows = con.execute("SELECT id, parent_id, name FROM container").fetchall()
+    by_id = {int(row[0]): (row[1], row[2] or "") for row in rows}
+    cache: dict[int, list[str]] = {}
+
+    def build(container_id: int) -> list[str]:
+        if container_id in cache:
+            return cache[container_id]
+        names: list[str] = []
+        seen: set[int] = set()
+        current: int | None = container_id
+        while current and current not in seen:
+            seen.add(current)
+            record = by_id.get(current)
+            if record is None:
+                break
+            names.append(record[1])
+            parent = record[0]
+            current = int(parent) if parent else None
+        names.reverse()
+        if names and names[0] in {"Serato Library root", "Root"}:
+            names = names[1:]
+        cache[container_id] = names
+        return names
+
+    return {container_id: build(container_id) for container_id in by_id}
+
+
+def _matching_container_ids(con: sqlite3.Connection, parts: list[str]) -> list[int]:
+    return [
+        container_id
+        for container_id, path in _container_paths(con).items()
+        if container_matches_playlist(path, parts)
+    ]
+
+
+def _crate_files_for_playlist(parts: list[str], crate_path: Path | None) -> list[Path]:
+    stem = "%%".join(parts)
+    files: list[Path] = []
+    folder = None
+    if crate_path is not None:
+        primary = Path(crate_path)
+        if primary.is_file():
+            files.append(primary)
+        folder = primary.parent
+    else:
+        folder = Path.home() / "Music" / "_Serato_" / "Subcrates"
+    if folder is not None and folder.is_dir():
+        for name in (
+            f"{stem}.crate",
+            f"Serato%%{stem}.crate",
+            f"Serato%%Serato%%{stem}.crate",
+        ):
+            candidate = folder / name
+            if candidate.is_file() and candidate not in files:
+                files.append(candidate)
+    return files
+
+
+def _location_container_for_asset(
+    con: sqlite3.Connection,
+    container_id: int,
+    location_id: int | None,
+) -> int | None:
+    """Wiersz location_container dla tej samej lokalizacji co plik.
+
+    Utwór z Tidala ma inną lokalizację niż pliki z dysku. Podpięcie go pod
+    lokalizację plików nie pokazuje się na liście w Serato.
+    """
+    if location_id is not None:
+        link = con.execute(
+            "SELECT id FROM location_container WHERE container_id=? AND location_id=?",
+            (container_id, location_id),
+        ).fetchone()
+        if link:
+            return int(link[0])
+        cols = {row[1] for row in con.execute("PRAGMA table_info(location_container)")}
+        if "container_id" in cols and "location_id" in cols:
+            fields = ["container_id", "location_id"]
+            values: list = [container_id, location_id]
+            if "external_container_id" in cols:
+                current = con.execute(
+                    "SELECT COALESCE(MAX(external_container_id), 0) FROM location_container"
+                ).fetchone()[0]
+                fields.append("external_container_id")
+                values.append(int(current or 0) + 1)
+            con.execute(
+                f"INSERT INTO location_container ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                values,
+            )
+            return int(con.execute("SELECT last_insert_rowid()").fetchone()[0])
+    link = con.execute(
+        "SELECT id FROM location_container WHERE container_id=? ORDER BY id LIMIT 1",
+        (container_id,),
+    ).fetchone()
+    return int(link[0]) if link else None
+
+
+def _container_space_ids(con: sqlite3.Connection) -> dict[int, int] | None:
+    cols = {row[1] for row in con.execute("PRAGMA table_info(container)")}
+    if "space_id" not in cols:
+        return None
+    return {
+        int(container_id): int(space_id)
+        for container_id, space_id in con.execute(
+            "SELECT id, space_id FROM container WHERE space_id IS NOT NULL"
+        )
+    }
+
+
+def _ensure_space_asset(
+    con: sqlite3.Connection,
+    asset_id: int,
+    space_id: int,
+    cache: dict[tuple[int, int], int],
+) -> int:
+    """Wpis space_asset w tej przestrzeni, co lista. Tidal sam z siebie jest w „Tidal”."""
+    key = (asset_id, space_id)
+    found = cache.get(key)
+    if found is not None:
+        return found
+    row = con.execute(
+        "SELECT id FROM space_asset WHERE asset_id=? AND space_id=? LIMIT 1",
+        (asset_id, space_id),
+    ).fetchone()
+    if row:
+        cache[key] = int(row[0])
+        return int(row[0])
+    cur = con.execute(
+        "INSERT INTO space_asset (asset_id, space_id) VALUES (?, ?)",
+        (asset_id, space_id),
+    )
+    new_id = int(cur.lastrowid)
+    cache[key] = new_id
+    return new_id
+
+
+def _link_asset_to_containers(
+    con: sqlite3.Connection,
+    asset_id: int,
+    container_ids: list[int],
+) -> int:
+    """Dopisuje istniejący utwór do podanych list. Zwraca liczbę nowych wierszy."""
+    asset = con.execute(
+        "SELECT location_id FROM asset WHERE id=?",
+        (asset_id,),
+    ).fetchone()
+    location_id = asset[0] if asset else None
+    container_spaces = _container_space_ids(con)
+    space_cache: dict[tuple[int, int], int] = {}
+    for row in con.execute(
+        "SELECT id, asset_id, space_id FROM space_asset WHERE asset_id=?",
+        (asset_id,),
+    ):
+        space_cache[(int(row[1]), int(row[2]))] = int(row[0])
+    fallback = con.execute(
+        "SELECT id FROM space_asset WHERE asset_id=? ORDER BY id LIMIT 1",
+        (asset_id,),
+    ).fetchone()
+    added = 0
+    now = int(time.time())
+    for container_id in container_ids:
+        space_id = None if container_spaces is None else container_spaces.get(container_id)
+        if space_id is not None:
+            space_asset_id = _ensure_space_asset(con, asset_id, space_id, space_cache)
+        elif fallback is not None:
+            space_asset_id = int(fallback[0])
+        else:
+            raise sqlite3.Error("Utwór nie jest w przestrzeni biblioteki Serato.")
+        location_container_id = _location_container_for_asset(
+            con, container_id, location_id
+        )
+        if location_container_id is None:
+            continue
+        already = con.execute(
+            "SELECT id FROM container_asset WHERE location_container_id=? AND asset_id=?",
+            (location_container_id, asset_id),
+        ).fetchone()
+        if already:
+            continue
+        order = con.execute(
+            "SELECT COALESCE(MAX(list_order), 0) FROM container_asset WHERE location_container_id=?",
+            (location_container_id,),
+        ).fetchone()[0]
+        external = con.execute(
+            "SELECT COALESCE(MAX(external_container_asset_id), 0) FROM container_asset"
+        ).fetchone()[0]
+        con.execute(
+            "INSERT INTO container_asset ("
+            "asset_id, location_container_id, space_asset_id, external_container_asset_id, "
+            "list_order, time_added) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                asset_id,
+                location_container_id,
+                space_asset_id,
+                int(external) + 1,
+                int(order) + 1,
+                now,
+            ),
+        )
+        added += 1
+    return added
+
+
+def append_track_to_live_playlist(
+    stem: str,
+    path: str,
+    *,
+    library_path: Path | None = None,
+    crate_path: Path | None = None,
+    artist: str = "",
+    title: str = "",
+) -> dict:
+    """Dopisuje utwór do listy Serato na dysku: pliki .crate i master.sqlite.
+
+    Trafia też w kopie tej samej listy schowane w folderze Serato — to te
+    kopie pokazuje Serato DJ. Nie przepisuje całej biblioteki. Serato ma być zamknięty.
+    """
+    from serato_parser import append_track_to_crate_file
+    from vdj_streaming import is_serato_tidal_path
+
+    parts = playlist_name_parts(stem)
+    if not parts or not (path or "").strip():
+        return {"ok": False, "error": "Brak listy albo ścieżki."}
+    crate_added = False
+    if not is_serato_tidal_path(path):
+        for crate in _crate_files_for_playlist(parts, Path(crate_path) if crate_path else None):
+            if append_track_to_crate_file(crate, path):
+                crate_added = True
+    library = Path(library_path) if library_path else (
+        Path.home() / "Library" / "Application Support" / "Serato" / "Library" / "master.sqlite"
+    )
+    if not library.is_file():
+        return {"ok": bool(crate_added), "crate": crate_added, "sqlite": False}
+    try:
+        con = sqlite3.connect(str(library), timeout=8)
+        _register_serato_sql(con)
+    except sqlite3.Error as exc:
+        return {"ok": False, "error": f"Baza Serato jest zajęta. Zamknij Serato i dodaj jeszcze raz. ({exc})"}
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        cols = {row[1] for row in con.execute("PRAGMA table_info(container_asset)")}
+        if "location_container_id" not in cols:
+            con.rollback()
+            return {"ok": crate_added, "crate": crate_added, "sqlite": False}
+        asset_id = _ensure_library_asset(con, path, artist=artist, title=title)
+        if asset_id is None:
+            con.rollback()
+            return {
+                "ok": crate_added,
+                "crate": crate_added,
+                "sqlite": False,
+                "error": "Tego pliku nie ma w bibliotece Serato, więc lista go nie przyjmie.",
+            }
+        container_ids = _matching_container_ids(con, parts)
+        if not container_ids:
+            con.rollback()
+            return {"ok": False, "crate": crate_added, "sqlite": False, "error": "Nie ma takiej listy w bazie Serato."}
+        added = _link_asset_to_containers(con, asset_id, container_ids)
+        con.commit()
+        return {
+            "ok": True,
+            "crate": crate_added,
+            "sqlite": added > 0,
+            "already": added == 0,
+            "lists": len(container_ids),
+        }
+    except sqlite3.Error as exc:
+        con.rollback()
+        message = str(exc)
+        if "locked" in message.lower() or "busy" in message.lower():
+            message = "Baza Serato jest zajęta. Zamknij Serato i dodaj jeszcze raz."
+        return {"ok": False, "error": f"Nie zapisano listy Serato: {message}"}
+    finally:
+        con.close()
+
+
+def _append_playlist_memberships(
+    con: sqlite3.Connection,
+    playlists: list[tuple[str, list[str]]],
+    paths: dict[int, list[str]],
+    assets: dict[str, int],
+) -> tuple[int, int]:
+    """Dopina brakujące utwory jednym odczytem członkostwa, bez zapytania na każdy plik."""
+    locations = {
+        int(asset_id): location_id
+        for asset_id, location_id in con.execute("SELECT id, location_id FROM asset")
+    }
+    container_spaces = _container_space_ids(con)
+    space_cache: dict[tuple[int, int], int] = {}
+    any_space: dict[int, int] = {}
+    for space_asset_id, asset_id, space_id in con.execute(
+        "SELECT id, asset_id, space_id FROM space_asset ORDER BY id"
+    ):
+        space_cache.setdefault((int(asset_id), int(space_id)), int(space_asset_id))
+        any_space.setdefault(int(asset_id), int(space_asset_id))
+    lc_cols = {row[1] for row in con.execute("PRAGMA table_info(location_container)")}
+    lc_by_pair: dict[tuple[int, int | None], int] = {}
+    lc_fallback: dict[int, int] = {}
+    for lc_id, container_id, location_id in con.execute(
+        "SELECT id, container_id, location_id FROM location_container ORDER BY id"
+    ):
+        lc_by_pair.setdefault((int(container_id), location_id), int(lc_id))
+        lc_fallback.setdefault(int(container_id), int(lc_id))
+    members: set[tuple[int, int]] = set()
+    orders: dict[int, int] = {}
+    for lc_id, asset_id, list_order in con.execute(
+        "SELECT location_container_id, asset_id, list_order FROM container_asset"
+    ):
+        lc_key = int(lc_id)
+        members.add((lc_key, int(asset_id)))
+        if list_order is not None and int(list_order) > orders.get(lc_key, 0):
+            orders[lc_key] = int(list_order)
+    external = int(
+        con.execute(
+            "SELECT COALESCE(MAX(external_container_asset_id), 0) FROM container_asset"
+        ).fetchone()[0]
+        or 0
+    )
+    next_lc_external = 0
+    if "external_container_id" in lc_cols:
+        next_lc_external = int(
+            con.execute(
+                "SELECT COALESCE(MAX(external_container_id), 0) FROM location_container"
+            ).fetchone()[0]
+            or 0
+        )
+    now = int(time.time())
+    added = 0
+    skipped = 0
+    matches: dict[tuple[str, ...], list[int]] = {}
+
+    def containers_for(parts: list[str]) -> list[int]:
+        key = tuple(parts)
+        cached = matches.get(key)
+        if cached is not None:
+            return cached
+        found = [
+            container_id
+            for container_id, path in paths.items()
+            if container_matches_playlist(path, parts)
+        ]
+        matches[key] = found
+        return found
+
+    def location_container_id(container_id: int, location_id: int | None) -> int | None:
+        nonlocal next_lc_external
+        if location_id is not None:
+            found = lc_by_pair.get((container_id, location_id))
+            if found is not None:
+                return found
+            if "container_id" in lc_cols and "location_id" in lc_cols:
+                fields = ["container_id", "location_id"]
+                values: list = [container_id, location_id]
+                if "external_container_id" in lc_cols:
+                    next_lc_external += 1
+                    fields.append("external_container_id")
+                    values.append(next_lc_external)
+                cur = con.execute(
+                    f"INSERT INTO location_container ({', '.join(fields)}) "
+                    f"VALUES ({', '.join('?' for _ in fields)})",
+                    values,
+                )
+                new_id = int(cur.lastrowid)
+                lc_by_pair[(container_id, location_id)] = new_id
+                lc_fallback.setdefault(container_id, new_id)
+                return new_id
+        return lc_fallback.get(container_id)
+
+    for name, tracks in playlists:
+        parts = playlist_name_parts(name)
+        if not parts:
+            continue
+        container_ids = containers_for(parts)
+        if not container_ids:
+            continue
+        for track in tracks or []:
+            if not (track or "").strip():
+                continue
+            asset_id = None
+            for key in _path_lookup_keys(track):
+                asset_id = assets.get(key)
+                if asset_id is not None:
+                    break
+            if asset_id is None:
+                skipped += 1
+                continue
+            location_id = locations.get(asset_id)
+            linked_any = False
+            for container_id in container_ids:
+                wanted_space = (
+                    None if container_spaces is None else container_spaces.get(container_id)
+                )
+                if wanted_space is not None:
+                    space_asset_id = _ensure_space_asset(
+                        con, asset_id, wanted_space, space_cache
+                    )
+                else:
+                    space_asset_id = any_space.get(asset_id)
+                if space_asset_id is None:
+                    continue
+                lc_id = location_container_id(container_id, location_id)
+                if lc_id is None or (lc_id, asset_id) in members:
+                    linked_any = linked_any or lc_id is not None
+                    continue
+                external += 1
+                orders[lc_id] = orders.get(lc_id, 0) + 1
+                con.execute(
+                    "INSERT INTO container_asset ("
+                    "asset_id, location_container_id, space_asset_id, "
+                    "external_container_asset_id, list_order, time_added) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        asset_id,
+                        lc_id,
+                        space_asset_id,
+                        external,
+                        orders[lc_id],
+                        now,
+                    ),
+                )
+                members.add((lc_id, asset_id))
+                added += 1
+                linked_any = True
+            if not linked_any:
+                skipped += 1
+    return added, skipped
+
+
+def sync_live_serato_playlists(
+    playlists: list[tuple[str, list[str]]],
+    *,
+    library_path: Path | None = None,
+) -> dict:
+    """Dopisuje do master.sqlite utwory, które są na listach w programie, a w Serato ich brakuje.
+
+    Nie kasuje utworów z list i nie przepisuje bazy. Serato ma być zamknięty.
+    """
+    library = Path(library_path) if library_path else (
+        Path.home() / "Library" / "Application Support" / "Serato" / "Library" / "master.sqlite"
+    )
+    if not library.is_file():
+        return {"ok": False, "added": 0, "error": "Nie ma bazy Serato."}
+    try:
+        con = sqlite3.connect(str(library), timeout=8)
+    except sqlite3.Error as exc:
+        return {
+            "ok": False,
+            "added": 0,
+            "error": f"Baza Serato jest zajęta. Zamknij Serato i zapisz jeszcze raz. ({exc})",
+        }
+    added = 0
+    skipped = 0
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        cols = {row[1] for row in con.execute("PRAGMA table_info(container_asset)")}
+        if "location_container_id" not in cols:
+            con.rollback()
+            return {"ok": False, "added": 0, "skipped": 0, "error": "Ta baza Serato ma inny układ list."}
+        paths = _container_paths(con)
+        assets = _asset_index(con)
+        added, skipped = _append_playlist_memberships(con, playlists, paths, assets)
+        con.commit()
+        return {"ok": True, "added": added, "skipped": skipped}
+    except sqlite3.Error as exc:
+        con.rollback()
+        message = str(exc)
+        if "locked" in message.lower() or "busy" in message.lower():
+            message = "Baza Serato jest zajęta. Zamknij Serato i zapisz jeszcze raz."
+        return {"ok": False, "added": 0, "error": message}
+    finally:
+        con.close()

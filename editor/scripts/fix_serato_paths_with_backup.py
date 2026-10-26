@@ -19,14 +19,14 @@ EDITOR = Path(__file__).resolve().parent.parent
 if str(EDITOR) not in sys.path:
     sys.path.insert(0, str(EDITOR))
 
+from platform_paths import serato_sqlite_dir
 from serato_library_sqlite import repair_root_sqlite_path_links
 from serato_parser import load_serato_database_v2, normalize_and_dedupe_serato_library
 
 
 def _serato_dirs() -> tuple[Path, Path]:
     serato_dir = Path.home() / "Music" / "_Serato_"
-    library_dir = Path.home() / "Library/Application Support/Serato/Library"
-    return serato_dir, library_dir
+    return serato_dir, serato_sqlite_dir()
 
 
 def _count_broken_paths(db_bytes: bytes) -> int:

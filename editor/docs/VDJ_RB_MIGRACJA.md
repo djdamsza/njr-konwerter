@@ -1,5 +1,38 @@
 # VDJ → Rekordbox: migracja i ograniczenia
 
+## Metoda sprawdzona (Rekordbox 7.2.10, 16 października 2026)
+
+Tak wchodzi biblioteka do kolekcji. Potwierdzone eksportem kolekcji `xml 3.xml`: 12809 utworów, artysta przy 12615, 414 playlist z utworami w folderze Serato. Konwerter nie zapisuje `master.db`.
+
+### Plik z konwertera
+
+Eksport zapisuje `~/Downloads/Imprezja-Playlist-Pro-rekordbox.xml`.
+
+- `Location`: `file://localhost/Users/...`, spacja jako `%20`, `&` jako `%26`, przecinek i nawiasy bez zmian.
+- Folder to `NODE Type="0"`. Lista to `Type="1" KeyType="1"`. `TRACK Key` to ten sam `Location` co w kolekcji.
+- Ocena: 0 / 51 / 102 / 153 / 204 / 255.
+- Drzewo jest w folderze `Serato`. Obok jest playlista `wszystkie pliki`.
+
+### Co klika użytkownik
+
+1. Jeśli te pliki już są w kolekcji ze starymi danymi, usuń je z kolekcji razem ze starymi playlistami. Plików muzycznych nie kasuj. Rekordbox rozpoznaje utwór po ścieżce i zostawia stare tagi.
+2. **Preferences → Advanced → Database → rekordbox xml** i wklej ścieżkę pliku z Pobranych. Poczekaj na „Loading XML library”. To jest osobna biblioteka XML, nie kolekcja.
+3. W drzewie `rekordbox xml` przeciągnij folder `Serato` na **Playlists** w kolekcji. Poczekaj na „Importing”.
+4. W kolekcji wypełnione listy są w folderze **Serato na dole**. Nazwa z datą (na przykład `25.09.26 Dorota Mikołaj`) to folder. Utwory są poziom niżej: `muzyka`, `tort`, `wejscie`. `wszystkie pliki` jest playlistą i utwory ma od razu.
+5. Stare puste nazwy nad folderem Serato (`automix`, `tidal top` i reszta) to poprzednia kolekcja. Można je usunąć.
+
+### Czego nie brać za wynik
+
+- **File → Export collection** zapisuje kolekcję (`master.db`), nie bibliotekę XML. `xml.xml` i `xml2.xml` były tym starym zapisem, zanim przeciągnięto folder.
+- Log braków jest w `~/Documents/rekordbox/Import Log - ….txt`. To pliki, których nie ma na dysku. Ostatni log (80 plików) nie był Tidalem ani cache.
+
+### Decyzja dla użytkownika
+
+- **Wgraj od nowa.** Usuń stare utwory z kolekcji, wklej XML, przeciągnij folder Serato.
+- **Dopisz listy.** Nie usuwaj kolekcji. Przeciągnij tylko wybrane listy z widoku XML. Tagi utworów, które już są w kolekcji, zostaną stare.
+
+# VDJ → Rekordbox: migracja i ograniczenia (starsze notatki)
+
 ## Kompatybilność z Rekordbox 5, 6, 7
 
 **Eksportujemy do formatu Rekordbox XML** – kompatybilnego z **Rekordbox 6 i 7**.
@@ -28,27 +61,9 @@ RB nie udostępnia dokumentacji formatu master.db – tylko XML (rekordbox.com/s
 
 ---
 
-## Zalecany workflow: **Import XML** (zamiast Restore)
+## Zalecany workflow
 
-Import XML jest oficjalnym formatem RB i zwykle działa stabilniej niż Restore Library.
-
-### Krok po kroku
-
-1. **W RB:** File → Add to collection (lub przeciągnij folder z plikami muzycznymi)
-   - RB zaimportuje pliki i odczyta metadane z ID3.
-   - Utwory będą miały zielone ikony.
-
-2. **W RB:** File → Export – zapisz `rekordbox.xml`.
-
-3. **W konwerterze:** Załaduj backup VDJ → kliknij **„Eksport playlist do RB”** → wybierz plik XML z kroku 2.
-
-4. Pobierz wygenerowany `rekordbox-playlists.xml`.
-
-5. **W RB:** Preferences → Advanced → Database → rekordbox xml → Imported Library → Browse → wybierz `rekordbox-playlists.xml`.
-
-6. **W RB:** W drzewie Media Browser rozwiń „rekordbox xml” → „Playlists” → przeciągnij playlisty do głównej sekcji Playlists.
-
-(Jeśli nie widzisz „rekordbox xml”: Preferences → View → Layout → zaznacz [rekordbox xml] w Media Browser.)
+Użyj sekcji „Metoda sprawdzona” na górze tego pliku. Samo wklejenie ścieżki ładuje bibliotekę XML. Do kolekcji wchodzi dopiero przeciągnięcie folderu Serato na Playlists.
 
 ---
 

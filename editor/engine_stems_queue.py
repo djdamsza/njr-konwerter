@@ -7,9 +7,11 @@ import sqlite3
 from pathlib import Path
 
 from engine_libdjinterop import default_engine_desktop_library, is_engine_desktop_running
+from platform_paths import plain_quit
 from file_analyzer import get_audio_channels
 from engine_stems import (
     DEFAULT_PATRIOT_ENGINE,
+    _patriot_missing,
     STEMS_BATCH_PARENT,
     STEMS_BATCH_PLAYLIST,
     _upsert_batch_playlist,
@@ -65,7 +67,9 @@ def list_eligible_stem_queue(
     Engine DJ wymaga stereo — mono są pomijane (require_stereo=True).
     """
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or patriot_engine is None:
+        return []
 
     mac_uuid = get_library_uuid(mac_engine)
     mac_stems = set(list_stem_files(mac_engine, library_uuid=mac_uuid))
@@ -195,11 +199,13 @@ def prepare_duration_stems_batch(
 ) -> dict:
     """Tworzy playlistę NJR / NJR Stems Batch z kolejną partią (1–10 min)."""
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or patriot_engine is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
 
     if is_engine_desktop_running():
         raise RuntimeError(
-            "Zamknij Engine DJ (Cmd+Q) na chwilę — skrypt zapisze playlistę partii w m.db."
+            plain_quit("Zamknij Engine DJ (Cmd+Q) na chwilę — skrypt zapisze playlistę partii w m.db.")
         )
 
     if not patriot_engine.is_dir():
@@ -312,7 +318,9 @@ def run_stems_batch_loop(
     )
 
     mac_engine = (mac_engine or default_engine_desktop_library()).resolve()
-    patriot_engine = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    patriot_engine, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or patriot_engine is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
     requested_batch = batch_size
     batch_size = resolve_batch_size(
         batch_size, _disk_free_gb(mac_engine), force=force_batch

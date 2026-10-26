@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from engine_album_art import sync_engine_album_art
+from platform_paths import plain_quit
 
 
 def _binary_names() -> list[str]:
@@ -96,8 +97,8 @@ def assert_engine_library_safe_for_write(engine_dir: Path) -> None:
     """
     if is_engine_desktop_running():
         raise RuntimeError(
-            "Zamknij Engine DJ Desktop przed synchronizacją (Cmd+Q). "
-            "Równoległa praca grozi korupcją bazy (Engine DJ developer guidelines)."
+            plain_quit("Zamknij Engine DJ Desktop przed synchronizacją (Cmd+Q). ")
+            + "Równoległa praca grozi korupcją bazy (Engine DJ developer guidelines)."
         )
     engine_dir = engine_dir.resolve()
     legacy_mdb = engine_dir / "m.db"
@@ -114,10 +115,13 @@ def backup_engine_database2(
     engine_dir: Path,
     *,
     label: str = "pre-merge",
-    keep: int = 5,
+    keep: int = 2,
 ) -> dict:
     """
     Kopia zapasowa Database2/ przed merge lub naprawą (Engine DJ: backup przed migracją).
+
+    Plik ``m.db.bak-njr-*`` zostaje w żywej bibliotece, ale nie wchodzi do kopii.
+    Inaczej każdy zapis dubluje te ~700 MB.
     """
     import shutil
     from datetime import datetime
@@ -129,7 +133,11 @@ def backup_engine_database2(
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest = engine_dir / f"_njr-backup-{stamp}-{label}"
-    shutil.copytree(dbdir, dest / "Database2")
+    shutil.copytree(
+        dbdir,
+        dest / "Database2",
+        ignore=shutil.ignore_patterns("m.db.bak-njr-*", "*.db-wal", "*.db-shm"),
+    )
     legacy = engine_dir / "m.db"
     if legacy.is_file():
         dest.mkdir(parents=True, exist_ok=True)
@@ -293,7 +301,7 @@ def validate_engine_schema(engine_dir: Path) -> dict:
             errors.append(
                 f"Schemat Engine {_format_schema(st)} jest nowszy niż obsługiwany przez "
                 f"NJR/libdjinterop ({_format_schema(NJR_ENGINE_SCHEMA_MAX)}). "
-                "Zaktualizuj NJR konwerter (njr-engine-export) przed synchronizacją."
+                "Zaktualizuj Imprezja Playlist Pro (njr-engine-export) przed synchronizacją."
             )
         elif st < NJR_ENGINE_SCHEMA_MAX:
             warnings.append(
@@ -491,6 +499,107 @@ def repair_engine_track_paths(engine_dir: Path) -> dict:
 _ENGINE_MIN_WAVEFORM_BYTES = 500
 # Pusty szablon quickCues Engine (8 slotów bez cue).
 _ENGINE_STUB_CUE_BYTES = 28
+
+
+def remove_engine_tracks_repeating_same_file(engine_dir: Path) -> dict:
+    """
+    Usuwa drugie wpisy Track, które wskazują ten sam plik na dysku.
+
+    Zostaje wpis z waveformem, a gdy żaden go nie ma — starszy (mniejsze id).
+    Listy, które wskazywały dubel, przechodzą na zostawiony utwór.
+    """
+    import sqlite3
+
+    target = engine_dir.resolve()
+    assert_engine_library_safe_for_write(target)
+    mdb = target / "Database2" / "m.db"
+    if not mdb.is_file():
+        raise FileNotFoundError(f"Brak bazy Engine: {mdb}")
+
+    from engine_music_paths import file_identity
+
+    conn = sqlite3.connect(str(mdb))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT id, path FROM Track").fetchall()
+        waves = {
+            int(r[0])
+            for r in conn.execute(
+                "SELECT trackId FROM PerformanceData "
+                "WHERE IFNULL(length(overviewWaveFormData), 0) >= ?",
+                (_ENGINE_MIN_WAVEFORM_BYTES,),
+            )
+        }
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for row in rows:
+            rel = str(row["path"] or "")
+            ident = file_identity(target / rel) if rel else None
+            if not ident:
+                continue
+            groups.setdefault(ident, []).append((int(row["id"]), rel))
+
+        drop_to_keep: dict[int, int] = {}
+        drop_paths: list[str] = []
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            ranked = sorted(members, key=lambda item: (item[0] not in waves, item[0]))
+            keep_id = ranked[0][0]
+            for tid, rel in ranked[1:]:
+                drop_to_keep[tid] = keep_id
+                drop_paths.append(rel)
+
+        remapped = 0
+        dropped_links = 0
+        for pe in conn.execute(
+            "SELECT id, listId, trackId FROM PlaylistEntity WHERE trackId > 0"
+        ):
+            keep = drop_to_keep.get(int(pe["trackId"]))
+            if keep is None:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE PlaylistEntity SET trackId = ? WHERE id = ?",
+                    (keep, int(pe["id"])),
+                )
+                remapped += 1
+            except sqlite3.IntegrityError:
+                conn.execute("DELETE FROM PlaylistEntity WHERE id = ?", (int(pe["id"]),))
+                dropped_links += 1
+
+        ids = list(drop_to_keep)
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            conn.execute(f"DELETE FROM PerformanceData WHERE trackId IN ({marks})", ids)
+            conn.execute(f"DELETE FROM PreparelistEntity WHERE trackId IN ({marks})", ids)
+            conn.execute(f"DELETE FROM Track WHERE id IN ({marks})", ids)
+        conn.commit()
+    finally:
+        conn.close()
+
+    unlinked = 0
+    for rel in drop_paths:
+        dest = target / rel
+        try:
+            if dest.is_symlink() or (dest.is_file() and dest.stat().st_nlink > 1):
+                dest.unlink()
+                unlinked += 1
+                parent = dest.parent
+                while parent != target and parent != target / "Music":
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+        except OSError:
+            continue
+
+    return {
+        "tracks_removed": len(drop_to_keep),
+        "playlist_links_moved": remapped,
+        "playlist_links_dropped": dropped_links,
+        "symlinks_removed": unlinked,
+    }
 
 
 def _merged_paths_from_export(export_doc: dict) -> set[str]:

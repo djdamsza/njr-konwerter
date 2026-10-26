@@ -24,6 +24,7 @@ from engine_libdjinterop import (
 from engine_generator import unified_to_engine_export_doc
 from engine_stems import (
     DEFAULT_PATRIOT_ENGINE,
+    _patriot_missing,
     ENGINE_SYNC_LIBRARY_WARNING,
     _pick_best_patriot_candidate,
     index_tracks_by_filename,
@@ -122,7 +123,9 @@ def diagnose_engine_track_duplicates(engine_dir: Path) -> dict:
 
 def diagnose_patriot_library(patriot_engine: Path | None = None) -> dict:
     """Diagnostyka Patriot: duplikaty + playlisty."""
-    target = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    target, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or target is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
     dupes = diagnose_engine_track_duplicates(target)
     playlists = diagnose_engine_playlists(target)
     mac = default_engine_desktop_library()
@@ -204,7 +207,9 @@ def copy_local_files_to_patriot_music(
     """
     import shutil
 
-    target = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    target, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or target is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
     if not patriot_engine_available(target):
         return {"ok": False, "error": f"Patriot niedostępny: {target}", "copied": 0}
 
@@ -268,7 +273,9 @@ def sync_metadata_and_playlists_to_patriot(
     Wymaga: Engine zamknięty, Patriot podłączony, utwory już na dysku.
     skip_loops: domyślnie True — nie zapisuj loopów do Engine.
     """
-    target = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    target, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or target is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
     if not patriot_engine_available(target):
         raise FileNotFoundError(f"Patriot niedostępny: {target}")
 
@@ -412,7 +419,9 @@ def dedupe_patriot_library(
     Usuwa duplikaty utworów po Export to Drive (ta sama nazwa pliku + fileBytes).
     Zachowuje najlepszy wpis (analyzed, bez „ (2)”, bez Unknown Album).
     """
-    target = (patriot_engine or DEFAULT_PATRIOT_ENGINE).resolve()
+    target, patriot_error = _patriot_missing(patriot_engine)
+    if patriot_error or target is None:
+        return {"ok": False, "error": patriot_error or "Brak dysku Patriot. Podłącz dysk Rane."}
     if not patriot_engine_available(target):
         raise FileNotFoundError(f"Patriot niedostępny: {target}")
 

@@ -1,0 +1,27 @@
+Złożenie Imprezja Playlist Pro 1.1.15 na Windowsie
+Kod bierz z repozytorium git, gałąź cursor/serato-vdj-metadata-sync, po tym złożeniu. Plik VERSION w korzeniu ma być 1.1.15. Nazwy pliku nie zmieniaj.
+
+W tym kodzie jest logowanie Google: przycisk na ekranie konta. Klucze Google są na stronie, nie w exe.
+
+Tokeny są na koncie, nie na komputerze. Zakup dopisuje je do konta. To robi wtyczka 1.9.22, nie ten exe. Jej kod jest na tym samym udziale: ImprezjaBooth\wordpress\njr-booth-konto. Wgraj ją w WordPressie osobno. Do złożenia programu nie jest potrzebna.
+
+Klucze Tidal są w editor\tidal-credentials.json. PyInstaller wkłada je do exe. Pliku nie otwieraj i nie wysyłaj osobno.
+
+Cały folder, nie sam editor. Python 3.11 albo 3.12. W cmd py -3 --version ma pokazać tę wersję.
+
+cd C:\ścieżka\do\njr-konwerter\editor
+py -3 -m pip install -r requirements-dev.txt
+py -3 -m PyInstaller njr.spec --clean --noconfirm
+cd ..
+mkdir releases
+copy /Y "editor\dist\Imprezja Playlist Pro.exe" releases\Imprezja-Playlist-Pro-1.1.15-windows-x64.exe
+
+Get-FileHash .\releases\Imprezja-Playlist-Pro-1.1.15-windows-x64.exe -Algorithm SHA256
+
+Zostaw exe w releases. Na stronę wgraj go razem z dwoma DMG 1.1.15 i ustaw wersję 1.1.15. Bez kompletu trzech plików aktualizacja się nie włączy.
+
+DMG z Maca w tym kroku nie powstały. Narzędzia Xcode na Macu zatrzymują złożenie, dopóki nie jest zaakceptowana licencja. Windows składa exe 1.1.15. Na stronę wgraj go dopiero razem z dwoma DMG tej samej wersji.
+
+Eksport Engine wymaga osobno njr-engine-export.exe. Bez Visual Studio program i tak wstanie. Synchronizacja Engine napisze, że brakuje narzędzia. Ten krok pomiń.
+
+DMG na tym komputerze nie składaj.

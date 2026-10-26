@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build NJR-konwerter (PyInstaller) i kopiuj artefakt do releases/
+# Build Imprezja Playlist Pro (PyInstaller) i kopiuj artefakt do releases/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,29 +28,29 @@ python3 -m PyInstaller njr.spec --clean --noconfirm
 mkdir -p "$OUT_DIR"
 copied=0
 
-if [ -d "$APP/dist/NJR Konwerter.app" ]; then
-  APP_BUNDLE="$OUT_DIR/NJR Konwerter-${VERSION}.app"
+if [ -d "$APP/dist/Imprezja Playlist Pro.app" ]; then
+  APP_BUNDLE="$OUT_DIR/Imprezja Playlist Pro-${VERSION}.app"
   rm -rf "$APP_BUNDLE"
-  cp -R "$APP/dist/NJR Konwerter.app" "$APP_BUNDLE"
+  cp -R "$APP/dist/Imprezja Playlist Pro.app" "$APP_BUNDLE"
   echo "Skopiowano: $APP_BUNDLE"
   copied=1
 
-  STAGING="_dmg_staging_$$"
-  rm -rf "$STAGING"
-  mkdir -p "$STAGING"
-  cp -R "$APP_BUNDLE" "$STAGING/NJR Konwerter.app"
-  cp "$REPO_ROOT/scripts/macos/Instaluj-NJR-Konwerter.command" "$STAGING/Instaluj NJR Konwerter.command"
-  chmod +x "$STAGING/Instaluj NJR Konwerter.command"
-  ln -sf /Applications "$STAGING/Applications"
-  DMG="$OUT_DIR/NJR-konwerter-${VERSION}-macos-arm64.dmg"
-  hdiutil create -volname "NJR Konwerter" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
-  rm -rf "$STAGING"
-  echo "DMG: $DMG"
+  if [ -n "${NJR_DMG_SUFFIX:-}" ]; then
+    DMG_SUFFIX="$NJR_DMG_SUFFIX"
+  else
+    case "$(uname -m)" in
+      arm64|aarch64) DMG_SUFFIX="macos-arm64" ;;
+      x86_64) DMG_SUFFIX="macos-intel-x64" ;;
+      *) DMG_SUFFIX="macos-$(uname -m)" ;;
+    esac
+  fi
+  DMG="$OUT_DIR/Imprezja-Playlist-Pro-${VERSION}-${DMG_SUFFIX}.dmg"
+  bash "$REPO_ROOT/scripts/macos/style-dmg.sh" "$APP_BUNDLE" "$DMG"
 fi
 
-for src in "$APP/dist/NJR-konwerter.exe"; do
+for src in "$APP/dist/Imprezja Playlist Pro.exe"; do
   [ -f "$src" ] || continue
-  dest="$OUT_DIR/NJR-konwerter-${VERSION}.exe"
+  dest="$OUT_DIR/Imprezja-Playlist-Pro-${VERSION}-windows-x64.exe"
   cp -f "$src" "$dest"
   echo "Skopiowano: $dest"
   copied=$((copied + 1))

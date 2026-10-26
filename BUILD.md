@@ -1,6 +1,6 @@
 # Budowanie NJR Konwertera 1.0
 
-Build odbywa się w katalogu **`editor/`** (w korzeniu repozytorium NJR) za pomocą **PyInstaller** i pliku `njr.spec`. Wynik to jeden plik wykonywalny (**onefile**): **`NJR-konwerter`** (macOS/Linux) lub **`NJR-konwerter.exe`** (Windows).
+Build odbywa się w katalogu **`editor/`** za pomocą **PyInstaller** i pliku `njr.spec`. Wynik to **`Imprezja Playlist Pro.app`** (macOS) albo **`Imprezja Playlist Pro.exe`** (Windows). Plik do strony nazywa się `Imprezja-Playlist-Pro-1.0.14-windows-x64.exe`, `Imprezja-Playlist-Pro-1.0.14-macos-arm64.dmg` albo `Imprezja-Playlist-Pro-1.0.14-macos-intel-x64.dmg`.
 
 ## Wymagania
 
@@ -19,7 +19,7 @@ python3 -m pip install pyinstaller
 python3 -m PyInstaller njr.spec --clean --noconfirm
 ```
 
-Artefakt: `editor/dist/NJR-konwerter` lub `editor/dist/NJR-konwerter.exe`.
+Artefakt: `editor/dist/Imprezja Playlist Pro.app` albo `editor/dist/Imprezja Playlist Pro.exe`.
 
 Skrypt `scripts/build-local.sh` kopiuje go do `releases/` z nazwą zawierającą wersję z pliku `VERSION`.
 
